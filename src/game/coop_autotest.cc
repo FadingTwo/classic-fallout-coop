@@ -2987,6 +2987,23 @@ static int coop_autotest_net_session_host(AutotestNewGameProc* newGame)
         autotest_fail("player 2 did not move");
     }
 
+    // Player 1's mouse stays where it is while player 2 plays. It slid
+    // away when the two had cursors with different hotspots (here player
+    // 1's scroll arrow at the left edge).
+    mouse_set_position(0, screenGetHeight() / 3);
+    coop_autotest_session_frames(50, false, false);
+    int mouseX;
+    int mouseY;
+    mouse_get_position(&mouseX, &mouseY);
+    coop_autotest_session_frames(2000, false, false);
+    int laterX;
+    int laterY;
+    mouse_get_position(&laterX, &laterY);
+    autotest_log("player 1's mouse %d,%d then %d,%d", mouseX, mouseY, laterX, laterY);
+    if (laterX != mouseX || laterY != mouseY) {
+        autotest_fail("player 1's mouse moved by itself");
+    }
+
     lsgSetQuickSlot(COOP_AUTOTEST_SLOT);
     if (SaveGame(LOAD_SAVE_MODE_QUICK) != 1) {
         autotest_fail("save with player 2 connected failed");

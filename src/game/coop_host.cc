@@ -378,6 +378,12 @@ static void coop_host_swap_view(CoopView* view, Object* currentObj, Object* inco
     gmouse_3d_set_mode(view->mode);
     gmouse_set_cursor(view->cursor);
 
+    // Changing the cursor shape keeps its hotspot in place by moving the
+    // mouse by the difference of the two hotspots, here the other player's
+    // and this one's: twice a frame that slid player 1's mouse away (to the
+    // top left with the hex cursor). Put the position back as it was saved.
+    mouse_set_context(&(view->mouse));
+
     *view = current;
 
     mouse_show();
