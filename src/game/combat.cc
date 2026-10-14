@@ -74,6 +74,7 @@ static void check_for_death(Object* a1, int a2, int* a3);
 static void set_new_results(Object* a1, int a2);
 static void damage_object(Object* obj, int damage, bool animated, bool a4);
 static void combat_display_hit(char* dest, size_t size, Object* critter_obj, int damage);
+static bool combat_display_is_you(Object* critter);
 static void combat_display_flags(char* a1, int flags, Object* a3);
 static void combat_standup(Object* a1);
 static void print_tohit(unsigned char* dest, int dest_pitch, int a3);
@@ -3489,6 +3490,13 @@ void death_checks(Attack* attack)
 {
     int index;
 
+    // CE: co-op: knocked out instead of killed, if set (see coop.h).
+    coop_knockout_check(attack->attacker, &(attack->attackerDamage), &(attack->attackerFlags));
+    coop_knockout_check(attack->defender, &(attack->defenderDamage), &(attack->defenderFlags));
+    for (index = 0; index < attack->extrasLength; index++) {
+        coop_knockout_check(attack->extras[index], &(attack->extrasDamage[index]), &(attack->extrasFlags[index]));
+    }
+
     check_for_death(attack->attacker, attack->attackerDamage, &(attack->attackerFlags));
     check_for_death(attack->defender, attack->defenderDamage, &(attack->defenderFlags));
 
@@ -3684,6 +3692,14 @@ static void damage_object(Object* obj, int damage, bool animated, bool a4)
 // Print attack description to monitor.
 //
 // 0x422844
+// CE: whether combat messages call `critter` "you". With two players both
+// read the same messages (and see the same screen in combat), so "you"
+// would be ambiguous: then every player is named, like other critters.
+static bool combat_display_is_you(Object* critter)
+{
+    return critter == obj_dude && coop_player_count() < 2;
+}
+
 void combat_display(Attack* attack)
 {
     MessageListItem messageListItem;
@@ -3722,7 +3738,7 @@ void combat_display(Attack* attack)
     }
 
     int baseMessageId;
-    if (mainCritter == obj_dude) {
+    if (combat_display_is_you(mainCritter)) {
         mainCritterName = you;
         baseMessageId = 500;
     } else if (mainCritter != NULL) {
@@ -3740,7 +3756,7 @@ void combat_display(Attack* attack)
         && attack->defender != attack->oops
         && (attack->attackerFlags & DAM_HIT) != 0) {
         if (FID_TYPE(attack->defender->fid) == OBJ_TYPE_CRITTER) {
-            if (attack->oops == obj_dude) {
+            if (combat_display_is_you(attack->oops)) {
                 // 608 (male) - Oops! %s was hit instead of you!
                 // 708 (female) - Oops! %s was hit instead of you!
                 messageListItem.num = baseMessageId + 8;
@@ -3756,7 +3772,7 @@ void combat_display(Attack* attack)
                 }
             }
         } else {
-            if (attack->attacker == obj_dude) {
+            if (combat_display_is_you(attack->attacker)) {
                 // (player) %s missed
                 messageListItem.num = 515;
 
@@ -3874,7 +3890,7 @@ void combat_display(Attack* attack)
                         strcat(text, ".");
                         display_print(text);
 
-                        if (attack->defender == obj_dude) {
+                        if (combat_display_is_you(attack->defender)) {
                             if (stat_level(attack->defender, STAT_GENDER) == GENDER_MALE) {
                                 // were killed
                                 messageListItem.num = 207;
@@ -3974,7 +3990,7 @@ static void combat_display_hit(char* dest, size_t size, Object* critter, int dam
     char* name;
 
     int messageId;
-    if (critter == obj_dude) {
+    if (combat_display_is_you(critter)) {
         text[0] = '\0';
 
         messageId = 500;
@@ -4027,7 +4043,7 @@ static void combat_display_flags(char* dest, int flags, Object* critter)
     MessageListItem messageListItem;
 
     int num;
-    if (critter == obj_dude) {
+    if (combat_display_is_you(critter)) {
         num = 200;
     } else {
         if (stat_level(critter, STAT_GENDER) == GENDER_MALE) {

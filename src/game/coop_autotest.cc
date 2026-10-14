@@ -94,6 +94,8 @@ static Object* coop_autotest_spawn_enemy(Object* nextTo);
 static int coop_autotest_join(AutotestNewGameProc* newGame);
 static int coop_autotest_looks(AutotestNewGameProc* newGame);
 static int coop_autotest_barter(AutotestNewGameProc* newGame);
+static int coop_autotest_give(AutotestNewGameProc* newGame);
+static int coop_autotest_knockout(AutotestNewGameProc* newGame);
 static int coop_autotest_net_host(AutotestNewGameProc* newGame);
 static int coop_autotest_net_client(AutotestNewGameProc* newGame);
 static void coop_autotest_net_client_exit();
@@ -142,6 +144,8 @@ void coop_autotest_register()
     autotest_add_script("coop_join", coop_autotest_join);
     autotest_add_script("coop_looks", coop_autotest_looks);
     autotest_add_script("coop_barter", coop_autotest_barter);
+    autotest_add_script("coop_give", coop_autotest_give);
+    autotest_add_script("coop_knockout", coop_autotest_knockout);
     autotest_add_script("net_host", coop_autotest_net_host);
     autotest_add_script("net_client", coop_autotest_net_client);
     autotest_add_script("net_play_host", coop_autotest_net_play_host);
@@ -1163,6 +1167,192 @@ static int coop_autotest_barter(AutotestNewGameProc* newGame)
     return 0;
 }
 
+// How many stimpaks `critter` carries.
+static int coop_autotest_stimpaks(Object* critter)
+{
+    int count = 0;
+    for (int index = 0; index < critter->data.inventory.length; index++) {
+        if (critter->data.inventory.items[index].item->pid == PROTO_ID_STIMPACK) {
+            count += critter->data.inventory.items[index].quantity;
+        }
+    }
+    return count;
+}
+
+// The giver and the receiver of coop_autotest_give's item move.
+static Object* coop_autotest_give_from = NULL;
+static Object* coop_autotest_give_to = NULL;
+
+// While the give screen is open: moves a stimpak across, as dragging it
+// would, and checks the screen belongs to the giver.
+static void coop_autotest_give_move()
+{
+    if (obj_dude != coop_autotest_give_from) {
+        autotest_fail("give screen open for the wrong player");
+    }
+    Object* stimpak = NULL;
+    for (int index = 0; index < coop_autotest_give_from->data.inventory.length; index++) {
+        Object* item = coop_autotest_give_from->data.inventory.items[index].item;
+        if (item->pid == PROTO_ID_STIMPACK) {
+            stimpak = item;
+        }
+    }
+    if (stimpak == NULL || item_move(coop_autotest_give_from, coop_autotest_give_to, stimpak, 1) != 0) {
+        autotest_fail("could not move the stimpak");
+    }
+    dump_screen();
+}
+
+// Talking to the other player opens the loot screen between the two to
+// give each other items, both ways; equipped things stay where they are,
+// and it is not stealing (no experience, nobody gets caught).
+static int coop_autotest_give(AutotestNewGameProc* newGame)
+{
+    if (!coop_is_enabled()) {
+        autotest_fail("needs [coop]enabled=1");
+        return -1;
+    }
+
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    PlayerState* p2 = coop_add_player("premade\\stealth.gcd");
+    if (p2 == NULL) {
+        autotest_fail("coop_add_player failed");
+        return -1;
+    }
+
+    Object* p1obj = coop_player(0)->obj;
+    Object* p2obj = p2->obj;
+    const char* armor[] = { "Leather Jacket" };
+    coop_autotest_equip(p2, armor, 1, 0);
+    Object* p2armor = inven_worn(p2obj);
+
+    for (int round = 0; round < 2; round++) {
+        Object* from = round == 0 ? p1obj : p2obj;
+        Object* to = round == 0 ? p2obj : p1obj;
+        Object* stimpak;
+        if (obj_pid_new(&stimpak, PROTO_ID_STIMPACK) != 0 || item_add_force(from, stimpak, 1) != 0) {
+            autotest_fail("no stimpak");
+            return -1;
+        }
+        int before = coop_autotest_stimpaks(to);
+        int xp = stat_pc_get(PC_STAT_EXPERIENCE);
+
+        coop_autotest_give_from = from;
+        coop_autotest_give_to = to;
+        inject_wait(20);
+        inject_call(coop_autotest_give_move);
+        inject_wait(3);
+        inject_key(KEY_ESCAPE);
+
+        scripts_request_give_container(from, to);
+        scripts_check_state();
+
+        while (inject_pending()) {
+            inject_update();
+        }
+
+        autotest_log("give %d: %s gave a stimpak to %s (%d -> %d)", round, critter_name(from), critter_name(to), before, coop_autotest_stimpaks(to));
+        if (coop_autotest_stimpaks(to) != before + 1) {
+            autotest_fail("the stimpak did not arrive");
+        }
+        if (stat_pc_get(PC_STAT_EXPERIENCE) != xp) {
+            autotest_fail("giving gave experience");
+        }
+        if (obj_dude != p1obj || coop_active_player() != coop_player(0)) {
+            autotest_fail("giving left the wrong player active");
+        }
+    }
+
+    if (p2armor == NULL || inven_worn(p2obj) != p2armor) {
+        autotest_fail("player 2's armor came off");
+    }
+
+    return 0;
+}
+
+// One hit of `damage` from `attacker` on `defender`, through the game's own
+// damage code.
+static void coop_autotest_hit(Object* attacker, Object* defender, int damage)
+{
+    Attack attack;
+    combat_ctd_init(&attack, attacker, defender, HIT_MODE_PUNCH, HIT_LOCATION_TORSO);
+    attack.attackerFlags = DAM_HIT;
+    attack.defenderDamage = damage;
+    death_checks(&attack);
+    apply_damage(&attack, false);
+}
+
+// [coop]knockout=1: a player who would die is knocked out while the other
+// is up, can't be finished off, and wakes up when healed; when nobody is
+// left up, death is death. With knockout off the hit just kills.
+static int coop_autotest_knockout(AutotestNewGameProc* newGame)
+{
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    PlayerState* p2 = coop_add_player("premade\\stealth.gcd");
+    if (p2 == NULL) {
+        autotest_fail("coop_add_player failed");
+        return -1;
+    }
+
+    Object* p1obj = coop_player(0)->obj;
+    Object* p2obj = p2->obj;
+    Object* enemy = coop_autotest_spawn_enemy(p1obj);
+    if (enemy == NULL) {
+        return -1;
+    }
+
+    bool knockout = coop_knockout_enabled();
+    autotest_log("knockout setting: %d", knockout ? 1 : 0);
+
+    coop_autotest_hit(enemy, p2obj, 500);
+    int results = p2obj->data.critter.combat.results;
+    autotest_log("player 2 after a lethal hit: %d hp, dead %d, knocked out %d", critter_get_hits(p2obj),
+        (results & DAM_DEAD) != 0 ? 1 : 0, (results & DAM_KNOCKED_OUT) != 0 ? 1 : 0);
+
+    if (!knockout) {
+        if ((results & DAM_DEAD) == 0) {
+            autotest_fail("without knockout the hit did not kill");
+        }
+        return 0;
+    }
+
+    if ((results & DAM_DEAD) != 0 || (results & DAM_KNOCKED_OUT) == 0 || critter_get_hits(p2obj) != 1) {
+        autotest_fail("player 2 was not knocked out");
+        return 0;
+    }
+
+    coop_autotest_hit(enemy, p2obj, 500);
+    if ((p2obj->data.critter.combat.results & DAM_DEAD) != 0 || critter_get_hits(p2obj) != 1) {
+        autotest_fail("a knocked out player was hurt");
+    }
+
+    critter_adjust_hits(p2obj, 10);
+    results = p2obj->data.critter.combat.results;
+    autotest_log("player 2 healed: %d hp, knocked out %d", critter_get_hits(p2obj), (results & DAM_KNOCKED_OUT) != 0 ? 1 : 0);
+    if ((results & DAM_KNOCKED_OUT) != 0) {
+        autotest_fail("healing did not wake player 2");
+    }
+
+    // Player 1 down, then player 2 with nobody left up: dead.
+    coop_autotest_hit(enemy, p1obj, 500);
+    coop_autotest_hit(enemy, p2obj, 500);
+    autotest_log("both down: player 1 knocked out %d, player 2 dead %d",
+        (p1obj->data.critter.combat.results & DAM_KNOCKED_OUT) != 0 ? 1 : 0,
+        (p2obj->data.critter.combat.results & DAM_DEAD) != 0 ? 1 : 0);
+    if ((p1obj->data.critter.combat.results & DAM_KNOCKED_OUT) == 0
+        || (p2obj->data.critter.combat.results & DAM_DEAD) == 0) {
+        autotest_fail("the last player up did not die");
+    }
+
+    return 0;
+}
+
 // COOP_AUTOTEST_RELAY=host:port: the host opens a relay room and writes
 // its code to COOP_AUTOTEST_RELAY_FILE; the client joins that code.
 static bool coop_autotest_relay_host_setup()
@@ -1564,7 +1754,14 @@ static int coop_autotest_net_combat_host(AutotestNewGameProc* newGame)
     coop_autotest_scene();
     coop_autotest_video_start();
 
-    Object* enemy = coop_autotest_spawn_enemy(coop_player(0)->obj);
+    // COOP_AUTOTEST_P2_HP: player 2 starts the fight hurt (to get knocked
+    // out with [coop]knockout=1).
+    if (const char* hp = getenv("COOP_AUTOTEST_P2_HP")) {
+        critter_adjust_hits(p2->obj, atoi(hp) - critter_get_hits(p2->obj));
+    }
+
+    // (Next to the hurt player 2, so they get hit.)
+    Object* enemy = coop_autotest_spawn_enemy(getenv("COOP_AUTOTEST_P2_HP") != NULL ? p2->obj : coop_player(0)->obj);
     if (enemy == NULL) {
         return -1;
     }
@@ -1576,14 +1773,16 @@ static int coop_autotest_net_combat_host(AutotestNewGameProc* newGame)
 
     STRUCT_664980 attack;
     memset(&attack, 0, sizeof(attack));
-    attack.attacker = coop_player(0)->obj;
+    // (The hurt player 2 starts it, so the enemy goes for them.)
+    attack.attacker = getenv("COOP_AUTOTEST_P2_HP") != NULL ? p2->obj : coop_player(0)->obj;
     attack.defender = enemy;
     combat(&attack);
 
     coop_set_turn_hook(NULL);
 
-    autotest_log("combat over: enemy dead %d, player 2 turns %d, players dead %d",
-        critter_is_dead(enemy) ? 1 : 0, coop_autotest_net_combat_player2_turns, coop_any_player_has(DAM_DEAD) ? 1 : 0);
+    autotest_log("combat over: enemy dead %d, player 2 turns %d, players dead %d, player 2 knocked out %d, hp %d",
+        critter_is_dead(enemy) ? 1 : 0, coop_autotest_net_combat_player2_turns, coop_any_player_has(DAM_DEAD) ? 1 : 0,
+        (p2->obj->data.critter.combat.results & DAM_KNOCKED_OUT) != 0 ? 1 : 0, critter_get_hits(p2->obj));
 
     if (coop_autotest_net_combat_player2_turns == 0) {
         autotest_fail("player 2 never had a turn");
@@ -3004,6 +3203,39 @@ static int coop_autotest_net_session_host(AutotestNewGameProc* newGame)
         autotest_fail("player 1's mouse moved by itself");
     }
 
+    // Player 1 points at a spot (G): the marker shows on both screens.
+    mouse_set_position(screenGetWidth() / 2, screenGetHeight() / 3);
+    coop_autotest_session_frames(50, false, false);
+    if (!coop_host_chat_key(KEY_LOWERCASE_G)) {
+        autotest_fail("G did not place a marker");
+    }
+    renderPresent();
+    {
+        // Yellow on the screen around the spot, and the game's own screen
+        // buffer clean again (the marker is only drawn for showing).
+        int yellow = 0;
+        int cx = screenGetWidth() / 2;
+        int cy = screenGetHeight() / 3;
+        for (int y = std::max(cy - 60, 0); y < std::min(cy + 40, gSdlTextureSurface->h); y++) {
+            for (int x = std::max(cx - 40, 0); x < std::min(cx + 40, gSdlTextureSurface->w); x++) {
+                Uint32 pixel = ((Uint32*)gSdlTextureSurface->pixels)[y * gSdlTextureSurface->pitch / 4 + x];
+                Uint8 r;
+                Uint8 g;
+                Uint8 b;
+                SDL_GetRGB(pixel, gSdlTextureSurface->format, &r, &g, &b);
+                if (r > 200 && g > 200 && b < 90) {
+                    yellow++;
+                }
+            }
+        }
+        autotest_log("marker: %d yellow pixels shown", yellow);
+        SDL_SaveBMP(gSdlTextureSurface, "marker.bmp");
+        if (yellow < 20) {
+            autotest_fail("the marker is not on screen");
+        }
+    }
+    coop_autotest_session_frames(1500, false, false);
+
     lsgSetQuickSlot(COOP_AUTOTEST_SLOT);
     if (SaveGame(LOAD_SAVE_MODE_QUICK) != 1) {
         autotest_fail("save with player 2 connected failed");
@@ -3313,11 +3545,25 @@ static int coop_autotest_menu_more(AutotestNewGameProc* newGame)
     inject_call(coop_autotest_screenshot); // "Restart the game"
     inject_key(KEY_RETURN);
     inject_wait(20);
-    coop_autotest_click_menu_slot(3); // BACK
+    coop_autotest_click_menu_slot(3); // KNOCKOUT: OFF -> ON
+    inject_wait(20);
+    inject_call(coop_autotest_screenshot); // what it does
+    inject_key(KEY_RETURN);
+    inject_wait(20);
+    inject_call(coop_autotest_screenshot); // KNOCKOUT: ON
+    coop_autotest_click_menu_slot(4); // BACK
     inject_wait(10);
     coop_autotest_click_menu_slot(5); // BACK
 
+    bool knockoutBefore = coop_knockout_setting();
     coop_menu_run();
+
+    int knockoutSaved = 0;
+    config_get_value(&game_config, COOP_CONFIG_KEY, COOP_CONFIG_KNOCKOUT_KEY, &knockoutSaved);
+    autotest_log("KNOCKOUT: %d before, %d after, saved %d", knockoutBefore ? 1 : 0, coop_knockout_setting() ? 1 : 0, knockoutSaved);
+    if (coop_knockout_setting() == knockoutBefore || knockoutSaved != (coop_knockout_setting() ? 1 : 0)) {
+        autotest_fail("KNOCKOUT did not change and save the setting");
+    }
 
     Config resolutionConfig;
     int width = 0;

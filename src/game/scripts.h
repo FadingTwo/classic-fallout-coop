@@ -33,6 +33,8 @@ typedef enum ScriptRequests {
     SCRIPT_REQUEST_LOOTING = 0x100,
     SCRIPT_REQUEST_STEALING = 0x200,
     SCRIPT_REQUEST_LOCKED = 0x400,
+    // CE: co-op: two players give each other items.
+    SCRIPT_REQUEST_GIVING = 0x800,
 } ScriptRequests;
 
 typedef enum ScriptType {
@@ -168,6 +170,7 @@ void scripts_request_dialog(Object* a1);
 void scripts_request_endgame_slideshow();
 int scripts_request_loot_container(Object* a1, Object* a2);
 int scripts_request_steal_container(Object* a1, Object* a2);
+int scripts_request_give_container(Object* a1, Object* a2);
 void script_make_path(char* path);
 int exec_script_proc(int sid, int proc);
 int scr_find_str_run_info(int a1, int* a2, int sid);

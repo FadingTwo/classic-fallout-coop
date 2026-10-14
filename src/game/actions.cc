@@ -15,6 +15,7 @@
 #include "game/gmouse.h"
 #include "game/gsound.h"
 #include "game/intface.h"
+#include "game/inventry.h"
 #include "game/item.h"
 #include "game/map.h"
 #include "game/object.h"
@@ -1216,7 +1217,13 @@ int action_loot_container(Object* critter, Object* container)
 
     register_object_must_call(critter, container, (AnimationCallback*)is_next_to, -1);
     register_object_call(critter, container, (AnimationCallback*)check_scenery_ap_cost, -1);
-    register_object_call(critter, container, (AnimationCallback*)scripts_request_loot_container, -1);
+    // CE: co-op: another player (clicked like a body) gets the give screen,
+    // not the loot screen, which would offer their equipped things.
+    if (coop_player_of(critter) != NULL && coop_player_of(container) != NULL) {
+        register_object_call(critter, container, (AnimationCallback*)scripts_request_give_container, -1);
+    } else {
+        register_object_call(critter, container, (AnimationCallback*)scripts_request_loot_container, -1);
+    }
     return register_end();
 }
 
@@ -1807,8 +1814,9 @@ int action_talk_to(Object* a1, Object* a2)
         return -1;
     }
 
-    // Co-op: only player 1 talks; the others may trade with merchants.
-    if (!coop_primary_is_active() && !coop_can_barter_with(a2)) {
+    // Co-op: only player 1 talks; the others may trade with merchants, and
+    // all players with each other.
+    if (!coop_primary_is_active() && !coop_can_barter_with(a2) && coop_player_of(a2) == NULL) {
         char message[] = "Only player 1 can talk to people.";
         display_print(message);
         return -1;
@@ -1862,6 +1870,13 @@ static int can_talk_to(Object* a1, Object* a2)
 // 0x413200
 static int talk_to(Object* a1, Object* a2)
 {
+    // Co-op: talking to the other player opens the loot screen between
+    // the two, to give each other items.
+    if (coop_player_of(a1) != NULL && coop_player_of(a2) != NULL) {
+        scripts_request_give_container(a1, a2);
+        return 0;
+    }
+
     // Co-op: conversations are player 1's; other players trade directly.
     PlayerState* player = coop_player_of(a1);
     if (player != NULL && player != coop_player(0)) {

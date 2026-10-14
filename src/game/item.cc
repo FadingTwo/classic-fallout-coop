@@ -2203,6 +2203,10 @@ static void perform_drug_effect(Object* critter, int* stats, int* mods, bool isI
         }
 
         stat_set_bonus(critter, stat, v11);
+        if (stat == STAT_CURRENT_HIT_POINTS && v11 > 0) {
+            // CE: co-op: healing wakes a knocked out player.
+            coop_knockout_healed(critter);
+        }
 
         if (critter == obj_dude) {
             if (stat == STAT_CURRENT_HIT_POINTS) {

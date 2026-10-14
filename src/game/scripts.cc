@@ -972,6 +972,21 @@ int scripts_check_state()
         inven_steal_container(scriptState.stealingBy, scriptState.stealingFrom);
     }
 
+    // CE: co-op: in the scope of the player who asked, so the screen is
+    // theirs (and on their screen).
+    if ((scriptState.requests & SCRIPT_REQUEST_GIVING) != 0) {
+        scriptState.requests &= ~SCRIPT_REQUEST_GIVING;
+        PlayerState* giver = coop_player_of(scriptState.stealingBy);
+        if (giver != NULL && coop_player_of(scriptState.stealingFrom) != NULL) {
+            coop_set_viewer(giver);
+            {
+                ActivePlayerScope scope(giver);
+                inven_give_container(scriptState.stealingBy, scriptState.stealingFrom);
+            }
+            coop_set_viewer(NULL);
+        }
+    }
+
     return 0;
 }
 
@@ -1033,6 +1048,19 @@ int scripts_check_state_in_combat()
 
     if ((scriptState.requests & SCRIPT_REQUEST_LOOTING) != 0) {
         loot_container(scriptState.lootingBy, scriptState.lootingFrom);
+    }
+
+    // CE: co-op: see scripts_check_state.
+    if ((scriptState.requests & SCRIPT_REQUEST_GIVING) != 0) {
+        PlayerState* giver = coop_player_of(scriptState.stealingBy);
+        if (giver != NULL && coop_player_of(scriptState.stealingFrom) != NULL) {
+            coop_set_viewer(giver);
+            {
+                ActivePlayerScope scope(giver);
+                inven_give_container(scriptState.stealingBy, scriptState.stealingFrom);
+            }
+            coop_set_viewer(NULL);
+        }
     }
 
     // NOTE: Uninline.
@@ -1114,6 +1142,15 @@ int scripts_request_loot_container(Object* a1, Object* a2)
     scriptState.lootingBy = a1;
     scriptState.lootingFrom = a2;
     scriptState.requests |= SCRIPT_REQUEST_LOOTING;
+    return 0;
+}
+
+// CE: co-op: see SCRIPT_REQUEST_GIVING.
+int scripts_request_give_container(Object* a1, Object* a2)
+{
+    scriptState.stealingBy = a1;
+    scriptState.stealingFrom = a2;
+    scriptState.requests |= SCRIPT_REQUEST_GIVING;
     return 0;
 }
 

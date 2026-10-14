@@ -33,6 +33,19 @@
 
 namespace fallout {
 
+// CE: prints a message about a player character (poison, radiation). The
+// texts say "you"; with two players both read them, so it says whose.
+static void critter_display_print(Object* critter, char* text)
+{
+    if (coop_player_count() > 1 && critter != NULL) {
+        char named[300];
+        snprintf(named, sizeof(named), "%s: %s", critter_name(critter), text);
+        display_print(named);
+    } else {
+        display_print(text);
+    }
+}
+
 static int get_rad_damage_level(Object* obj, void* data);
 static int clear_rad_damage(Object* obj, void* data);
 static void process_rads(Object* obj, int radiationLevel, bool direction);
@@ -252,6 +265,9 @@ int critter_adjust_hits(Object* critter, int hp)
     int newHp = critter->data.critter.hp + hp;
 
     critter->data.critter.hp = newHp;
+    if (hp > 0) {
+        coop_knockout_healed(critter);
+    }
     if (maximumHp >= newHp) {
         if (newHp <= 0 && (critter->data.critter.combat.results & DAM_DEAD) == 0) {
             critter_kill(critter, -1, true);
@@ -298,7 +314,7 @@ int critter_adjust_poison(Object* critter, int amount)
         // You have been poisoned!
         messageListItem.num = 3000;
         if (message_search(&misc_message_file, &messageListItem)) {
-            display_print(messageListItem.text);
+            critter_display_print(critter, messageListItem.text);
         }
     } else {
         critter->data.critter.poison = 0;
@@ -324,7 +340,7 @@ int critter_check_poison(Object* obj, void* data)
     // You take damage from poison.
     messageListItem.num = 3001;
     if (message_search(&misc_message_file, &messageListItem)) {
-        display_print(messageListItem.text);
+        critter_display_print(obj, messageListItem.text);
     }
 
     // NOTE: Uninline.
@@ -390,7 +406,7 @@ int critter_adjust_rads(Object* obj, int amount)
                 }
 
                 if (message_search(&misc_message_file, &messageListItem)) {
-                    display_print(messageListItem.text);
+                    critter_display_print(obj_dude, messageListItem.text);
                 }
             }
         }
@@ -401,7 +417,7 @@ int critter_adjust_rads(Object* obj, int amount)
         messageListItem.num = 1007;
 
         if (message_search(&misc_message_file, &messageListItem)) {
-            display_print(messageListItem.text);
+            critter_display_print(obj_dude, messageListItem.text);
         }
     }
 
@@ -532,7 +548,7 @@ static void process_rads(Object* obj, int radiationLevel, bool isHealing)
         // Radiation level message, higher is worse.
         messageListItem.num = 1000 + radiationLevelIndex;
         if (message_search(&misc_message_file, &messageListItem)) {
-            display_print(messageListItem.text);
+            critter_display_print(obj, messageListItem.text);
         }
     }
 
@@ -560,7 +576,7 @@ static void process_rads(Object* obj, int radiationLevel, bool isHealing)
             // You have died from radiation sickness.
             messageListItem.num = 1006;
             if (message_search(&misc_message_file, &messageListItem)) {
-                display_print(messageListItem.text);
+                critter_display_print(obj, messageListItem.text);
             }
         }
     }

@@ -16,7 +16,7 @@ namespace fallout {
 #define COOP_MAX_PLAYERS 2
 
 // Co-op version, for the update check and bug reports.
-#define COOP_VERSION "1.6.1"
+#define COOP_VERSION "1.7"
 
 // fallout.cfg [coop] server=http://host[:port] - where UPDATE looks for
 // new versions (<server>/fallout-coop/latest.txt) and REPORT BUG sends
@@ -44,6 +44,7 @@ namespace fallout {
 
 // Seconds a player may spend on a combat turn; 0 means no limit.
 #define COOP_CONFIG_TURN_TIME_KEY "turn_time"
+#define COOP_CONFIG_KNOCKOUT_KEY "knockout"
 
 // Everything that makes a player character "theirs". Before co-op this lived
 // in per-module globals implicitly owned by `obj_dude`; those modules now
@@ -208,6 +209,22 @@ bool coop_any_player_has(int results);
 // Combat: true once a human turn started at `turnStart` (get_time()) has
 // used up [coop] turn_time.
 bool coop_turn_time_expired(unsigned int turnStart);
+
+// [coop]knockout=1: a player who would die is knocked out instead while
+// another player is still up, can't be hurt while out, and wakes up by
+// themselves or when healed. Off by default (Fallout's rules).
+bool coop_knockout_enabled();
+
+// The [coop]knockout setting (MULTIPLAYER, MORE, KNOCKOUT).
+bool coop_knockout_setting();
+void coop_set_knockout(bool on);
+
+// Turns lethal `*damage` to the player `critter` into a knockout (see
+// above); damage to a knocked out player becomes 0.
+void coop_knockout_check(Object* critter, int* damage, int* flags);
+
+// Call after `critter` was healed: a knocked out player wakes up.
+void coop_knockout_healed(Object* critter);
 
 // [coop] turn_time in milliseconds; 0 means no limit.
 unsigned int coop_turn_time_limit();

@@ -761,13 +761,17 @@ static void coop_menu_resolution()
     }
 }
 
-// MORE: ONE PC, the outline colors and the screen size.
+// MORE: ONE PC, the outline colors, the screen size and KNOCKOUT (a player
+// who would die is knocked out instead while the other is up; player 1's
+// choice counts). Saved.
 static int coop_menu_more()
 {
     for (;;) {
-        const char* labels[] = { "ONE PC", "OUTLINES", "RESOLUTION", "BACK" };
-        const int keys[] = { KEY_LOWERCASE_O, KEY_LOWERCASE_C, KEY_LOWERCASE_R, KEY_LOWERCASE_B };
-        int choice = main_menu_choose(labels, keys, 4);
+        char knockout[32];
+        snprintf(knockout, sizeof(knockout), "KNOCKOUT: %s", coop_knockout_setting() ? "ON" : "OFF");
+        const char* labels[] = { "ONE PC", "OUTLINES", "RESOLUTION", knockout, "BACK" };
+        const int keys[] = { KEY_LOWERCASE_O, KEY_LOWERCASE_C, KEY_LOWERCASE_R, KEY_LOWERCASE_K, KEY_LOWERCASE_B };
+        int choice = main_menu_choose(labels, keys, 5);
         if (choice == 0) {
             return coop_menu_one_pc();
         }
@@ -775,6 +779,14 @@ static int coop_menu_more()
             coop_menu_outlines();
         } else if (choice == 2) {
             coop_menu_resolution();
+        } else if (choice == 3) {
+            coop_set_knockout(!coop_knockout_setting());
+            config_set_value(&game_config, COOP_CONFIG_KEY, COOP_CONFIG_KNOCKOUT_KEY, coop_knockout_setting() ? 1 : 0);
+            gconfig_save();
+            if (coop_knockout_setting()) {
+                const char* lines[] = { "A player who would die is", "knocked out instead while the", "other is still up. Heal them", "(Stimpak, First Aid) to wake", "them. Player 1's setting counts." };
+                coop_menu_message("KNOCKOUT", lines, 5);
+            }
         } else {
             return -1;
         }

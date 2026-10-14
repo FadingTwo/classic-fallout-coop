@@ -1,8 +1,12 @@
 #include "game/coop_host.h"
 
+#include <stdlib.h>
 #include <string.h>
 
+#include <algorithm>
+
 #include <string>
+#include <vector>
 
 #include "game/combat.h"
 #include "game/coop.h"
@@ -14,6 +18,7 @@
 #include "game/gmouse.h"
 #include "game/gsound.h"
 #include "game/intface.h"
+#include "game/map.h"
 #include "game/object.h"
 #include "game/protinst.h"
 #include "game/tile.h"
@@ -45,6 +50,9 @@ static void coop_host_feed_input();
 static void coop_host_swap_view(CoopView* view, Object* current, Object* incoming);
 static void coop_host_player2_turn();
 static void coop_host_update_status();
+static void coop_host_marker_place(int index);
+static void coop_host_marker_draw();
+static void coop_host_marker_restore();
 
 static bool coop_host_on = false;
 
@@ -234,6 +242,10 @@ bool coop_host_chat_key(int keyCode)
 
     std::string& text = coop_host_chat_text[index];
     if (!coop_host_chat_typing[index]) {
+        if (keyCode == KEY_LOWERCASE_G || keyCode == KEY_UPPERCASE_G) {
+            coop_host_marker_place(index);
+            return true;
+        }
         if (keyCode != KEY_LOWERCASE_T && keyCode != KEY_UPPERCASE_T) {
             return false;
         }
@@ -288,6 +300,130 @@ static void coop_host_update_status()
 
 static bool coop_host_banner_shown = false;
 
+// Markers: a player presses G to point at the spot under their mouse for
+// the other player. It blinks on both screens for a few seconds.
+#define COOP_HOST_MARKER_MS 5000
+
+static int coop_host_marker_tile = -1;
+static int coop_host_marker_elevation = 0;
+static unsigned int coop_host_marker_start = 0;
+
+// Where the marker is drawn into gSdlSurface: the pixels it covers, put
+// back right after the frame is shown or sent.
+static SDL_Rect coop_host_marker_rect;
+static std::vector<unsigned char> coop_host_marker_saved;
+static bool coop_host_marker_drawn = false;
+
+// The texture still shows the last marker until this is blitted over it.
+static SDL_Rect coop_host_marker_shown;
+static bool coop_host_marker_on_texture = false;
+
+static void coop_host_marker_line(int x0, int y0, int x1, int y1, unsigned char color)
+{
+    int steps = std::max(abs(x1 - x0), abs(y1 - y0));
+    for (int step = 0; step <= steps; step++) {
+        int x = steps == 0 ? x0 : x0 + (x1 - x0) * step / steps;
+        int y = steps == 0 ? y0 : y0 + (y1 - y0) * step / steps;
+        for (int dy = 0; dy < 2; dy++) {
+            int px = x;
+            int py = y + dy;
+            if (px >= coop_host_marker_rect.x && px < coop_host_marker_rect.x + coop_host_marker_rect.w
+                && py >= coop_host_marker_rect.y && py < coop_host_marker_rect.y + coop_host_marker_rect.h) {
+                ((unsigned char*)gSdlSurface->pixels)[py * gSdlSurface->pitch + px] = color;
+            }
+        }
+    }
+}
+
+// Draws the marker into gSdlSurface for the view that is current now.
+static void coop_host_marker_draw()
+{
+    if (coop_host_marker_tile == -1 || gSdlSurface == NULL) {
+        return;
+    }
+
+    unsigned int age = elapsed_time(coop_host_marker_start);
+    if (age > COOP_HOST_MARKER_MS) {
+        coop_host_marker_tile = -1;
+        return;
+    }
+
+    if (coop_host_marker_elevation != map_elevation || (age / 250) % 2 != 0) {
+        return;
+    }
+
+    int x;
+    int y;
+    tile_coord(coop_host_marker_tile, &x, &y, coop_host_marker_elevation);
+    int centerX = x + 16;
+    int centerY = y + 8;
+
+    SDL_Rect rect = { centerX - 20, centerY - 40, 40, 52 };
+    SDL_Rect screen = { 0, 0, gSdlSurface->w, gSdlSurface->h };
+    if (!SDL_IntersectRect(&rect, &screen, &coop_host_marker_rect)) {
+        return;
+    }
+
+    coop_host_marker_saved.resize(coop_host_marker_rect.w * coop_host_marker_rect.h);
+    for (int row = 0; row < coop_host_marker_rect.h; row++) {
+        memcpy(coop_host_marker_saved.data() + row * coop_host_marker_rect.w,
+            (unsigned char*)gSdlSurface->pixels + (coop_host_marker_rect.y + row) * gSdlSurface->pitch + coop_host_marker_rect.x,
+            coop_host_marker_rect.w);
+    }
+    coop_host_marker_drawn = true;
+
+    // A hex outline on the spot and an arrow pointing down at it.
+    unsigned char color = colorTable[32736];
+    coop_host_marker_line(centerX - 16, centerY, centerX, centerY - 8, color);
+    coop_host_marker_line(centerX, centerY - 8, centerX + 16, centerY, color);
+    coop_host_marker_line(centerX + 16, centerY, centerX, centerY + 8, color);
+    coop_host_marker_line(centerX, centerY + 8, centerX - 16, centerY, color);
+    coop_host_marker_line(centerX - 8, centerY - 34, centerX, centerY - 14, color);
+    coop_host_marker_line(centerX + 8, centerY - 34, centerX, centerY - 14, color);
+    coop_host_marker_line(centerX - 1, centerY - 36, centerX - 1, centerY - 16, color);
+}
+
+static void coop_host_marker_restore()
+{
+    if (!coop_host_marker_drawn) {
+        return;
+    }
+
+    for (int row = 0; row < coop_host_marker_rect.h; row++) {
+        memcpy((unsigned char*)gSdlSurface->pixels + (coop_host_marker_rect.y + row) * gSdlSurface->pitch + coop_host_marker_rect.x,
+            coop_host_marker_saved.data() + row * coop_host_marker_rect.w,
+            coop_host_marker_rect.w);
+    }
+    coop_host_marker_drawn = false;
+}
+
+// Player `index` points at the spot under their mouse.
+static void coop_host_marker_place(int index)
+{
+    int x;
+    int y;
+    if (index == 0 || coop_host_in_player2_turn) {
+        mouse_get_position(&x, &y);
+    } else {
+        // Player 2 watching player 1's screen.
+        x = coop_host_other_view.mouse.x;
+        y = coop_host_other_view.mouse.y;
+    }
+
+    int tile = tile_num(x, y, map_elevation, false);
+    if (tile == -1) {
+        return;
+    }
+
+    coop_host_marker_tile = tile;
+    coop_host_marker_elevation = map_elevation;
+    coop_host_marker_start = get_time();
+
+    std::string message = std::string(coop_player(index)->name) + ": look here!";
+    display_print((char*)message.c_str());
+    debug_printf("COOP HOST: marker at tile %d by player %d\n", tile, index + 1);
+}
+
 static void coop_host_draw_banner(const char* text)
 {
     int width = gSdlSurface->w;
@@ -318,6 +454,23 @@ static void coop_host_present()
 {
     bool freeRoam = coop_host_free_roam_present;
     coop_host_free_roam_present = false;
+
+    // The marker: last frame's off the texture, this frame's on it (and in
+    // the shared frame), and gSdlSurface clean again before anything else
+    // draws there.
+    if (coop_host_marker_on_texture) {
+        SDL_BlitSurface(gSdlSurface, &coop_host_marker_shown, gSdlTextureSurface, &coop_host_marker_shown);
+        coop_host_marker_on_texture = false;
+    }
+    coop_host_marker_draw();
+    if (coop_host_marker_drawn) {
+        coop_host_marker_shown = coop_host_marker_rect;
+        SDL_BlitSurface(gSdlSurface, &coop_host_marker_shown, gSdlTextureSurface, &coop_host_marker_shown);
+        coop_host_marker_on_texture = true;
+    }
+    struct MarkerRestore {
+        ~MarkerRestore() { coop_host_marker_restore(); }
+    } markerRestore;
 
     // Shared frames at most ~30 per second: map loading presents after
     // every few KB read, and encoding each would slow loading down a lot.
@@ -429,7 +582,9 @@ static void coop_host_player2_turn()
         intface_update_items(false);
         intface_redraw();
         coop_host_update_status();
+        coop_host_marker_draw();
         coop_net_send_current_screen();
+        coop_host_marker_restore();
     }
 
     coop_set_viewer(NULL);

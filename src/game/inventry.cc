@@ -48,6 +48,11 @@
 
 namespace fallout {
 
+// CE: co-op: the loot screen between two players (see inven_give_container):
+// like stealing (their equipped items stay out of it) but with no skill
+// checks, experience or getting caught.
+static bool gIsCoopGive = false;
+
 #define INVENTORY_WINDOW_X 80
 #define INVENTORY_WINDOW_Y 0
 
@@ -4021,7 +4026,7 @@ int loot_container(Object* a1, Object* a2)
     item_move_all(a1a, a2);
     obj_erase_object(a1a, NULL);
 
-    if (gIsSteal) {
+    if (gIsSteal && !gIsCoopGive) {
         if (!isCaughtStealing) {
             if (stealingXp > 0) {
                 if (!isPartyMember(a2)) {
@@ -4047,7 +4052,7 @@ int loot_container(Object* a1, Object* a2)
     // NOTE: Uninline.
     inven_exit();
 
-    if (gIsSteal) {
+    if (gIsSteal && !gIsCoopGive) {
         if (isCaughtStealing) {
             if (gStealCount > 0) {
                 if (obj_sid(a2, &sid) != -1) {
@@ -4066,6 +4071,28 @@ int loot_container(Object* a1, Object* a2)
 }
 
 // 0x467658
+// CE: co-op: `a1` and `a2` are both players; they give each other items.
+int inven_give_container(Object* a1, Object* a2)
+{
+    if (a1 == a2) {
+        return -1;
+    }
+
+    gIsSteal = 1;
+    gIsCoopGive = true;
+    gStealCount = 0;
+    gStealSize = 0;
+
+    int rc = loot_container(a1, a2);
+
+    gIsSteal = 0;
+    gIsCoopGive = false;
+    gStealCount = 0;
+    gStealSize = 0;
+
+    return rc;
+}
+
 int inven_steal_container(Object* a1, Object* a2)
 {
     if (a1 == a2) {
@@ -4175,7 +4202,7 @@ int move_inventory(Object* a1, int a2, Object* a3, bool a4)
             }
 
             if (quantityToMove != -1) {
-                if (gIsSteal) {
+                if (gIsSteal && !gIsCoopGive) {
                     if (skill_check_stealing(inven_dude, a3, a1, true) == 0) {
                         rc = 1;
                     }
@@ -4204,7 +4231,7 @@ int move_inventory(Object* a1, int a2, Object* a3, bool a4)
             }
 
             if (quantityToMove != -1) {
-                if (gIsSteal) {
+                if (gIsSteal && !gIsCoopGive) {
                     if (skill_check_stealing(inven_dude, a3, a1, false) == 0) {
                         rc = 1;
                     }

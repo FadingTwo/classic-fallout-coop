@@ -1,4 +1,5 @@
 #include "game/coop.h"
+#include "game/queue.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -85,6 +86,7 @@ static bool coop_enabled = false;
 static bool coop_selftest_on = false;
 
 static unsigned int coop_turn_time_ms = 0;
+static bool coop_knockout_on = false;
 static int coop_outline_for[COOP_MAX_PLAYERS][2];
 
 static CoopTurnHook* coop_turn_hook = NULL;
@@ -109,6 +111,10 @@ void coop_init()
         coop_turn_time_ms = (unsigned int)value * 1000;
     }
 
+    // (Read also when co-op is turned on later, from the menu.)
+    coop_knockout_on = config_get_value(&game_config, COOP_CONFIG_KEY, COOP_CONFIG_KNOCKOUT_KEY, &value)
+        && value != 0;
+
     int outlines[2];
     coop_outline_colors_from_config(outlines);
     for (int index = 0; index < COOP_MAX_PLAYERS; index++) {
@@ -116,7 +122,7 @@ void coop_init()
     }
 
     if (coop_enabled) {
-        debug_printf("\nCOOP: enabled (selftest: %d, turn time: %u ms)\n", coop_selftest_on, coop_turn_time_ms);
+        debug_printf("\nCOOP: enabled (selftest: %d, turn time: %u ms, knockout: %d)\n", coop_selftest_on, coop_turn_time_ms, coop_knockout_on);
     }
 
     if (coop_selftest_on) {
@@ -536,6 +542,72 @@ bool coop_any_player_has(int results)
     }
 
     return false;
+}
+
+bool coop_knockout_setting()
+{
+    return coop_knockout_on;
+}
+
+void coop_set_knockout(bool on)
+{
+    coop_knockout_on = on;
+}
+
+bool coop_knockout_enabled()
+{
+    return coop_knockout_on && coop_players_count > 1;
+}
+
+void coop_knockout_check(Object* critter, int* damage, int* flags)
+{
+    if (!coop_knockout_enabled() || critter == NULL || coop_player_of(critter) == NULL) {
+        return;
+    }
+
+    if ((critter->data.critter.combat.results & DAM_KNOCKED_OUT) != 0) {
+        *damage = 0;
+        *flags &= ~DAM_DEAD;
+        return;
+    }
+
+    if (*damage <= 0 || critter_get_hits(critter) - *damage > 0) {
+        return;
+    }
+
+    // Only while someone is still up to help.
+    bool partnerUp = false;
+    for (int index = 0; index < coop_players_count; index++) {
+        Object* other = coop_players[index].obj;
+        if (other != NULL && other != critter && (other->flags & OBJECT_HIDDEN) == 0
+            && (other->data.critter.combat.results & (DAM_DEAD | DAM_KNOCKED_OUT)) == 0
+            && critter_get_hits(other) > 0) {
+            partnerUp = true;
+        }
+    }
+    if (!partnerUp) {
+        return;
+    }
+
+    *damage = critter_get_hits(critter) - 1;
+    *flags &= ~DAM_DEAD;
+    *flags |= DAM_KNOCKED_OUT;
+    debug_printf("\nCOOP: %s knocked out instead of killed\n", critter_name(critter));
+}
+
+void coop_knockout_healed(Object* critter)
+{
+    if (!coop_knockout_enabled() || critter == NULL || coop_player_of(critter) == NULL) {
+        return;
+    }
+
+    if ((critter->data.critter.combat.results & DAM_KNOCKED_OUT) == 0 || critter_get_hits(critter) <= 1) {
+        return;
+    }
+
+    queue_remove_this(critter, EVENT_TYPE_KNOCKOUT);
+    critter_wake_up(critter, NULL);
+    debug_printf("\nCOOP: %s woke up after healing\n", critter_name(critter));
 }
 
 bool coop_turn_time_expired(unsigned int turnStart)

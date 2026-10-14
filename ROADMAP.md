@@ -5,10 +5,9 @@ dates: each step starts when the one before it works well.
 
 ## 1. Fallout 1 (available now)
 
-Two-player co-op for the whole game: LAN, online and one PC.
-Next up are improvements, such as a marker to point things out to the other
-player, being knocked out instead of game over, and giving items to each
-other. See the [ideas](https://github.com/FadingTwo/fallout1-coop/issues?q=is%3Aissue+is%3Aopen+label%3Aenhancement)
+Two-player co-op for the whole game: LAN, online and one PC. Since 1.7
+also a marker to point things out (G), giving each other items, and an
+optional knockout instead of game over. More ideas are in the [ideas](https://github.com/FadingTwo/fallout1-coop/issues?q=is%3Aissue+is%3Aopen+label%3Aenhancement)
 and add a 👍 to the ones you want.
 
 ## 2. Fallout 2 (next)

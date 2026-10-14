@@ -24,8 +24,18 @@ verified byte for byte against upstream, see "Tests").
 - Player 2 trades directly: walking up to a merchant opens the barter
   screen.
 - In combat each player plays their own turn. `turn_time` limits a turn.
-- If either player dies, the game is lost.
+- If either player dies, the game is lost. With KNOCKOUT on (MORE menu,
+  or `knockout=1`; player 1's setting counts) a player who would die is
+  knocked out instead while the other is still up: they can't be hurt
+  while out and wake up by themselves or when healed (Stimpak, First
+  Aid, Doctor). The last player standing dies as usual.
 - Press T to chat (over the network). Enter sends, Esc cancels.
+- Press G to mark the spot under your mouse for the other player; it
+  blinks on both screens for five seconds.
+- Click the other player (or talk to them) to give each other items in
+  the loot screen; what they wear or hold stays out of it.
+- With two players, messages name the player ("Max Stone was hit")
+  instead of saying "you", since both read them.
 - If player 2 leaves, their character waits out of sight and comes back
   next to player 1 when they join again.
 - When a player is in a menu (inventory, character screen, Pip-Boy,
@@ -51,8 +61,9 @@ verified byte for byte against upstream, see "Tests").
      code. Your screen then shows the game from player 1's computer; F10
      leaves.
    - **MORE**: ONE PC (both players on one computer; press F9 in the
-     game), OUTLINES (the players' outline colors on your screen) and
-     RESOLUTION (the screen size, used from the next start).
+     game), OUTLINES (the players' outline colors on your screen),
+     RESOLUTION (the screen size, used from the next start) and KNOCKOUT
+     (knocked out instead of game over, see above).
    - **UPDATE**: looks for a newer version on the co-op server and, if
      you say INSTALL, downloads it, checks it, replaces the game's files
      and starts the game again.
