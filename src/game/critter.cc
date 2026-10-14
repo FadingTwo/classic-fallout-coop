@@ -297,9 +297,13 @@ int critter_adjust_poison(Object* critter, int amount)
 {
     MessageListItem messageListItem;
 
-    if (critter != obj_dude) {
+    // CE: co-op: any player can be poisoned (in their scope, so the poison
+    // event and messages are theirs), not only the one active now.
+    PlayerState* player = coop_player_of(critter);
+    if (critter != obj_dude && player == NULL) {
         return -1;
     }
+    ActivePlayerScope scope(player != NULL ? player : coop_active_player());
 
     if (amount > 0) {
         // Take poison resistance into account.
@@ -308,7 +312,9 @@ int critter_adjust_poison(Object* critter, int amount)
 
     critter->data.critter.poison += amount;
     if (critter->data.critter.poison > 0) {
-        queue_clear_type(EVENT_TYPE_POISON, NULL);
+        // CE: only this player's poison event (was all of them; only the
+        // dude ever had one before co-op).
+        queue_remove_this(critter, EVENT_TYPE_POISON);
         queue_add(10 * (505 - 5 * critter->data.critter.poison), obj_dude, NULL, EVENT_TYPE_POISON);
 
         // You have been poisoned!
@@ -363,9 +369,13 @@ int critter_adjust_rads(Object* obj, int amount)
     MessageListItem messageListItem;
     Proto* proto;
 
-    if (obj != obj_dude) {
+    // CE: co-op: any player gets their rads (in their scope), not only the
+    // one active now.
+    PlayerState* player = coop_player_of(obj);
+    if (obj != obj_dude && player == NULL) {
         return -1;
     }
+    ActivePlayerScope scope(player != NULL ? player : coop_active_player());
 
     proto_ptr(obj_dude->pid, &proto);
 

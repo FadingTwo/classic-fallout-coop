@@ -95,6 +95,7 @@ static int coop_autotest_join(AutotestNewGameProc* newGame);
 static int coop_autotest_looks(AutotestNewGameProc* newGame);
 static int coop_autotest_barter(AutotestNewGameProc* newGame);
 static int coop_autotest_give(AutotestNewGameProc* newGame);
+static int coop_autotest_poison(AutotestNewGameProc* newGame);
 static int coop_autotest_knockout(AutotestNewGameProc* newGame);
 static int coop_autotest_net_host(AutotestNewGameProc* newGame);
 static int coop_autotest_net_client(AutotestNewGameProc* newGame);
@@ -136,6 +137,7 @@ void coop_autotest_register()
     autotest_add_script("coop", coop_autotest_players);
     autotest_add_script("coop_travel", coop_autotest_travel);
     autotest_add_script("coop_rads", coop_autotest_rads);
+    autotest_add_script("coop_poison", coop_autotest_poison);
     autotest_add_script("coop_interact", coop_autotest_interact);
     autotest_add_script("map_time", coop_autotest_map_time);
     autotest_add_script("pack", coop_autotest_pack);
@@ -1348,6 +1350,58 @@ static int coop_autotest_knockout(AutotestNewGameProc* newGame)
     if ((p1obj->data.critter.combat.results & DAM_KNOCKED_OUT) == 0
         || (p2obj->data.critter.combat.results & DAM_DEAD) == 0) {
         autotest_fail("the last player up did not die");
+    }
+
+    return 0;
+}
+
+// Player 2 is poisoned and gets rads while player 1 is the active player
+// (an enemy's poison, a script's rads): it lands on player 2, the poison
+// ticks and wears off for them, and player 1's own poison is left alone.
+static int coop_autotest_poison(AutotestNewGameProc* newGame)
+{
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    PlayerState* p2 = coop_add_player("premade\\stealth.gcd");
+    if (p2 == NULL) {
+        autotest_fail("coop_add_player failed");
+        return -1;
+    }
+
+    Object* p1obj = coop_player(0)->obj;
+    Object* p2obj = p2->obj;
+
+    critter_adjust_poison(p1obj, 6);
+    critter_adjust_poison(p2obj, 12);
+    critter_adjust_rads(p2obj, 40);
+    int p1Poison = critter_get_poison(p1obj);
+    int p2Poison = critter_get_poison(p2obj);
+    int p2Hp = critter_get_hits(p2obj);
+    autotest_log("after: player 1 poison %d, player 2 poison %d, rads %d", p1Poison, p2Poison, critter_get_rads(p2obj));
+    if (p2Poison <= 0 || critter_get_rads(p2obj) <= 0) {
+        autotest_fail("player 2 got no poison or rads");
+    }
+    if (obj_dude != p1obj) {
+        autotest_fail("player 1 is no longer active");
+    }
+
+    // A few game hours: the poison does damage and wears off, for each.
+    for (int step = 0; step < 60; step++) {
+        inc_game_time_in_seconds(60);
+        queue_process();
+    }
+    autotest_log("later: player 1 poison %d, player 2 poison %d (hp %d -> %d)", critter_get_poison(p1obj),
+        critter_get_poison(p2obj), p2Hp, critter_get_hits(p2obj));
+    if (critter_get_poison(p2obj) >= p2Poison || critter_get_hits(p2obj) >= p2Hp) {
+        autotest_fail("player 2's poison did not work");
+    }
+    if (critter_get_poison(p1obj) >= p1Poison) {
+        autotest_fail("player 1's poison stopped (the other player's cleared it)");
+    }
+    if (obj_dude != p1obj || coop_active_player() != coop_player(0)) {
+        autotest_fail("the wrong player is active afterwards");
     }
 
     return 0;

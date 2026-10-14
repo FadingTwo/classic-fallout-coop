@@ -1,6 +1,7 @@
 #include "game/queue.h"
 
 #include "game/actions.h"
+#include "game/coop.h"
 #include "game/critter.h"
 #include "game/display.h"
 #include "game/game.h"
@@ -336,7 +337,19 @@ int queue_process()
         queue = queueListNode->next;
 
         EventTypeDescription* eventTypeDescription = &(q_func[queueListNode->type]);
-        v1 = eventTypeDescription->handlerProc(queueListNode->owner, queueListNode->data);
+        {
+            // CE: co-op: a player's event (poison, withdrawal, sneaking, an
+            // item they carry) runs in their scope, so it acts on them and
+            // not on whoever is active. Single player: always the dude.
+            Object* owner = queueListNode->owner;
+            if (owner != NULL && PID_TYPE(owner->pid) != OBJ_TYPE_CRITTER) {
+                Object* carrier = obj_top_environment(owner);
+                owner = carrier != NULL ? carrier : owner;
+            }
+            PlayerState* player = owner != NULL ? coop_player_of(owner) : NULL;
+            ActivePlayerScope scope(player != NULL ? player : coop_active_player());
+            v1 = eventTypeDescription->handlerProc(queueListNode->owner, queueListNode->data);
+        }
 
         if (eventTypeDescription->freeProc != NULL) {
             eventTypeDescription->freeProc(queueListNode->data);
