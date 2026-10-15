@@ -250,7 +250,7 @@ bool coop_update_install(const std::string& packagePath, std::string* error)
         return false;
     }
 
-    // Packages hold one top folder (fallout-coop-<version>-<system>).
+    // Packages hold one top folder (classic-fallout-coop-<version>-<system>).
     fs::path source = work;
     int entries = 0;
     fs::path only;

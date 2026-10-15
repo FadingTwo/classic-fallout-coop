@@ -395,7 +395,7 @@ static std::string coop_menu_url_file(const std::string& url)
     if (query != std::string::npos) {
         name = name.substr(0, query);
     }
-    return name.empty() ? "fallout-coop-update.zip" : name;
+    return name.empty() ? "classic-fallout-coop-update.zip" : name;
 }
 
 // Where downloads and reports go: next to the game.
@@ -597,7 +597,7 @@ static int coop_menu_report()
     char timestamp[32];
     strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", localtime(&now));
 
-    std::string report = "Fallout CE co-op bug report\n";
+    std::string report = "Classic Fallout Co-op bug report\n";
     report += std::string("Version: ") + COOP_VERSION + "\n";
     report += std::string("Platform: ") + SDL_GetPlatform() + "\n";
     report += std::string("Time: ") + timestamp + "\n";

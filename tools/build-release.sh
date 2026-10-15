@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Builds release packages into <out dir> (default ../dist):
 #
-#   fallout-coop-<version>-linux.tar.gz    (needs SDL2 on the system)
-#   fallout-coop-<version>-windows.zip     (self-contained)
+#   classic-fallout-coop-<version>-linux.tar.gz    (needs SDL2 on the system)
+#   classic-fallout-coop-<version>-windows.zip     (self-contained)
 #   latest.txt                             (for tools/coop_server.py)
 #
 #   tools/build-release.sh [out dir] [server url]
@@ -51,7 +51,7 @@ package() {
     cp "$repo/third_party/fonts/OFL.txt" "$dir/OFL-NotoSansMono.txt"
 }
 
-name="fallout-coop-$version"
+name="classic-fallout-coop-$version"
 
 package "$work/$name-linux" "$work/linux/fallout-ce"
 strip "$work/$name-linux/fallout-ce"
@@ -70,7 +70,7 @@ objcopy --strip-debug "$work/$name-windows/fallout-ce.exe"
 
 {
     echo "version=$version"
-    echo "notes=Fallout co-op $version"
+    echo "notes=Classic Fallout Co-op $version"
     if [ -n "$server" ]; then
         echo "url_linux=$server/fallout-coop/$name-linux.tar.gz"
         echo "url_windows=$server/fallout-coop/$name-windows.zip"

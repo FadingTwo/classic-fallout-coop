@@ -46,7 +46,7 @@ static int title_color;
 static const char* credits_coop_lines[] = {
     "",
     "",
-    "@FALLOUT CO-OP",
+    "@CLASSIC FALLOUT CO-OP",
     "",
     "#Built on Fallout Community Edition",
     "by Alexander Batalov",

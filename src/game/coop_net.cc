@@ -855,7 +855,7 @@ static void coop_host_handle(const CoopMessage& message)
             debug_printf("COOP: player 2 outlines: %s, %s\n", coop_outline_color_name(outlines[0]), coop_outline_color_name(outlines[1]));
 
             if (!reader.ok() || magic != COOP_NET_MAGIC) {
-                coop_host_welcome(false, "Not a Fallout co-op client.");
+                coop_host_welcome(false, "Not a Classic Fallout Co-op client.");
                 coop_client.failed = true;
             } else if (protocol != COOP_NET_PROTOCOL_VERSION) {
                 coop_host_welcome(false, "Different co-op version.");

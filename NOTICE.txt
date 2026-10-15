@@ -1,4 +1,4 @@
-Fallout Co-op
+Classic Fallout Co-op
 
 This is a modified version of Fallout Community Edition
 (https://github.com/alexbatalov/fallout1-ce) by Alexander Batalov,

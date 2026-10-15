@@ -1,4 +1,4 @@
-# Fallout Co-op
+# Classic Fallout Co-op
 
 Play Fallout with a friend. This is a fan-made two-player co-op mod for
 Fallout 1, built on [Fallout Community Edition](https://github.com/alexbatalov/fallout1-ce).
@@ -24,7 +24,7 @@ joining, one-PC play, updates and bug reports.
 ## Install
 
 Download the package for your system under
-[Releases](https://github.com/FadingTwo/fallout1-coop/releases), or build
+[Releases](https://github.com/FadingTwo/classic-fallout-coop/releases), or build
 it yourself (see the end of this page).
 
 Unpack it into a folder of its own (not into the Fallout folder) and run it:
@@ -56,7 +56,7 @@ For more about the engine itself (other platforms, `fallout.cfg`,
 - [CONTRIBUTING.md](CONTRIBUTING.md)
 - [ROADMAP.md](ROADMAP.md): Fallout 1 now, then Fallout 2, then big Fallout 2
   mods (Sonora, Nevada, Olympus 2077)
-- [Ideas](https://github.com/FadingTwo/fallout1-coop/issues?q=is%3Aissue+is%3Aopen+label%3Aenhancement):
+- [Ideas](https://github.com/FadingTwo/classic-fallout-coop/issues?q=is%3Aissue+is%3Aopen+label%3Aenhancement):
   what could come next; comment or add a 👍 to the ones you want
 
 Build with `cmake -B build && cmake --build build` (needs SDL2), or build
