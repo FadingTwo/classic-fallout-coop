@@ -101,6 +101,8 @@ static bool coop_selftest_on = false;
 
 static unsigned int coop_turn_time_ms = 0;
 static bool coop_knockout_on = false;
+static bool coop_talk_on = true;
+static PlayerState* coop_dialog_talker = NULL;
 static int coop_outline_for[COOP_MAX_PLAYERS][2];
 
 static CoopTurnHook* coop_turn_hook = NULL;
@@ -128,6 +130,8 @@ void coop_init()
     // (Read also when co-op is turned on later, from the menu.)
     coop_knockout_on = config_get_value(&game_config, COOP_CONFIG_KEY, COOP_CONFIG_KNOCKOUT_KEY, &value)
         && value != 0;
+    coop_talk_on = !config_get_value(&game_config, COOP_CONFIG_KEY, COOP_CONFIG_TALK_KEY, &value)
+        || value != 0;
 
     int outlines[2];
     coop_outline_colors_from_config(outlines);
@@ -556,6 +560,26 @@ bool coop_any_player_has(int results)
     }
 
     return false;
+}
+
+bool coop_talk_setting()
+{
+    return coop_talk_on;
+}
+
+void coop_set_talk(bool on)
+{
+    coop_talk_on = on;
+}
+
+PlayerState* coop_dialog_player()
+{
+    return coop_dialog_talker != NULL ? coop_dialog_talker : coop_player(0);
+}
+
+void coop_set_dialog_player(PlayerState* player)
+{
+    coop_dialog_talker = player;
 }
 
 bool coop_knockout_setting()

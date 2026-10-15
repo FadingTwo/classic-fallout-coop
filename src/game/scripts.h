@@ -167,6 +167,7 @@ void scripts_request_worldmap();
 int scripts_request_elevator(int elevator);
 int scripts_request_explosion(int tile, int elevation, int minDamage, int maxDamage);
 void scripts_request_dialog(Object* a1);
+void scripts_request_dialog_by(Object* speaker, Object* obj);
 void scripts_request_endgame_slideshow();
 int scripts_request_loot_container(Object* a1, Object* a2);
 int scripts_request_steal_container(Object* a1, Object* a2);

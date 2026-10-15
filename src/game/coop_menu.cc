@@ -809,17 +809,19 @@ static void coop_menu_resolution()
     }
 }
 
-// MORE: ONE PC, the outline colors, the screen size and KNOCKOUT (a player
-// who would die is knocked out instead while the other is up; player 1's
-// choice counts). Saved.
+// MORE: ONE PC, the outline colors, the screen size, KNOCKOUT (a player
+// who would die is knocked out instead while the other is up) and TALK
+// (who starts conversations). Player 1's choices count. Saved.
 static int coop_menu_more()
 {
     for (;;) {
         char knockout[32];
         snprintf(knockout, sizeof(knockout), "KNOCKOUT: %s", coop_knockout_setting() ? "ON" : "OFF");
-        const char* labels[] = { "ONE PC", "OUTLINES", "RESOLUTION", knockout, "BACK" };
-        const int keys[] = { KEY_LOWERCASE_O, KEY_LOWERCASE_C, KEY_LOWERCASE_R, KEY_LOWERCASE_K, KEY_LOWERCASE_B };
-        int choice = main_menu_choose(labels, keys, 5);
+        char talk[32];
+        snprintf(talk, sizeof(talk), "TALK: %s", coop_talk_setting() ? "BOTH" : "PLAYER 1");
+        const char* labels[] = { "ONE PC", "OUTLINES", "RESOLUTION", knockout, talk, "BACK" };
+        const int keys[] = { KEY_LOWERCASE_O, KEY_LOWERCASE_C, KEY_LOWERCASE_R, KEY_LOWERCASE_K, KEY_LOWERCASE_T, KEY_LOWERCASE_B };
+        int choice = main_menu_choose(labels, keys, 6);
         if (choice == 0) {
             return coop_menu_one_pc();
         }
@@ -835,6 +837,13 @@ static int coop_menu_more()
                 const char* lines[] = { "A player who would die is", "knocked out instead while the", "other is still up. Heal them", "(Stimpak, First Aid) to wake", "them. Player 1's setting counts." };
                 coop_menu_message("KNOCKOUT", lines, 5);
             }
+        } else if (choice == 4) {
+            coop_set_talk(!coop_talk_setting());
+            config_set_value(&game_config, COOP_CONFIG_KEY, COOP_CONFIG_TALK_KEY, coop_talk_setting() ? 1 : 0);
+            gconfig_save();
+            const char* both[] = { "Both players start", "conversations, each as their", "own character. Player 1's", "setting counts." };
+            const char* one[] = { "Only player 1 talks to people.", "Player 2 trades directly", "with merchants. Player 1's", "setting counts." };
+            coop_menu_message("TALK", coop_talk_setting() ? both : one, 4);
         } else {
             return -1;
         }

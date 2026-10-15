@@ -58,7 +58,7 @@ while true; do
 
     seed=$((RANDOM * 32768 + RANDOM))
     RANDOM=$seed
-    what=$(pick tour tour session session combat)
+    what=$(pick tour tour session session combat talk)
     how=$(pick direct relay relay slow asan wine)
     hostRes=$(pick "${sizes[@]}")
     clientRes=$(pick "${sizes[@]}")
@@ -72,7 +72,8 @@ while true; do
     [ $heapCheck = 1 ] && extra+=(COOP_HEAP_CHECK=1)
     case $how in
     asan)
-        if [ -z "${SOAK_ASAN_BIN:-}" ]; then how=direct; else hostBin=$SOAK_ASAN_BIN; clientBin=$SOAK_ASAN_BIN; fi
+        # Engine heap blocks from malloc, so ASAN sees writes past them.
+        if [ -z "${SOAK_ASAN_BIN:-}" ]; then how=direct; else hostBin=$SOAK_ASAN_BIN; clientBin=$SOAK_ASAN_BIN; extra+=(COOP_HEAP_SYSTEM=1); fi
         ;;
     wine)
         if [ -z "${SOAK_WINE:-}" ]; then how=direct; else clientBin=$SOAK_WINE; fi
@@ -92,6 +93,7 @@ while true; do
     tour) scripts=(net_tour_host net_tour_client); extra+=(COOP_AUTOTEST_TOUR=ALL COOP_AUTOTEST_ROUGH=1 HOST_EXTRA="[coop]turn_time=10") ;;
     session) scripts=(net_session_host net_session_client); extra+=(HOST_EXTRA="[coop]turn_time=3") ;;
     combat) scripts=(net_combat_host net_combat_client); extra+=(COOP_AUTOTEST_COMBAT_CHAT=1) ;;
+    talk) scripts=(net_talk_host net_talk_client) ;;
     esac
 
     dir="$out/run-$n"

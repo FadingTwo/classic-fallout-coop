@@ -19,10 +19,15 @@ verified byte for byte against upstream, see "Tests").
 - Karma and reputation are shared. Drug addictions are per player.
 - Perks/traits that affect everyone (Jinxed, Friendly Foe) apply if
   either player has them.
-- Only player 1 talks to people, travels (world map, exit grids), rests
-  and saves. Player 2 follows map and elevation changes automatically.
-- Player 2 trades directly: walking up to a merchant opens the barter
-  screen.
+- Both players talk to people, each as their own character: player 2's
+  conversations use player 2's Speech, Intelligence and items, and play
+  on player 2's screen while player 1 waits. People who start a
+  conversation themselves talk to player 1. With TALK set to PLAYER 1
+  (MORE menu, or `talk=0`; player 1's setting counts) only player 1
+  talks, and player 2 walking up to a merchant opens the barter screen
+  directly.
+- Only player 1 travels (world map, exit grids), rests and saves. Player
+  2 follows map and elevation changes automatically.
 - In combat each player plays their own turn. `turn_time` limits a turn.
 - If either player dies, the game is lost. With KNOCKOUT on (MORE menu,
   or `knockout=1`; player 1's setting counts) a player who would die is
@@ -174,6 +179,8 @@ options and UPDATE need one.
 | `colorblind` | Older setting: `1` means white and orange when the two above are absent. |
 | `server` | Co-op server for UPDATE, REPORT BUG and the server browser, `http://host:port`. |
 | `relay` | Relay for online games: `http://host/fallout-coop/relay` or `host:port`. Default: the server's host, port 80. |
+| `knockout` | `1`: a player who would die is knocked out instead while the other is up (MORE, KNOCKOUT). |
+| `talk` | `0`: only player 1 talks to people (MORE, TALK). Default `1`: both do. |
 | `selftest` | Developer: `1` enables the F8 self-test of player switching. |
 
 ## Saves

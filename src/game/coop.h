@@ -19,7 +19,7 @@ namespace fallout {
 #define COOP_MAX_PLAYERS 2
 
 // Co-op version, for the update check and bug reports.
-#define COOP_VERSION "1.10"
+#define COOP_VERSION "1.11"
 
 // fallout.cfg [coop] server=http://host[:port] - where UPDATE looks for
 // new versions (<server>/fallout-coop/latest.txt) and REPORT BUG sends
@@ -48,6 +48,7 @@ namespace fallout {
 // Seconds a player may spend on a combat turn; 0 means no limit.
 #define COOP_CONFIG_TURN_TIME_KEY "turn_time"
 #define COOP_CONFIG_KNOCKOUT_KEY "knockout"
+#define COOP_CONFIG_TALK_KEY "talk"
 
 // Everything that makes a player character "theirs". Before co-op this lived
 // in per-module globals implicitly owned by `obj_dude`; those modules now
@@ -247,6 +248,18 @@ void coop_knockout_check(Object* critter, int* damage, int* flags);
 
 // Call after `critter` was healed: a knocked out player wakes up.
 void coop_knockout_healed(Object* critter);
+
+// [coop]talk (on unless set to 0; MULTIPLAYER, MORE, TALK): every player
+// starts conversations, as their own character (their Speech, their
+// items). Off, only player 1 talks and the others trade directly with
+// merchants. Player 1's setting counts.
+bool coop_talk_setting();
+void coop_set_talk(bool on);
+
+// The player a starting conversation belongs to: player 1, unless another
+// player started it (set around gdialog_enter()).
+PlayerState* coop_dialog_player();
+void coop_set_dialog_player(PlayerState* player);
 
 // [coop] turn_time in milliseconds; 0 means no limit.
 unsigned int coop_turn_time_limit();

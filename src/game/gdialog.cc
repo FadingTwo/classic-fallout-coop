@@ -595,9 +595,9 @@ bool dialog_active()
 // 0x43DE28
 void gdialog_enter(Object* target, int a2)
 {
-    // Co-op: dialog is always player 1's, even when another player's
-    // action made a script start it.
-    ActivePlayerScope scope(coop_player(0));
+    // Co-op: dialog is player 1's, even when another player's action made a
+    // script start it, unless another player started it by talking.
+    ActivePlayerScope scope(coop_dialog_player());
 
     gdDialogWentOff = false;
 

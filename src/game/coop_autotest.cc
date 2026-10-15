@@ -95,11 +95,15 @@ static int coop_autotest_join(AutotestNewGameProc* newGame);
 static int coop_autotest_looks(AutotestNewGameProc* newGame);
 static int coop_autotest_barter(AutotestNewGameProc* newGame);
 static int coop_autotest_give(AutotestNewGameProc* newGame);
+static int coop_autotest_talk(AutotestNewGameProc* newGame);
+static void coop_autotest_answer_dialogs();
 static int coop_autotest_poison(AutotestNewGameProc* newGame);
 static int coop_autotest_character(AutotestNewGameProc* newGame);
 static int coop_autotest_gamepad(AutotestNewGameProc* newGame);
 static int coop_autotest_net_character_host(AutotestNewGameProc* newGame);
 static int coop_autotest_net_character_client(AutotestNewGameProc* newGame);
+static int coop_autotest_net_talk_host(AutotestNewGameProc* newGame);
+static int coop_autotest_net_talk_client(AutotestNewGameProc* newGame);
 static bool coop_autotest_relay_host_setup();
 static void coop_autotest_relay_client_setup();
 static bool coop_autotest_session_frames(unsigned int ms, bool untilConnected, bool untilDisconnected);
@@ -156,6 +160,7 @@ void coop_autotest_register()
     autotest_add_script("coop_looks", coop_autotest_looks);
     autotest_add_script("coop_barter", coop_autotest_barter);
     autotest_add_script("coop_give", coop_autotest_give);
+    autotest_add_script("coop_talk", coop_autotest_talk);
     autotest_add_script("coop_knockout", coop_autotest_knockout);
     autotest_add_script("net_host", coop_autotest_net_host);
     autotest_add_script("net_client", coop_autotest_net_client);
@@ -175,6 +180,8 @@ void coop_autotest_register()
     autotest_add_script("net_session_client", coop_autotest_net_session_client);
     autotest_add_script("net_character_host", coop_autotest_net_character_host);
     autotest_add_script("net_character_client", coop_autotest_net_character_client);
+    autotest_add_script("net_talk_host", coop_autotest_net_talk_host);
+    autotest_add_script("net_talk_client", coop_autotest_net_talk_client);
     autotest_add_script("net_ending_host", coop_autotest_net_ending_host);
     autotest_add_script("movie", coop_autotest_movie);
     autotest_add_script("menu_more", coop_autotest_menu_more);
@@ -1180,6 +1187,120 @@ static int coop_autotest_barter(AutotestNewGameProc* newGame)
     return 0;
 }
 
+// Seen from inside coop_autotest_talk's conversation.
+static Object* coop_autotest_talk_dude = NULL;
+static PlayerState* coop_autotest_talk_viewer_check = NULL;
+static bool coop_autotest_talk_seen = false;
+
+static void coop_autotest_talk_check()
+{
+    coop_autotest_talk_seen = dialog_active();
+    coop_autotest_talk_dude = obj_dude;
+    autotest_log("in the conversation: dialog %d, dude %s, active player %d", dialog_active() ? 1 : 0,
+        obj_dude != NULL ? critter_name(obj_dude) : "-", coop_active_player() == coop_player(1) ? 2 : 1);
+    dump_screen();
+}
+
+// Player 2 starts a conversation (COOP_AUTOTEST_TALK, on COOP_AUTOTEST_MAP;
+// default Aradesh in Shady Sands): it runs as player 2's character, and
+// afterwards player 1 is back in charge.
+static int coop_autotest_talk(AutotestNewGameProc* newGame)
+{
+    if (!coop_is_enabled()) {
+        autotest_fail("needs [coop]enabled=1");
+        return -1;
+    }
+
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    PlayerState* p2 = coop_add_player("premade\\stealth.gcd");
+    if (p2 == NULL) {
+        autotest_fail("coop_add_player failed");
+        return -1;
+    }
+
+    const char* mapName = getenv("COOP_AUTOTEST_MAP") != NULL ? getenv("COOP_AUTOTEST_MAP") : "SHADYW.MAP";
+    const char* name = getenv("COOP_AUTOTEST_TALK") != NULL ? getenv("COOP_AUTOTEST_TALK") : "Aradesh";
+    MapTransition transition;
+    memset(&transition, 0, sizeof(transition));
+    transition.map = map_match_map_name(mapName);
+    transition.tile = -1;
+    if (transition.map == -1) {
+        autotest_fail("no map %s", mapName);
+        return -1;
+    }
+    map_leave_map(&transition);
+    map_check_state();
+
+    Object* npc = NULL;
+    for (Object* obj = obj_find_first(); obj != NULL; obj = obj_find_next()) {
+        if (PID_TYPE(obj->pid) == OBJ_TYPE_CRITTER && strstr(critter_name(obj), name) != NULL) {
+            npc = obj;
+            break;
+        }
+    }
+    if (npc == NULL) {
+        for (Object* obj = obj_find_first(); obj != NULL; obj = obj_find_next()) {
+            if (PID_TYPE(obj->pid) == OBJ_TYPE_CRITTER) {
+                autotest_log("%s: critter '%s' elev %d", map_data.name, critter_name(obj), obj->elevation);
+            }
+        }
+        autotest_fail("no %s on %s", name, map_data.name);
+        return -1;
+    }
+
+    // Player 2 next to them, player 1 where they are.
+    if (npc->elevation != obj_dude->elevation) {
+        obj_move_to_tile(obj_dude, npc->tile, npc->elevation, NULL);
+        map_set_elevation(npc->elevation);
+    }
+    for (int tile = 0; tile < HEX_GRID_SIZE; tile++) {
+        int distance = tile_dist(tile, npc->tile);
+        if (distance >= 1 && distance <= 2 && obj_blocking_at(NULL, tile, npc->elevation) == NULL
+            && make_path_func(npc, npc->tile, tile, NULL, 0, obj_sight_blocking_at) != 0) {
+            obj_move_to_tile(p2->obj, tile, npc->elevation, NULL);
+            break;
+        }
+    }
+    tile_set_center(p2->obj->tile, TILE_SET_CENTER_REFRESH_WINDOW);
+
+    if (!coop_talk_setting()) {
+        autotest_fail("[coop]talk is off");
+    }
+
+    // Look around once inside, then answer (first option, Escape now and
+    // then) until it ends.
+    inject_wait(30);
+    inject_call(coop_autotest_talk_check);
+    add_bk_process(coop_autotest_answer_dialogs);
+
+    scripts_request_dialog_by(p2->obj, npc);
+    scripts_check_state();
+    remove_bk_process(coop_autotest_answer_dialogs);
+    while (inject_pending()) {
+        inject_update();
+    }
+
+    autotest_log("talked to %s", critter_name(npc));
+    if (!coop_autotest_talk_seen) {
+        autotest_fail("the conversation did not start");
+    } else if (coop_autotest_talk_dude != p2->obj) {
+        autotest_fail("the conversation was not player 2's");
+    }
+    if (obj_dude != coop_player(0)->obj || coop_active_player() != coop_player(0)) {
+        autotest_fail("the conversation left player 2 active");
+    }
+    if (dialog_active()) {
+        autotest_fail("the conversation did not end");
+    }
+
+    tile_refresh_display();
+    dump_screen();
+    return 0;
+}
+
 // How many stimpaks `critter` carries.
 static int coop_autotest_stimpaks(Object* critter)
 {
@@ -1654,6 +1775,123 @@ static int coop_autotest_net_character_client(AutotestNewGameProc* newGame)
     } else {
         autotest_log("kept a copy: %s, level %d", name.c_str(), level);
     }
+    return 0;
+}
+
+// While net_talk_host's conversation runs: whose it is.
+static void coop_autotest_net_talk_watch()
+{
+    if (dialog_active() && !coop_autotest_talk_seen) {
+        coop_autotest_talk_seen = true;
+        coop_autotest_talk_dude = obj_dude;
+        autotest_log("conversation on: dude %s", critter_name(obj_dude));
+    }
+}
+
+// Over the network, player 2 talks to Aradesh in Shady Sands and ends the
+// conversation with their own keys (net_talk_client presses 6, "I'll just
+// be going now", then 1, [Done]); the host never answers for them.
+static int coop_autotest_net_talk_host(AutotestNewGameProc* newGame)
+{
+    if (coop_net_mode() != COOP_NET_HOST) {
+        autotest_fail("needs [coop]mode=host");
+        return -1;
+    }
+
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    // Player 2's character is ready (no character creation over the
+    // network).
+    PlayerState* p2 = coop_add_player("premade\\stealth.gcd");
+    if (p2 == NULL) {
+        autotest_fail("coop_add_player failed");
+        return -1;
+    }
+
+    coop_host_init();
+    if (!coop_host_active() || !coop_autotest_relay_host_setup()) {
+        autotest_fail("cannot host");
+        return -1;
+    }
+
+    if (!coop_autotest_session_frames(30000, true, false)) {
+        autotest_fail("no client joined");
+        return -1;
+    }
+
+    MapTransition transition;
+    memset(&transition, 0, sizeof(transition));
+    transition.map = map_match_map_name("SHADYW.MAP");
+    transition.tile = -1;
+    map_leave_map(&transition);
+    map_check_state();
+
+    Object* npc = NULL;
+    for (Object* obj = obj_find_first(); obj != NULL; obj = obj_find_next()) {
+        if (PID_TYPE(obj->pid) == OBJ_TYPE_CRITTER && strstr(critter_name(obj), "Aradesh") != NULL) {
+            npc = obj;
+            break;
+        }
+    }
+    if (npc == NULL) {
+        autotest_fail("no Aradesh");
+        return -1;
+    }
+    for (int tile = 0; tile < HEX_GRID_SIZE; tile++) {
+        int distance = tile_dist(tile, npc->tile);
+        if (distance >= 1 && distance <= 2 && obj_blocking_at(NULL, tile, npc->elevation) == NULL
+            && make_path_func(npc, npc->tile, tile, NULL, 0, obj_sight_blocking_at) != 0) {
+            obj_move_to_tile(p2->obj, tile, npc->elevation, NULL);
+            break;
+        }
+    }
+    coop_autotest_session_frames(2000, false, false);
+
+    add_bk_process(coop_autotest_net_talk_watch);
+    unsigned int start = get_time();
+    scripts_request_dialog_by(p2->obj, npc);
+    scripts_check_state();
+    remove_bk_process(coop_autotest_net_talk_watch);
+    autotest_log("player 2's conversation took %u ms", elapsed_time(start));
+
+    if (!coop_autotest_talk_seen) {
+        autotest_fail("the conversation did not start");
+    } else if (coop_autotest_talk_dude != p2->obj) {
+        autotest_fail("the conversation was not player 2's");
+    }
+    if (obj_dude != coop_player(0)->obj || coop_active_player() != coop_player(0)) {
+        autotest_fail("the conversation left player 2 active");
+    }
+
+    // (No more frames: Aradesh has Seth show them out, to the world map.)
+    dump_screen();
+    coop_host_exit();
+    return 0;
+}
+
+static void coop_autotest_net_talk_keys()
+{
+    static int presses = 0;
+    inject_wait(90);
+    inject_key(++presses % 2 == 1 ? KEY_6 : KEY_1); // "I'll just be going now", then [Done]
+    inject_call(coop_autotest_screenshot);
+    inject_call(coop_autotest_net_talk_keys);
+}
+
+static int coop_autotest_net_talk_client(AutotestNewGameProc* newGame)
+{
+    if (coop_net_mode() != COOP_NET_CLIENT) {
+        autotest_fail("needs [coop]mode=client");
+        return -1;
+    }
+
+    coop_autotest_relay_client_setup();
+    inject_wait(300);
+    inject_call(coop_autotest_net_talk_keys);
+    int rc = coop_net_client_run();
+    autotest_log("client finished with %d", rc);
     return 0;
 }
 
@@ -3954,12 +4192,25 @@ static int coop_autotest_menu_more(AutotestNewGameProc* newGame)
     inject_key(KEY_RETURN);
     inject_wait(20);
     inject_call(coop_autotest_screenshot); // KNOCKOUT: ON
-    coop_autotest_click_menu_slot(4); // BACK
+    coop_autotest_click_menu_slot(4); // TALK: BOTH -> PLAYER 1
+    inject_wait(20);
+    inject_call(coop_autotest_screenshot); // what it does
+    inject_key(KEY_RETURN);
+    inject_wait(20);
+    coop_autotest_click_menu_slot(5); // BACK
     inject_wait(10);
     coop_autotest_click_menu_slot(5); // BACK
 
     bool knockoutBefore = coop_knockout_setting();
+    bool talkBefore = coop_talk_setting();
     coop_menu_run();
+
+    int talkSaved = 1;
+    config_get_value(&game_config, COOP_CONFIG_KEY, COOP_CONFIG_TALK_KEY, &talkSaved);
+    autotest_log("TALK: %d before, %d after, saved %d", talkBefore ? 1 : 0, coop_talk_setting() ? 1 : 0, talkSaved);
+    if (coop_talk_setting() == talkBefore || talkSaved != (coop_talk_setting() ? 1 : 0)) {
+        autotest_fail("TALK did not change and save the setting");
+    }
 
     int knockoutSaved = 0;
     config_get_value(&game_config, COOP_CONFIG_KEY, COOP_CONFIG_KNOCKOUT_KEY, &knockoutSaved);

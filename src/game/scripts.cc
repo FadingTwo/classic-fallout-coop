@@ -175,6 +175,9 @@ static unsigned char water_movie_play_flag = 0;
 // 0x664F1C
 static ScriptState scriptState;
 
+// CE: co-op: the player who asked for the requested dialog, or NULL.
+static Object* scripts_dialog_speaker = NULL;
+
 // 0x662FD4
 MessageList script_dialog_msgs[SCRIPT_DIALOG_MESSAGE_LIST_CAPACITY];
 
@@ -954,7 +957,19 @@ int scripts_check_state()
 
     if ((scriptState.requests & SCRIPT_REQUEST_DIALOG) != 0) {
         scriptState.requests &= ~SCRIPT_REQUEST_DIALOG;
-        gdialog_enter(scriptState.dialogTarget, 0);
+        // CE: co-op: another player's conversation is theirs, on their
+        // screen (see scripts_request_dialog_by).
+        PlayerState* talker = coop_player_of(scripts_dialog_speaker);
+        scripts_dialog_speaker = NULL;
+        if (talker != NULL && talker != coop_player(0)) {
+            coop_set_viewer(talker);
+            coop_set_dialog_player(talker);
+            gdialog_enter(scriptState.dialogTarget, 0);
+            coop_set_dialog_player(NULL);
+            coop_set_viewer(NULL);
+        } else {
+            gdialog_enter(scriptState.dialogTarget, 0);
+        }
     }
 
     if ((scriptState.requests & SCRIPT_REQUEST_ENDGAME) != 0) {
@@ -1128,6 +1143,14 @@ void scripts_request_dialog(Object* obj)
 {
     scriptState.dialogTarget = obj;
     scriptState.requests |= SCRIPT_REQUEST_DIALOG;
+    scripts_dialog_speaker = NULL;
+}
+
+// CE: co-op: a conversation `speaker` (a player) started with `obj`.
+void scripts_request_dialog_by(Object* speaker, Object* obj)
+{
+    scripts_request_dialog(obj);
+    scripts_dialog_speaker = speaker;
 }
 
 // 0x492884

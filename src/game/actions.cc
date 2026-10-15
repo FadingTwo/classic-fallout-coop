@@ -1814,9 +1814,9 @@ int action_talk_to(Object* a1, Object* a2)
         return -1;
     }
 
-    // Co-op: only player 1 talks; the others may trade with merchants, and
-    // all players with each other.
-    if (!coop_primary_is_active() && !coop_can_barter_with(a2) && coop_player_of(a2) == NULL) {
+    // Co-op: with [coop]talk off only player 1 talks; the others may trade
+    // with merchants, and all players with each other.
+    if (!coop_primary_is_active() && !coop_talk_setting() && !coop_can_barter_with(a2) && coop_player_of(a2) == NULL) {
         char message[] = "Only player 1 can talk to people.";
         display_print(message);
         return -1;
@@ -1877,10 +1877,15 @@ static int talk_to(Object* a1, Object* a2)
         return 0;
     }
 
-    // Co-op: conversations are player 1's; other players trade directly.
+    // Co-op: other players talk as themselves ([coop]talk), else trade
+    // directly.
     PlayerState* player = coop_player_of(a1);
     if (player != NULL && player != coop_player(0)) {
-        coop_request_barter(player, a2);
+        if (coop_talk_setting()) {
+            scripts_request_dialog_by(a1, a2);
+        } else {
+            coop_request_barter(player, a2);
+        }
         return 0;
     }
 

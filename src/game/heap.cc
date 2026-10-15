@@ -264,6 +264,19 @@ static void heap_check(Heap* heap, const char* after)
     }
 }
 
+// CE (testing): with COOP_HEAP_SYSTEM set, every block comes from the system
+// (its own malloc) instead of the heap, so AddressSanitizer catches code that
+// writes past a block, with its stack.
+static int heap_system_enabled = -1;
+
+static bool heap_system_only()
+{
+    if (heap_system_enabled == -1) {
+        heap_system_enabled = getenv("COOP_HEAP_SYSTEM") != NULL ? 1 : 0;
+    }
+    return heap_system_enabled == 1;
+}
+
 // 0x44A0B0
 static bool heap_allocate_unchecked(Heap* heap, int* handleIndexPtr, int size, int a4)
 {
@@ -882,6 +895,10 @@ static bool heap_find_free_block(Heap* heap, int size, void** blockPtr, int a4)
     HeapBlockHeader* blockHeader;
     HeapBlockFooter* blockFooter;
 
+    if (heap_system_only() && a4 == 0) {
+        goto system;
+    }
+
     if (!heap_build_free_list(heap)) {
         goto system;
     }
@@ -1111,12 +1128,14 @@ system:
 
     if (1) {
         char stats[512];
-        if (heap_stats(heap, stats, sizeof(stats))) {
+        if (!heap_system_only() && heap_stats(heap, stats, sizeof(stats))) {
             debug_printf("\n%s\n", stats);
         }
 
         if (a4 == 0) {
-            debug_printf("Allocating block from system memory...\n");
+            if (!heap_system_only()) {
+                debug_printf("Allocating block from system memory...\n");
+            }
             unsigned char* block = (unsigned char*)mem_malloc(size + HEAP_BLOCK_OVERHEAD_SIZE);
             if (block == NULL) {
                 debug_printf("fatal error: internal_malloc() failed in heap_find_free_block()!\n");
