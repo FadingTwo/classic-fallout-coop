@@ -26,6 +26,10 @@ verified byte for byte against upstream, see "Tests").
   (MORE menu, or `talk=0`; player 1's setting counts) only player 1
   talks, and player 2 walking up to a merchant opens the barter screen
   directly.
+- Quests are shared (one game): whoever takes a quest or turns it in, it
+  counts for both. Rewards from player 2's conversations (items, caps) go
+  to player 2. A conversation that sends you somewhere, starts a fight or
+  adds a companion does so for the whole group.
 - Only player 1 travels (world map, exit grids), rests and saves. Player
   2 follows map and elevation changes automatically.
 - In combat each player plays their own turn. `turn_time` limits a turn.

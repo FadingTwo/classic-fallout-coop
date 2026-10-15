@@ -54,8 +54,6 @@ static char* defaultMangler(char* fname);
 static void refreshSoundBuffers(Sound* sound);
 static int preloadBuffers(Sound* sound);
 static int addSoundData(Sound* sound, unsigned char* buf, int size);
-static Uint32 doTimerEvent(Uint32 interval, void* param);
-static void removeTimedEvent(SDL_TimerID* timerId);
 static void removeFadeSound(FadeSound* fadeSound);
 static void fadeSounds();
 static int internalSoundFade(Sound* sound, int duration, int targetVolume, int a4);
@@ -160,6 +158,11 @@ static bool driverInit;
 static Sound* soundMgrList;
 
 static SDL_TimerID gFadeSoundsTimerId = 0;
+
+// CE: fades step on the main thread, in soundUpdate(), every 40 ms (the
+// original used a timer thread, which deleted faded sounds - and unlocked
+// their sound cache blocks - while the main thread was using that cache).
+static Uint32 gFadeSoundsLastStep = 0;
 
 // 0x499C80
 static void* defaultMalloc(size_t size)
@@ -461,9 +464,7 @@ void soundClose()
         soundMgrList = next;
     }
 
-    if (gFadeSoundsTimerId != -1) {
-        removeTimedEvent(&gFadeSoundsTimerId);
-    }
+    gFadeSoundsTimerId = 0;
 
     while (fadeFreeList != NULL) {
         FadeSound* next = fadeFreeList->next;
@@ -1362,28 +1363,6 @@ int soundSetMasterVolume(int volume)
     return soundErrorno;
 }
 
-// 0x49BB48
-static Uint32 doTimerEvent(Uint32 interval, void* param)
-{
-    void (*fn)();
-
-    if (param != NULL) {
-        fn = (void (*)())param;
-        fn();
-    }
-
-    return 40;
-}
-
-// 0x49BB94
-static void removeTimedEvent(SDL_TimerID* timerId)
-{
-    if (*timerId != 0) {
-        SDL_RemoveTimer(*timerId);
-        *timerId = 0;
-    }
-}
-
 // 0x49BBB4
 int soundGetPosition(Sound* sound)
 {
@@ -1538,8 +1517,7 @@ static void fadeSounds()
     }
 
     if (fadeHead == NULL) {
-        // NOTE: Uninline.
-        removeTimedEvent(&gFadeSoundsTimerId);
+        gFadeSoundsTimerId = 0;
     }
 }
 
@@ -1626,11 +1604,9 @@ static int internalSoundFade(Sound* sound, int duration, int targetVolume, int a
         return soundErrorno;
     }
 
-    gFadeSoundsTimerId = SDL_AddTimer(40, doTimerEvent, (void*)fadeSounds);
-    if (gFadeSoundsTimerId == 0) {
-        soundErrorno = SOUND_UNKNOWN_ERROR;
-        return soundErrorno;
-    }
+    // CE: stepped by soundUpdate() (see gFadeSoundsLastStep).
+    gFadeSoundsTimerId = 1;
+    gFadeSoundsLastStep = SDL_GetTicks();
 
     soundErrorno = SOUND_NO_ERROR;
     return soundErrorno;
@@ -1653,6 +1629,15 @@ void soundFlushAllSounds()
 // 0x49C15C
 void soundUpdate()
 {
+    // CE: the fades' 40 ms steps since the last update (a few at most).
+    for (int step = 0; step < 5 && gFadeSoundsTimerId != 0 && SDL_GetTicks() - gFadeSoundsLastStep >= 40; step++) {
+        gFadeSoundsLastStep += 40;
+        fadeSounds();
+    }
+    if (gFadeSoundsTimerId != 0 && SDL_GetTicks() - gFadeSoundsLastStep >= 40) {
+        gFadeSoundsLastStep = SDL_GetTicks();
+    }
+
     Sound* curr = soundMgrList;
     while (curr != NULL) {
         // Sound can be deallocated in `soundContinue`.

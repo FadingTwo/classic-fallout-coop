@@ -33,6 +33,7 @@
 #include "game/gconfig.h"
 #include "game/endgame.h"
 #include "game/gdialog.h"
+#include "plib/db/db.h"
 #include "game/gmovie.h"
 #include "game/gsound.h"
 #include "game/scripts.h"
@@ -96,6 +97,7 @@ static int coop_autotest_looks(AutotestNewGameProc* newGame);
 static int coop_autotest_barter(AutotestNewGameProc* newGame);
 static int coop_autotest_give(AutotestNewGameProc* newGame);
 static int coop_autotest_talk(AutotestNewGameProc* newGame);
+static int coop_autotest_db_sfx(AutotestNewGameProc* newGame);
 static void coop_autotest_answer_dialogs();
 static int coop_autotest_poison(AutotestNewGameProc* newGame);
 static int coop_autotest_character(AutotestNewGameProc* newGame);
@@ -161,6 +163,7 @@ void coop_autotest_register()
     autotest_add_script("coop_barter", coop_autotest_barter);
     autotest_add_script("coop_give", coop_autotest_give);
     autotest_add_script("coop_talk", coop_autotest_talk);
+    autotest_add_script("db_sfx", coop_autotest_db_sfx);
     autotest_add_script("coop_knockout", coop_autotest_knockout);
     autotest_add_script("net_host", coop_autotest_net_host);
     autotest_add_script("net_client", coop_autotest_net_client);
@@ -1298,6 +1301,46 @@ static int coop_autotest_talk(AutotestNewGameProc* newGame)
 
     tile_refresh_display();
     dump_screen();
+    return 0;
+}
+
+// Every sound effect (COOP_AUTOTEST_DB_PATTERN, default the SFX folder) read
+// from the game's data into a buffer of its listed size: nothing may be
+// written past it (soak runs found a sound cache block damaged on load).
+static int coop_autotest_db_sfx(AutotestNewGameProc* newGame)
+{
+    const char* pattern = getenv("COOP_AUTOTEST_DB_PATTERN") != NULL ? getenv("COOP_AUTOTEST_DB_PATTERN") : "sound\\sfx\\*.acm";
+    char** names;
+    int count = db_get_file_list(pattern, &names, NULL, 0);
+    const int guard = 4096;
+    int bad = 0;
+    for (int index = 0; index < count; index++) {
+        char path[COMPAT_MAX_PATH];
+        snprintf(path, sizeof(path), "%.*s%s", (int)(strrchr(pattern, '\\') - pattern + 1), pattern, names[index]);
+        dir_entry de;
+        if (db_dir_entry(path, &de) != 0) {
+            autotest_log("%s: no entry", path);
+            continue;
+        }
+        std::vector<unsigned char> buffer(de.length + guard, 0xA5);
+        db_read_to_buf(path, buffer.data());
+        int over = 0;
+        for (int at = guard - 1; at >= 0; at--) {
+            if (buffer[de.length + at] != 0xA5) {
+                over = at + 1;
+                break;
+            }
+        }
+        if (over != 0) {
+            bad++;
+            autotest_log("%s: %d bytes (flags %x, packed %d) and %d bytes written past them", path, de.length, de.flags, de.field_C, over);
+        }
+    }
+    autotest_log("%d files read, %d wrote past their size", count, bad);
+    if (bad != 0) {
+        autotest_fail("files are written past their size");
+    }
+    db_free_file_list(&names, NULL);
     return 0;
 }
 

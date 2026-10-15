@@ -224,9 +224,20 @@ bool heap_exit(Heap* heap)
 // (abort), so the code that wrote past its block is close on the stack.
 static int heap_check_enabled = -1;
 
+#if defined(__linux__)
+// AddressSanitizer's symbolized stack, when built with it.
+extern "C" void __sanitizer_print_stack_trace() __attribute__((weak));
+#endif
+
 // Stops the game with where it was (testing only).
 static void heap_check_fail()
 {
+#if defined(__linux__)
+    if (__sanitizer_print_stack_trace != NULL) {
+        __sanitizer_print_stack_trace();
+        abort();
+    }
+#endif
 #if defined(__GLIBC__)
     void* frames[32];
     int count = backtrace(frames, 32);
