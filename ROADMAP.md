@@ -20,7 +20,14 @@ The engine is nearly the same, so most of this mod (network, server,
 menus, tests) can carry over. The same setup screen will find Fallout 1 or
 Fallout 2 and let you pick.
 
-## 3. Big Fallout 2 mods (later)
+## 3. Up to four players, and a harder mode (later)
+
+Room for four players in Fallout 1 and Fallout 2, each with their own view
+like player 2 today, and an optional harder setting where enemies get
+tougher with more players. It comes after Fallout 2, so it is built once
+for both games.
+
+## 4. Big Fallout 2 mods (later)
 
 Total conversions made by other teams on the Fallout 2 engine:
 
