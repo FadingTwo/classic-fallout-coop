@@ -34,6 +34,11 @@ verified byte for byte against upstream, see "Tests").
   blinks on both screens for five seconds.
 - Click the other player (or talk to them) to give each other items in
   the loot screen; what they wear or hold stays out of it.
+- Player 2 keeps a copy of their character (`coop-character.dat` next
+  to their game), updated when player 1 saves. Joining a game that has no
+  player 2 yet, they can pick it instead of making a new character, to
+  take it into a friend's game or carry on if the host is gone. Item
+  scripts don't come along (they belong to the game they came from).
 - With two players, messages name the player ("Max Stone was hit")
   instead of saying "you", since both read them.
 - If player 2 leaves, their character waits out of sight and comes back

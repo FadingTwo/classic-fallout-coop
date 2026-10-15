@@ -96,6 +96,12 @@ static int coop_autotest_looks(AutotestNewGameProc* newGame);
 static int coop_autotest_barter(AutotestNewGameProc* newGame);
 static int coop_autotest_give(AutotestNewGameProc* newGame);
 static int coop_autotest_poison(AutotestNewGameProc* newGame);
+static int coop_autotest_character(AutotestNewGameProc* newGame);
+static int coop_autotest_net_character_host(AutotestNewGameProc* newGame);
+static int coop_autotest_net_character_client(AutotestNewGameProc* newGame);
+static bool coop_autotest_relay_host_setup();
+static void coop_autotest_relay_client_setup();
+static bool coop_autotest_session_frames(unsigned int ms, bool untilConnected, bool untilDisconnected);
 static int coop_autotest_knockout(AutotestNewGameProc* newGame);
 static int coop_autotest_net_host(AutotestNewGameProc* newGame);
 static int coop_autotest_net_client(AutotestNewGameProc* newGame);
@@ -138,6 +144,7 @@ void coop_autotest_register()
     autotest_add_script("coop_travel", coop_autotest_travel);
     autotest_add_script("coop_rads", coop_autotest_rads);
     autotest_add_script("coop_poison", coop_autotest_poison);
+    autotest_add_script("coop_character", coop_autotest_character);
     autotest_add_script("coop_interact", coop_autotest_interact);
     autotest_add_script("map_time", coop_autotest_map_time);
     autotest_add_script("pack", coop_autotest_pack);
@@ -164,6 +171,8 @@ void coop_autotest_register()
     autotest_add_script("net_tour_client", coop_autotest_net_tour_client);
     autotest_add_script("net_session_host", coop_autotest_net_session_host);
     autotest_add_script("net_session_client", coop_autotest_net_session_client);
+    autotest_add_script("net_character_host", coop_autotest_net_character_host);
+    autotest_add_script("net_character_client", coop_autotest_net_character_client);
     autotest_add_script("net_ending_host", coop_autotest_net_ending_host);
     autotest_add_script("movie", coop_autotest_movie);
     autotest_add_script("menu_more", coop_autotest_menu_more);
@@ -1239,6 +1248,7 @@ static int coop_autotest_give(AutotestNewGameProc* newGame)
             autotest_fail("no stimpak");
             return -1;
         }
+        obj_disconnect(stimpak, NULL);
         int before = coop_autotest_stimpaks(to);
         int xp = stat_pc_get(PC_STAT_EXPERIENCE);
 
@@ -1404,6 +1414,244 @@ static int coop_autotest_poison(AutotestNewGameProc* newGame)
         autotest_fail("the wrong player is active afterwards");
     }
 
+    return 0;
+}
+
+// What coop_autotest_character compares before and after the round trip.
+struct CoopAutotestCharacter {
+    std::string name;
+    int level;
+    int hp;
+    int maxHp;
+    int strength;
+    int smallGuns;
+    int stimpaks;
+    int armorPid;
+};
+
+static CoopAutotestCharacter coop_autotest_character_now(PlayerState* player)
+{
+    CoopAutotestCharacter c;
+    ActivePlayerScope scope(player);
+    Object* obj = player->obj;
+    c.name = critter_name(obj);
+    c.level = stat_pc_get(PC_STAT_LEVEL);
+    c.hp = critter_get_hits(obj);
+    c.maxHp = stat_level(obj, STAT_MAXIMUM_HIT_POINTS);
+    c.strength = stat_level(obj, STAT_STRENGTH);
+    c.smallGuns = skill_level(obj, SKILL_SMALL_GUNS);
+    c.stimpaks = coop_autotest_stimpaks(obj);
+    Object* armor = inven_worn(obj);
+    c.armorPid = armor != NULL ? armor->pid : -1;
+    return c;
+}
+
+// Player 2's own copy of their character: exported, player 2 gone, then
+// imported again (as when joining another game with it). Everything that
+// makes the character theirs comes back; player 1 is untouched.
+static int coop_autotest_character(AutotestNewGameProc* newGame)
+{
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    PlayerState* p2 = coop_add_player("premade\\stealth.gcd");
+    if (p2 == NULL) {
+        autotest_fail("coop_add_player failed");
+        return -1;
+    }
+
+    const char* armor[] = { "Leather Jacket" };
+    coop_autotest_equip(p2, armor, 1, 0);
+    Object* stimpak;
+    if (obj_pid_new(&stimpak, PROTO_ID_STIMPACK) == 0 && item_add_force(p2->obj, stimpak, 3) == 0) {
+        // (Created on the map; carried now.)
+        obj_disconnect(stimpak, NULL);
+    }
+    {
+        ActivePlayerScope scope(p2);
+        stat_pc_add_experience(3000);
+    }
+    critter_adjust_hits(p2->obj, -5);
+
+    Object* p1obj = coop_player(0)->obj;
+    int p1Hp = critter_get_hits(p1obj);
+    CoopAutotestCharacter before = coop_autotest_character_now(p2);
+
+    std::vector<unsigned char> data;
+    if (!coop_export_player2(&data)) {
+        autotest_fail("export failed");
+        return -1;
+    }
+    std::string name;
+    int level = 0;
+    coop_character_info(data, &name, &level);
+    autotest_log("exported %d bytes: %s, level %d", (int)data.size(), name.c_str(), level);
+    // For net_character_client (COOP_AUTOTEST_CHARACTER_FILE).
+    FILE* copy = fopen("character-copy.dat", "wb");
+    if (copy != NULL) {
+        fwrite(data.data(), 1, data.size(), copy);
+        fclose(copy);
+    }
+    if (name != before.name || level != before.level) {
+        autotest_fail("the copy's name or level is wrong");
+    }
+
+    coop_reset();
+    if (coop_player_count() != 1) {
+        autotest_fail("player 2 is still there");
+        return -1;
+    }
+
+    std::string error;
+    PlayerState* back = coop_import_player2(data, &error);
+    if (back == NULL) {
+        autotest_fail("import failed: %s", error.c_str());
+        return -1;
+    }
+
+    CoopAutotestCharacter after = coop_autotest_character_now(back);
+    autotest_log("before: %s level %d hp %d/%d ST %d small guns %d stimpaks %d armor %x", before.name.c_str(), before.level,
+        before.hp, before.maxHp, before.strength, before.smallGuns, before.stimpaks, before.armorPid);
+    autotest_log("after:  %s level %d hp %d/%d ST %d small guns %d stimpaks %d armor %x", after.name.c_str(), after.level,
+        after.hp, after.maxHp, after.strength, after.smallGuns, after.stimpaks, after.armorPid);
+    if (after.name != before.name || after.level != before.level || after.hp != before.hp || after.maxHp != before.maxHp
+        || after.strength != before.strength || after.smallGuns != before.smallGuns || after.stimpaks != before.stimpaks
+        || after.armorPid != before.armorPid) {
+        autotest_fail("the character changed on the way");
+    }
+    if (back->obj->tile == -1 || back->obj->elevation != p1obj->elevation || obj_dist(back->obj, p1obj) > 5) {
+        autotest_fail("player 2 is not next to player 1");
+    }
+    if (obj_dude != p1obj || critter_get_hits(p1obj) != p1Hp) {
+        autotest_fail("player 1 changed");
+    }
+
+    // The game still saves and loads with the imported player 2.
+    lsgSetQuickSlot(COOP_AUTOTEST_SLOT);
+    if (SaveGame(LOAD_SAVE_MODE_QUICK) != 1) {
+        autotest_fail("save with the imported player 2 failed");
+    }
+    if (LoadGame(LOAD_SAVE_MODE_QUICK) != 1 || coop_player_count() != 2) {
+        autotest_fail("load with the imported player 2 failed");
+    } else {
+        CoopAutotestCharacter loaded = coop_autotest_character_now(coop_player(1));
+        autotest_log("after load: %s level %d stimpaks %d", loaded.name.c_str(), loaded.level, loaded.stimpaks);
+        if (loaded.name != before.name || loaded.level != before.level || loaded.stimpaks != before.stimpaks) {
+            autotest_fail("the imported player 2 changed through save and load");
+        }
+    }
+
+    return 0;
+}
+
+// Player 2 joins a game without a player 2 and brings their own character
+// (COOP_AUTOTEST_CHARACTER_FILE on the client, e.g. coop_character's
+// character-copy.dat): the host uses it instead of character creation and
+// sends a fresh copy back. Paired with net_character_client.
+static int coop_autotest_net_character_host(AutotestNewGameProc* newGame)
+{
+    if (coop_net_mode() != COOP_NET_HOST) {
+        autotest_fail("needs [coop]mode=host");
+        return -1;
+    }
+
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    coop_host_init();
+    if (!coop_host_active() || !coop_autotest_relay_host_setup()) {
+        autotest_fail("cannot host");
+        return -1;
+    }
+
+    if (!coop_autotest_session_frames(30000, true, false)) {
+        autotest_fail("no client joined");
+        return -1;
+    }
+
+    unsigned int start = get_time();
+    while (coop_player_count() < 2 && elapsed_time(start) < 20000) {
+        coop_autotest_session_frames(200, false, false);
+    }
+    if (coop_player_count() < 2) {
+        autotest_fail("player 2 never came");
+        return -1;
+    }
+
+    PlayerState* p2 = coop_player(1);
+    int level;
+    {
+        ActivePlayerScope scope(p2);
+        level = stat_pc_get(PC_STAT_LEVEL);
+    }
+    autotest_log("player 2: %s, level %d", critter_name(p2->obj), level);
+    const char* expected = getenv("COOP_AUTOTEST_CHARACTER_NAME");
+    if (expected != NULL && strcmp(critter_name(p2->obj), expected) != 0) {
+        autotest_fail("player 2 is not the character they brought");
+    }
+
+    // Time for the copy to reach player 2, and a few steps.
+    coop_autotest_session_frames(4000, false, false);
+    dump_screen();
+    coop_host_exit();
+    return 0;
+}
+
+static int coop_autotest_net_character_client(AutotestNewGameProc* newGame)
+{
+    if (coop_net_mode() != COOP_NET_CLIENT) {
+        autotest_fail("needs [coop]mode=client");
+        return -1;
+    }
+
+    coop_autotest_relay_client_setup();
+
+    if (const char* path = getenv("COOP_AUTOTEST_CHARACTER_FILE")) {
+        std::vector<unsigned char> data;
+        FILE* stream = fopen(path, "rb");
+        if (stream != NULL) {
+            unsigned char buffer[4096];
+            size_t read;
+            while ((read = fread(buffer, 1, sizeof(buffer), stream)) > 0) {
+                data.insert(data.end(), buffer, buffer + read);
+            }
+            fclose(stream);
+        }
+        std::string name;
+        int level = 0;
+        if (!coop_character_info(data, &name, &level)) {
+            autotest_fail("no character in %s", path);
+        }
+        autotest_log("bringing %s, level %d", name.c_str(), level);
+        coop_net_set_bring_character(data);
+    }
+    remove(COOP_NET_CHARACTER_FILE);
+
+    inject_wait(200);
+    inject_call(coop_autotest_screenshot);
+    int rc = coop_net_client_run();
+    autotest_log("client finished with %d", rc);
+
+    // The host sent back a copy of the character to keep.
+    std::vector<unsigned char> copy;
+    FILE* stream = fopen(COOP_NET_CHARACTER_FILE, "rb");
+    if (stream != NULL) {
+        unsigned char buffer[4096];
+        size_t read;
+        while ((read = fread(buffer, 1, sizeof(buffer), stream)) > 0) {
+            copy.insert(copy.end(), buffer, buffer + read);
+        }
+        fclose(stream);
+    }
+    std::string name;
+    int level = 0;
+    if (!coop_character_info(copy, &name, &level)) {
+        autotest_fail("no copy of the character was kept");
+    } else {
+        autotest_log("kept a copy: %s, level %d", name.c_str(), level);
+    }
     return 0;
 }
 

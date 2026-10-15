@@ -1,6 +1,9 @@
 #ifndef FALLOUT_GAME_COOP_H_
 #define FALLOUT_GAME_COOP_H_
 
+#include <string>
+#include <vector>
+
 #include "game/critter.h"
 #include "game/intface.h"
 #include "game/object_types.h"
@@ -16,7 +19,7 @@ namespace fallout {
 #define COOP_MAX_PLAYERS 2
 
 // Co-op version, for the update check and bug reports.
-#define COOP_VERSION "1.8"
+#define COOP_VERSION "1.9"
 
 // fallout.cfg [coop] server=http://host[:port] - where UPDATE looks for
 // new versions (<server>/fallout-coop/latest.txt) and REPORT BUG sends
@@ -166,6 +169,20 @@ PlayerState* coop_create_player2();
 // through the character creation screen, later presses switch local
 // control between the players.
 void coop_handle_switch_key();
+
+// Player 2's own copy of their character, to bring into another game:
+// coop_export_player2 makes it (the host sends it to player 2), and
+// coop_import_player2 makes player 2 from one, instead of character
+// creation. Items lose their scripts on the way (script numbers are this
+// game's). coop_character_info reads the name and level from a copy.
+bool coop_export_player2(std::vector<unsigned char>* out);
+PlayerState* coop_import_player2(const std::vector<unsigned char>& data, std::string* error);
+bool coop_character_info(const std::vector<unsigned char>& data, std::string* name, int* level);
+
+// Asks for a fresh copy to be sent to player 2 (after a save); taken by the
+// host once.
+void coop_request_character_copy();
+bool coop_take_character_copy_request();
 
 // "Global" perks and traits (e.g. Friendly Foe, Jinxed) apply when any
 // player has them.

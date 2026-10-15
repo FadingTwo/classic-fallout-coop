@@ -212,6 +212,12 @@ static bool coop_client_ready = false;
 // back between two looks still counts as having left).
 static unsigned int coop_net_joins = 0;
 
+// Player 2's own character: brought by the client (host side), or to bring
+// (client side).
+static bool coop_client_brings_character = false;
+static std::vector<unsigned char> coop_client_character;
+static std::vector<unsigned char> coop_bring_character;
+
 // Testing: a client that doesn't acknowledge frames, like those before 1.5.7.
 static bool coop_net_no_acks = getenv("COOP_NET_NO_ACKS") != NULL;
 // Testing: a client that doesn't take packed frames.
@@ -835,6 +841,10 @@ static void coop_host_handle(const CoopMessage& message)
             unsigned int flags = reader.atEnd() ? 0 : reader.u8();
             coop_client_acks = (flags & 2) != 0;
             coop_client_unpacks = (flags & 4) != 0;
+            // Since 1.9 flag 8: player 2 brings their own character (a
+            // CHARACTER message follows).
+            coop_client_brings_character = (flags & 8) != 0;
+            coop_client_character.clear();
             coop_frames_sent = 0;
             coop_frames_acked = 0;
             coop_frame_sent_at.clear();
@@ -910,10 +920,44 @@ static void coop_host_handle(const CoopMessage& message)
             }
         }
         break;
+    case COOP_NET_MSG_CHARACTER:
+        if (coop_client_brings_character) {
+            coop_client_character = message.payload;
+            debug_printf("\nCOOP NET: player 2 brought their character (%d bytes)\n", (int)message.payload.size());
+        }
+        break;
     case COOP_NET_MSG_BYE:
         coop_client.failed = true;
         break;
     }
+}
+
+bool coop_net_client_brings_character()
+{
+    return coop_client_ready && coop_client_brings_character;
+}
+
+bool coop_net_take_client_character(std::vector<unsigned char>* data)
+{
+    if (coop_client_character.empty()) {
+        return false;
+    }
+    data->swap(coop_client_character);
+    coop_client_character.clear();
+    coop_client_brings_character = false;
+    return true;
+}
+
+void coop_net_send_character(const std::vector<unsigned char>& data)
+{
+    if (coop_client_ready && !data.empty()) {
+        coop_connection_send(&coop_client, COOP_NET_MSG_CHARACTER, data);
+    }
+}
+
+void coop_net_set_bring_character(const std::vector<unsigned char>& data)
+{
+    coop_bring_character = data;
 }
 
 bool coop_net_client_connected()
@@ -1738,12 +1782,17 @@ static bool coop_client_connect(CoopConnection* connection, std::string* error)
     int outlines[2];
     coop_outline_colors_from_config(outlines);
     // Flags: 1 colorblind (1.2), 2 acknowledges frames, 4 packed frames (1.5.7).
-    hello.u8((outlines[0] == 2 && outlines[1] == 3 ? 1 : 0) | (coop_net_no_acks ? 0 : 2) | (coop_net_no_packing ? 0 : 4));
+    // 8: brings their own character (1.9).
+    hello.u8((outlines[0] == 2 && outlines[1] == 3 ? 1 : 0) | (coop_net_no_acks ? 0 : 2) | (coop_net_no_packing ? 0 : 4)
+        | (coop_bring_character.empty() ? 0 : 8));
     hello.u8(outlines[0]);
     hello.u8(outlines[1]);
     hello.u16((unsigned int)screenGetWidth());
     hello.u16((unsigned int)screenGetHeight());
     coop_connection_send(connection, COOP_NET_MSG_HELLO, hello.data);
+    if (!coop_bring_character.empty()) {
+        coop_connection_send(connection, COOP_NET_MSG_CHARACTER, coop_bring_character);
+    }
 
     unsigned int start = get_time();
     while (elapsed_time(start) < COOP_NET_HANDSHAKE_TIMEOUT) {
@@ -2048,6 +2097,20 @@ int coop_net_client_run()
                             gsound_speech_stop();
                             break;
                         }
+                    }
+                }
+                break;
+            case COOP_NET_MSG_CHARACTER:
+                // A copy of our character to keep; the last one stays as a
+                // backup.
+                if (!message.payload.empty()) {
+                    remove(COOP_NET_CHARACTER_FILE ".bak");
+                    rename(COOP_NET_CHARACTER_FILE, COOP_NET_CHARACTER_FILE ".bak");
+                    FILE* stream = fopen(COOP_NET_CHARACTER_FILE, "wb");
+                    if (stream != NULL) {
+                        fwrite(message.payload.data(), 1, message.payload.size(), stream);
+                        fclose(stream);
+                        debug_printf("\nCOOP NET: saved a copy of our character (%d bytes)\n", (int)message.payload.size());
                     }
                 }
                 break;

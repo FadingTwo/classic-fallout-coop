@@ -2,6 +2,7 @@
 #define FALLOUT_GAME_COOP_NET_H_
 
 #include <string>
+#include <vector>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -52,6 +53,11 @@ typedef enum CoopNetMessageType {
     // Host -> client (since 1.5.7, HELLO flag 4): a FRAME, compressed (u32
     // its size, then coop_net_compress data).
     COOP_NET_MSG_FRAME_PACKED = 9,
+    // Either way (since 1.9): player 2's character, as coop_export_player2
+    // makes it. Host -> client: a copy for player 2 to keep. Client -> host
+    // (with HELLO flag 8): player 2 joins with it, if the game has no
+    // player 2 yet.
+    COOP_NET_MSG_CHARACTER = 10,
 } CoopNetMessageType;
 
 typedef enum CoopNetInputKind {
@@ -108,6 +114,20 @@ bool coop_net_client_connected();
 
 // Host: how many times a client has joined so far.
 unsigned int coop_net_client_joins();
+
+// Host: whether player 2 said they bring their own character (HELLO flag
+// 8), and that character once it has arrived (taken once).
+bool coop_net_client_brings_character();
+bool coop_net_take_client_character(std::vector<unsigned char>* data);
+
+// Host: sends player 2 a copy of their character to keep.
+void coop_net_send_character(const std::vector<unsigned char>& data);
+
+// Client: join with this character (empty: make a new one, as before).
+void coop_net_set_bring_character(const std::vector<unsigned char>& data);
+
+// Client: where the copy of player 2's character is kept.
+#define COOP_NET_CHARACTER_FILE "coop-character.dat"
 
 // Host: next input event received from the client, if any.
 bool coop_net_next_input(CoopNetInput* input);

@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <new>
+#include <string>
+#include <vector>
 
 #include "game/art.h"
 #include "game/autotest.h"
@@ -29,10 +31,12 @@
 #include "game/queue.h"
 #include "game/proto.h"
 #include "game/skill.h"
+#include "game/scripts.h"
 #include "game/stat.h"
 #include "game/tile.h"
 #include "game/trait.h"
 #include "plib/color/color.h"
+#include "plib/db/db.h"
 #include "plib/gnw/debug.h"
 #include "plib/gnw/svga.h"
 #include "plib/gnw/input.h"
@@ -45,6 +49,15 @@ namespace fallout {
 // "COOP"
 #define COOP_SAVE_MAGIC 0x434F4F50
 #define COOP_SAVE_VERSION 1
+
+// A copy of player 2's character for player 2 to keep (see
+// coop_export_player2): magic, version, name, level, the player data as in
+// a save, then the character with its inventory.
+#define COOP_CHARACTER_MAGIC 0x43464331
+#define COOP_CHARACTER_VERSION 1
+// (Written through the game's file layer, in its data folder; it is just
+// overwritten the next time.)
+#define COOP_CHARACTER_TEMP "coop-character.tmp"
 
 static const int coop_addiction_gvars[COOP_ADDICTION_COUNT] = {
     GVAR_NUKA_COLA_ADDICT,
@@ -852,6 +865,9 @@ int coop_save(DB_FILE* stream)
         }
     }
 
+    // Player 2 gets a copy of the character as saved.
+    coop_request_character_copy();
+
     return 0;
 }
 
@@ -930,6 +946,223 @@ int coop_load(DB_FILE* stream)
     }
 
     return 0;
+}
+
+// -----------------------------------------------------------------------------
+// A copy of player 2's character that player 2 keeps, to bring into another
+// game (see coop.h).
+
+// Scripts of items are numbers in this game's script list: in another game
+// they would mean something else. They stay out of the copy.
+static void coop_character_scripts(Object* obj, std::vector<int>* saved, bool clear)
+{
+    if (clear) {
+        saved->push_back(obj->sid);
+        obj->sid = -1;
+    } else {
+        obj->sid = (*saved)[0];
+        saved->erase(saved->begin());
+    }
+
+    Inventory* inventory = &(obj->data.inventory);
+    for (int index = 0; index < inventory->length; index++) {
+        coop_character_scripts(inventory->items[index].item, saved, clear);
+    }
+}
+
+static bool coop_character_copy_requested = false;
+
+void coop_request_character_copy()
+{
+    coop_character_copy_requested = true;
+}
+
+bool coop_take_character_copy_request()
+{
+    bool requested = coop_character_copy_requested;
+    coop_character_copy_requested = false;
+    return requested;
+}
+
+bool coop_export_player2(std::vector<unsigned char>* out)
+{
+    out->clear();
+    if (coop_players_count < 2 || coop_players[1].obj == NULL) {
+        return false;
+    }
+
+    coop_sync_base();
+    PlayerState* player = &(coop_players[1]);
+    Object* obj = player->obj;
+
+    DB_FILE* stream = db_fopen(COOP_CHARACTER_TEMP, "wb");
+    if (stream == NULL) {
+        return false;
+    }
+
+    std::vector<int> scripts;
+    coop_character_scripts(obj, &scripts, true);
+    int flags = obj->flags;
+    obj->flags &= ~OBJECT_NO_SAVE;
+
+    bool ok = db_fwriteInt(stream, COOP_CHARACTER_MAGIC) != -1
+        && db_fwriteInt(stream, COOP_CHARACTER_VERSION) != -1
+        && db_fwrite(player->name, DUDE_NAME_MAX_LENGTH, 1, stream) == 1
+        && db_fwriteInt(stream, player->pcStats[PC_STAT_LEVEL]) != -1
+        && coop_write_player(stream, player) != -1
+        && obj_save_obj(stream, obj) != -1;
+
+    obj->flags = flags;
+    coop_character_scripts(obj, &scripts, false);
+    db_fclose(stream);
+
+    if (ok) {
+        stream = db_fopen(COOP_CHARACTER_TEMP, "rb");
+        if (stream == NULL) {
+            ok = false;
+        } else {
+            long length = db_filelength(stream);
+            out->resize(length > 0 ? (size_t)length : 0);
+            ok = length > 0 && db_fread(out->data(), 1, out->size(), stream) == out->size();
+            db_fclose(stream);
+        }
+    }
+
+    if (!ok) {
+        out->clear();
+    }
+    return ok;
+}
+
+bool coop_character_info(const std::vector<unsigned char>& data, std::string* name, int* level)
+{
+    if (data.size() < 12 + DUDE_NAME_MAX_LENGTH) {
+        return false;
+    }
+
+    // The game writes big-endian ints.
+    auto readInt = [&](size_t at) {
+        return (int)((unsigned int)data[at] << 24 | (unsigned int)data[at + 1] << 16 | (unsigned int)data[at + 2] << 8 | (unsigned int)data[at + 3]);
+    };
+    if ((unsigned int)readInt(0) != COOP_CHARACTER_MAGIC || readInt(4) != COOP_CHARACTER_VERSION) {
+        return false;
+    }
+
+    char text[DUDE_NAME_MAX_LENGTH + 1];
+    memcpy(text, data.data() + 8, DUDE_NAME_MAX_LENGTH);
+    text[DUDE_NAME_MAX_LENGTH] = '\0';
+    *name = text;
+    *level = readInt(8 + DUDE_NAME_MAX_LENGTH);
+    return true;
+}
+
+// Gives `obj` and everything it carries new object ids of this game.
+static void coop_character_new_ids(Object* obj)
+{
+    obj->id = new_obj_id();
+    Inventory* inventory = &(obj->data.inventory);
+    for (int index = 0; index < inventory->length; index++) {
+        coop_character_new_ids(inventory->items[index].item);
+    }
+}
+
+PlayerState* coop_import_player2(const std::vector<unsigned char>& data, std::string* error)
+{
+    std::string name;
+    int level;
+    if (!coop_character_info(data, &name, &level)) {
+        *error = "not a character file";
+        return NULL;
+    }
+    if (coop_players_count != 1 || obj_dude == NULL || coop_scope_stack_depth != 0 || isInCombat()) {
+        *error = "player 2 can't join now";
+        return NULL;
+    }
+
+    DB_FILE* stream = db_fopen(COOP_CHARACTER_TEMP, "wb");
+    if (stream == NULL || db_fwrite(data.data(), 1, data.size(), stream) != data.size()) {
+        if (stream != NULL) {
+            db_fclose(stream);
+        }
+        *error = "can't write a temporary file";
+        return NULL;
+    }
+    db_fclose(stream);
+
+    stream = db_fopen(COOP_CHARACTER_TEMP, "rb");
+    if (stream == NULL) {
+        *error = "can't read the temporary file";
+        return NULL;
+    }
+
+    int magic;
+    int version;
+    char fileName[DUDE_NAME_MAX_LENGTH];
+    int fileLevel;
+    PlayerState state;
+    memset(&state, 0, sizeof(state));
+    int pid;
+    int protoFid;
+    CritterProtoData protoData;
+    Object* obj = NULL;
+    bool ok = db_freadInt(stream, &magic) != -1
+        && db_freadInt(stream, &version) != -1
+        && db_fread(fileName, DUDE_NAME_MAX_LENGTH, 1, stream) == 1
+        && db_freadInt(stream, &fileLevel) != -1
+        && coop_read_player(stream, &state, &pid, &protoData, &protoFid) != -1
+        && pid == COOP_PLAYER2_PID
+        && obj_load_obj(stream, &obj, map_elevation, NULL) == 0;
+    db_fclose(stream);
+
+    if (!ok || obj == NULL || obj->pid != COOP_PLAYER2_PID) {
+        *error = "the character file is damaged";
+        return NULL;
+    }
+
+    coop_sync_base();
+    Object* leader = coop_players[0].obj;
+
+    proto_player2_reset();
+    Proto* proto;
+    proto_ptr(pid, &proto);
+    proto->fid = protoFid;
+    critter_copy(&(proto->critter.data), &protoData);
+
+    // A fresh start in this game: new ids, no fight in progress.
+    coop_character_new_ids(obj);
+    obj->sid = -1;
+    obj->flags &= ~(OBJECT_HIDDEN | OBJECT_NO_SAVE);
+    obj->data.critter.combat.results &= ~(DAM_DEAD | DAM_KNOCKED_OUT | DAM_KNOCKED_DOWN | DAM_LOSE_TURN);
+    obj->data.critter.combat.whoHitMe = NULL;
+    obj->data.critter.combat.whoHitMeCid = -1;
+    if (obj_connect(obj, leader->tile, leader->elevation, NULL) == -1) {
+        *error = "can't place the character";
+        return NULL;
+    }
+
+    PlayerState* player = &(coop_players[coop_players_count++]);
+    memcpy(player, &state, sizeof(*player));
+    player->obj = obj;
+    player->inventoryOwner = obj;
+    player->inventoryPid = pid;
+
+    obj->flags |= OBJECT_LIGHT_THRU;
+    obj_set_light(obj, 4, 0x10000, NULL);
+    obj_attempt_placement(obj, leader->tile, leader->elevation, 2);
+    obj_set_rotation(obj, leader->rotation, NULL);
+    if (partyMemberAdd(obj) == -1) {
+        debug_printf("\nCOOP: could not add player 2 to the party\n");
+    }
+
+    {
+        ActivePlayerScope scope(player);
+        stat_recalc_derived(obj);
+    }
+
+    tile_refresh_display();
+    coop_display_message("%s joins the game with their own character (level %d).", player->name, level);
+    debug_printf("\nCOOP: player 2 '%s' (level %d) imported from their character file\n", player->name, level);
+    return player;
 }
 
 // -----------------------------------------------------------------------------

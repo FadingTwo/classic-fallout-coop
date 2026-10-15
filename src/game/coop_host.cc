@@ -50,6 +50,8 @@ static void coop_host_feed_input();
 static void coop_host_swap_view(CoopView* view, Object* current, Object* incoming);
 static void coop_host_player2_turn();
 static void coop_host_update_status();
+static void coop_host_player2_joins();
+static void coop_host_send_character_copy();
 static void coop_host_marker_place(int index);
 static void coop_host_marker_draw();
 static void coop_host_marker_restore();
@@ -601,6 +603,55 @@ static void coop_host_player2_turn()
     intface_redraw();
 }
 
+// Player 2 joins a game without a player 2: with the character they
+// brought (1.9), or else character creation, driven by the client.
+static void coop_host_player2_joins()
+{
+    static unsigned int joinsSeen = 0;
+    static unsigned int joinedAt = 0;
+    if (coop_net_client_joins() != joinsSeen) {
+        joinsSeen = coop_net_client_joins();
+        joinedAt = get_time();
+    }
+
+    if (coop_net_client_brings_character()) {
+        std::vector<unsigned char> data;
+        if (coop_net_take_client_character(&data)) {
+            std::string error;
+            if (coop_import_player2(data, &error) != NULL) {
+                coop_request_character_copy();
+                return;
+            }
+            debug_printf("\nCOOP HOST: player 2's character could not be used: %s\n", error.c_str());
+            std::string message = "Player 2's character could not be used (" + error + "); they make a new one.";
+            display_print((char*)message.c_str());
+        } else if (elapsed_time(joinedAt) < 10000) {
+            // It is on the way (it follows the hello).
+            return;
+        }
+    }
+
+    if (coop_create_player2() != NULL) {
+        coop_request_character_copy();
+    }
+}
+
+// Now and then, and after saving, player 2 gets a copy of their character
+// to keep (old clients ignore it).
+static void coop_host_send_character_copy()
+{
+    static unsigned int lastCopy = 0;
+    if (!coop_take_character_copy_request() && elapsed_time(lastCopy) < 120000) {
+        return;
+    }
+    lastCopy = get_time();
+
+    std::vector<unsigned char> data;
+    if (coop_export_player2(&data)) {
+        coop_net_send_character(data);
+    }
+}
+
 void coop_host_frame()
 {
     if (!coop_host_on) {
@@ -650,10 +701,10 @@ void coop_host_frame()
 
     if (coop_net_client_connected() && !isInCombat()) {
         if (coop_player_count() == 1) {
-            // Player 2 joins: character creation, driven by the client.
-            coop_create_player2();
+            coop_host_player2_joins();
         } else {
             coop_host_player2_turn();
+            coop_host_send_character_copy();
         }
     }
 

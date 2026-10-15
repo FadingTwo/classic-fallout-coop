@@ -171,8 +171,55 @@ static int coop_menu_host()
     return game;
 }
 
+// The copy of our character from earlier games (coop-character.dat), if
+// any: join with it or make a new one. False: don't join after all.
+static bool coop_menu_choose_character()
+{
+    std::vector<unsigned char> data;
+    FILE* stream = fopen(COOP_NET_CHARACTER_FILE, "rb");
+    if (stream != NULL) {
+        unsigned char buffer[4096];
+        size_t read;
+        while ((read = fread(buffer, 1, sizeof(buffer), stream)) > 0) {
+            data.insert(data.end(), buffer, buffer + read);
+        }
+        fclose(stream);
+    }
+
+    std::string name;
+    int level;
+    coop_net_set_bring_character(std::vector<unsigned char>());
+    if (!coop_character_info(data, &name, &level)) {
+        return true;
+    }
+
+    // "NATALIA (LEVEL 3)", short enough for a button.
+    if (name.size() > 12) {
+        name.resize(12);
+    }
+    for (char& c : name) {
+        c = (char)toupper((unsigned char)c);
+    }
+    char mine[40];
+    snprintf(mine, sizeof(mine), "%s (LEVEL %d)", name.c_str(), level);
+
+    main_menu_status("Join with your own character?");
+    const char* labels[] = { mine, "NEW CHARACTER", "BACK" };
+    const int keys[] = { KEY_LOWERCASE_M, KEY_LOWERCASE_N, KEY_LOWERCASE_B };
+    int choice = main_menu_choose(labels, keys, 3);
+    main_menu_status("");
+    if (choice == 0) {
+        coop_net_set_bring_character(data);
+    }
+    return choice == 0 || choice == 1;
+}
+
 static int coop_menu_connect(const char* address, int port, const std::string& relay = std::string())
 {
+    if (!coop_menu_choose_character()) {
+        return -1;
+    }
+
     main_menu_show_buttons(coop_menu_labels, coop_menu_keys, COOP_MENU_BUSY_ENTRIES);
     main_menu_status("Connecting...");
 
@@ -190,6 +237,7 @@ static int coop_menu_connect(const char* address, int port, const std::string& r
     int rc = coop_net_client_run();
 
     coop_net_set_relay_join("");
+    coop_net_set_bring_character(std::vector<unsigned char>());
 
     coop_net_set_mode(COOP_NET_NONE);
     coop_set_enabled(false);

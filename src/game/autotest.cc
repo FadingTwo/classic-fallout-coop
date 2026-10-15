@@ -29,7 +29,7 @@ namespace fallout {
 
 #define AUTOTEST_DIR "autotest"
 #define AUTOTEST_MAX_CHECKS 8
-#define AUTOTEST_MAX_SCRIPTS 32
+#define AUTOTEST_MAX_SCRIPTS 128
 #define AUTOTEST_SEED 0x0C00F00D
 
 // Quick save slots used by the harness (0-based; SLOT09 and SLOT10).
@@ -79,6 +79,9 @@ void autotest_add_script(const char* name, AutotestScriptProc* proc)
         autotest_scripts[autotest_scripts_count].name = name;
         autotest_scripts[autotest_scripts_count].proc = proc;
         autotest_scripts_count++;
+    } else {
+        // Was silent: the scripts past the limit just didn't exist.
+        debug_printf("\nautotest: too many scripts, '%s' left out (raise AUTOTEST_MAX_SCRIPTS)\n", name);
     }
 }
 
