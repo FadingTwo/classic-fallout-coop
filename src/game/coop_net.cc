@@ -208,6 +208,10 @@ static CoopSocket coop_listen_socket = COOP_INVALID_SOCKET;
 static CoopConnection coop_client;
 static bool coop_client_ready = false;
 
+// How many times a client has joined (tests: a client that left and came
+// back between two looks still counts as having left).
+static unsigned int coop_net_joins = 0;
+
 // Testing: a client that doesn't acknowledge frames, like those before 1.5.7.
 static bool coop_net_no_acks = getenv("COOP_NET_NO_ACKS") != NULL;
 // Testing: a client that doesn't take packed frames.
@@ -869,6 +873,7 @@ static void coop_host_handle(const CoopMessage& message)
                 if (coop_music_playing) {
                     coop_net_write_sound(GSOUND_EVENT_MUSIC, coop_music_name.c_str(), coop_music_args[0], coop_music_args[1], coop_music_args[2]);
                 }
+                coop_net_joins++;
                 debug_printf("\nCOOP NET: client joined\n");
             }
         }
@@ -914,6 +919,11 @@ static void coop_host_handle(const CoopMessage& message)
 bool coop_net_client_connected()
 {
     return coop_client_ready;
+}
+
+unsigned int coop_net_client_joins()
+{
+    return coop_net_joins;
 }
 
 bool coop_net_next_input(CoopNetInput* input)

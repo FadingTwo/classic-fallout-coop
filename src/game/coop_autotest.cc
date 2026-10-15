@@ -3220,6 +3220,7 @@ static int coop_autotest_net_session_host(AutotestNewGameProc* newGame)
         return -1;
     }
     autotest_log("client joined");
+    unsigned int joinsBefore = coop_net_client_joins();
 
     // COOP_AUTOTEST_XP: both players level up while player 2 is connected
     // (they then open their character screen).
@@ -3240,56 +3241,6 @@ static int coop_autotest_net_session_host(AutotestNewGameProc* newGame)
         autotest_fail("player 2 did not move");
     }
 
-    // Player 1's mouse stays where it is while player 2 plays. It slid
-    // away when the two had cursors with different hotspots (here player
-    // 1's scroll arrow at the left edge).
-    mouse_set_position(0, screenGetHeight() / 3);
-    coop_autotest_session_frames(50, false, false);
-    int mouseX;
-    int mouseY;
-    mouse_get_position(&mouseX, &mouseY);
-    coop_autotest_session_frames(2000, false, false);
-    int laterX;
-    int laterY;
-    mouse_get_position(&laterX, &laterY);
-    autotest_log("player 1's mouse %d,%d then %d,%d", mouseX, mouseY, laterX, laterY);
-    if (laterX != mouseX || laterY != mouseY) {
-        autotest_fail("player 1's mouse moved by itself");
-    }
-
-    // Player 1 points at a spot (G): the marker shows on both screens.
-    mouse_set_position(screenGetWidth() / 2, screenGetHeight() / 3);
-    coop_autotest_session_frames(50, false, false);
-    if (!coop_host_chat_key(KEY_LOWERCASE_G)) {
-        autotest_fail("G did not place a marker");
-    }
-    renderPresent();
-    {
-        // Yellow on the screen around the spot, and the game's own screen
-        // buffer clean again (the marker is only drawn for showing).
-        int yellow = 0;
-        int cx = screenGetWidth() / 2;
-        int cy = screenGetHeight() / 3;
-        for (int y = std::max(cy - 60, 0); y < std::min(cy + 40, gSdlTextureSurface->h); y++) {
-            for (int x = std::max(cx - 40, 0); x < std::min(cx + 40, gSdlTextureSurface->w); x++) {
-                Uint32 pixel = ((Uint32*)gSdlTextureSurface->pixels)[y * gSdlTextureSurface->pitch / 4 + x];
-                Uint8 r;
-                Uint8 g;
-                Uint8 b;
-                SDL_GetRGB(pixel, gSdlTextureSurface->format, &r, &g, &b);
-                if (r > 200 && g > 200 && b < 90) {
-                    yellow++;
-                }
-            }
-        }
-        autotest_log("marker: %d yellow pixels shown", yellow);
-        SDL_SaveBMP(gSdlTextureSurface, "marker.bmp");
-        if (yellow < 20) {
-            autotest_fail("the marker is not on screen");
-        }
-    }
-    coop_autotest_session_frames(1500, false, false);
-
     lsgSetQuickSlot(COOP_AUTOTEST_SLOT);
     if (SaveGame(LOAD_SAVE_MODE_QUICK) != 1) {
         autotest_fail("save with player 2 connected failed");
@@ -3297,7 +3248,14 @@ static int coop_autotest_net_session_host(AutotestNewGameProc* newGame)
     int savedTile = coop_player(1)->obj->tile;
 
     // Player 2 drops out (F10), the game goes on, player 2 comes back.
-    if (!coop_autotest_session_frames(60000, false, true)) {
+    // (On a slow machine they may have left and come back already: they
+    // joined again since the first join.)
+    unsigned int leaveStart = get_time();
+    bool left = false;
+    while (!left && elapsed_time(leaveStart) < 60000) {
+        left = coop_autotest_session_frames(200, false, true) || coop_net_client_joins() != joinsBefore;
+    }
+    if (!left) {
         autotest_fail("client did not leave");
         return -1;
     }
@@ -3307,7 +3265,8 @@ static int coop_autotest_net_session_host(AutotestNewGameProc* newGame)
     if (coop_player_count() != 2) {
         autotest_fail("player 2 vanished when the client left");
     }
-    if ((coop_player(1)->obj->flags & OBJECT_HIDDEN) == 0) {
+    // (Only while they are still away: on a slow machine they are back.)
+    if (!coop_net_client_connected() && (coop_player(1)->obj->flags & OBJECT_HIDDEN) == 0) {
         autotest_fail("player 2's character is still out while they are away");
     }
 
@@ -3403,6 +3362,9 @@ static int coop_autotest_net_session_host(AutotestNewGameProc* newGame)
     combat(&attack);
     coop_set_turn_hook(NULL);
 
+    // Player 2's own turns (the time from their turn's start to the next
+    // player's also counts the enemy's turn in between).
+    coop_autotest_session_longest = coop_longest_turn(1);
     autotest_log("fight over after %u ms: enemy dead %d, player 2 turns %d, longest player 2 turn %u ms (limit %u)",
         elapsed_time(fightStart), critter_is_dead(enemy) ? 1 : 0, coop_autotest_session_p2_turns,
         coop_autotest_session_longest, coop_turn_time_limit());
@@ -3415,6 +3377,58 @@ static int coop_autotest_net_session_host(AutotestNewGameProc* newGame)
 
     coop_autotest_session_frames(2000, false, false);
     dump_screen();
+
+    // At the end, so the steps above keep their timing with the client.
+    // Player 1's mouse stays where it is while player 2 plays. It slid
+    // away when the two had cursors with different hotspots (here player
+    // 1's scroll arrow at the left edge).
+    mouse_set_position(0, screenGetHeight() / 3);
+    coop_autotest_session_frames(50, false, false);
+    int mouseX;
+    int mouseY;
+    mouse_get_position(&mouseX, &mouseY);
+    coop_autotest_session_frames(2000, false, false);
+    int laterX;
+    int laterY;
+    mouse_get_position(&laterX, &laterY);
+    autotest_log("player 1's mouse %d,%d then %d,%d", mouseX, mouseY, laterX, laterY);
+    if (laterX != mouseX || laterY != mouseY) {
+        autotest_fail("player 1's mouse moved by itself");
+    }
+
+    // Player 1 points at a spot (G): the marker shows on both screens.
+    mouse_set_position(screenGetWidth() / 2, screenGetHeight() / 3);
+    coop_autotest_session_frames(50, false, false);
+    if (!coop_host_chat_key(KEY_LOWERCASE_G)) {
+        autotest_fail("G did not place a marker");
+    }
+    renderPresent();
+    {
+        // Yellow on the screen around the spot, and the game's own screen
+        // buffer clean again (the marker is only drawn for showing).
+        int yellow = 0;
+        int cx = screenGetWidth() / 2;
+        int cy = screenGetHeight() / 3;
+        for (int y = std::max(cy - 60, 0); y < std::min(cy + 40, gSdlTextureSurface->h); y++) {
+            for (int x = std::max(cx - 40, 0); x < std::min(cx + 40, gSdlTextureSurface->w); x++) {
+                Uint32 pixel = ((Uint32*)gSdlTextureSurface->pixels)[y * gSdlTextureSurface->pitch / 4 + x];
+                Uint8 r;
+                Uint8 g;
+                Uint8 b;
+                SDL_GetRGB(pixel, gSdlTextureSurface->format, &r, &g, &b);
+                if (r > 200 && g > 200 && b < 90) {
+                    yellow++;
+                }
+            }
+        }
+        autotest_log("marker: %d yellow pixels shown", yellow);
+        SDL_SaveBMP(gSdlTextureSurface, "marker.bmp");
+        if (yellow < 20) {
+            autotest_fail("the marker is not on screen");
+        }
+    }
+    coop_autotest_session_frames(1500, false, false);
+
     coop_host_exit();
     return 0;
 }

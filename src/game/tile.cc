@@ -1983,6 +1983,20 @@ static int tile_bounds_top_off;
 static int tile_bounds_right_off;
 static int tile_bounds_bottom_off;
 
+// CE: with no scroll blockers on the map (or the elevation) the bounds start
+// out at INT_MAX/INT_MIN and the arithmetic below overflows. Wrapping
+// arithmetic gives the same result the original got, without undefined
+// behavior (which an optimizing compiler may turn into anything).
+static int tile_wrap_add(int a, int b)
+{
+    return (int)((unsigned int)a + (unsigned int)b);
+}
+
+static int tile_wrap_sub(int a, int b)
+{
+    return (int)((unsigned int)a - (unsigned int)b);
+}
+
 void tile_update_bounds_base()
 {
     int min_x = INT_MAX;
@@ -2027,10 +2041,10 @@ void tile_update_bounds_base()
     geometric_center_x += 16;
     geometric_center_y += 8;
 
-    tile_bounds_left_off = min_x - geometric_center_x;
-    tile_bounds_top_off = min_y - geometric_center_y;
-    tile_bounds_right_off = max_x - geometric_center_x;
-    tile_bounds_bottom_off = max_y - geometric_center_y;
+    tile_bounds_left_off = tile_wrap_sub(min_x, geometric_center_x);
+    tile_bounds_top_off = tile_wrap_sub(min_y, geometric_center_y);
+    tile_bounds_right_off = tile_wrap_sub(max_x, geometric_center_x);
+    tile_bounds_bottom_off = tile_wrap_sub(max_y, geometric_center_y);
 }
 
 void tile_update_bounds_rect()
@@ -2043,10 +2057,10 @@ void tile_update_bounds_rect()
     geometric_center_x += 16;
     geometric_center_y += 8;
 
-    tile_bounds_rect.ulx = tile_bounds_left_off + geometric_center_x;
-    tile_bounds_rect.uly = tile_bounds_top_off + geometric_center_y;
-    tile_bounds_rect.lrx = tile_bounds_right_off + geometric_center_x;
-    tile_bounds_rect.lry = tile_bounds_bottom_off + geometric_center_y;
+    tile_bounds_rect.ulx = tile_wrap_add(tile_bounds_left_off, geometric_center_x);
+    tile_bounds_rect.uly = tile_wrap_add(tile_bounds_top_off, geometric_center_y);
+    tile_bounds_rect.lrx = tile_wrap_add(tile_bounds_right_off, geometric_center_x);
+    tile_bounds_rect.lry = tile_wrap_add(tile_bounds_bottom_off, geometric_center_y);
 
     // The bounding rectangle' corners are centers from scroll blocking objects.
     // Since we're dealing with hex map where each row is shifted, we have two
@@ -2061,32 +2075,32 @@ void tile_update_bounds_rect()
     tile_center_x += 16;
     tile_center_y += 8;
 
-    tile_bounds_rect.ulx -= (tile_bounds_rect.ulx - tile_center_x) % 32;
-    tile_bounds_rect.uly -= (tile_bounds_rect.uly - tile_center_y) % 24;
-    tile_bounds_rect.lrx -= (tile_bounds_rect.lrx - tile_center_x) % 32;
-    tile_bounds_rect.lry -= (tile_bounds_rect.lry - tile_center_y) % 24;
+    tile_bounds_rect.ulx = tile_wrap_sub(tile_bounds_rect.ulx, tile_wrap_sub(tile_bounds_rect.ulx, tile_center_x) % 32);
+    tile_bounds_rect.uly = tile_wrap_sub(tile_bounds_rect.uly, tile_wrap_sub(tile_bounds_rect.uly, tile_center_y) % 24);
+    tile_bounds_rect.lrx = tile_wrap_sub(tile_bounds_rect.lrx, tile_wrap_sub(tile_bounds_rect.lrx, tile_center_x) % 32);
+    tile_bounds_rect.lry = tile_wrap_sub(tile_bounds_rect.lry, tile_wrap_sub(tile_bounds_rect.lry, tile_center_y) % 24);
 
     // Scroll blocker itself cannot become center tile, so inset bounds for one
     // full tile size.
-    tile_bounds_rect.ulx += 32;
-    tile_bounds_rect.uly += 16;
-    tile_bounds_rect.lrx -= 32;
-    tile_bounds_rect.lry -= 16;
+    tile_bounds_rect.ulx = tile_wrap_add(tile_bounds_rect.ulx, 32);
+    tile_bounds_rect.uly = tile_wrap_add(tile_bounds_rect.uly, 16);
+    tile_bounds_rect.lrx = tile_wrap_sub(tile_bounds_rect.lrx, 32);
+    tile_bounds_rect.lry = tile_wrap_sub(tile_bounds_rect.lry, 16);
 
     // Scroll blockers where placed for 640x480 resolution, which means visible
     // rect is half of than amount in each direction.
-    tile_bounds_rect.ulx -= 640 / 2;
-    tile_bounds_rect.uly -= (480 - 100) / 2;
-    tile_bounds_rect.lrx += 640 / 2;
-    tile_bounds_rect.lry += (480 - 100) / 2;
+    tile_bounds_rect.ulx = tile_wrap_sub(tile_bounds_rect.ulx, 640 / 2);
+    tile_bounds_rect.uly = tile_wrap_sub(tile_bounds_rect.uly, (480 - 100) / 2);
+    tile_bounds_rect.lrx = tile_wrap_add(tile_bounds_rect.lrx, 640 / 2);
+    tile_bounds_rect.lry = tile_wrap_add(tile_bounds_rect.lry, (480 - 100) / 2);
 
     // Adjust for vertical layout.
-    tile_bounds_rect.uly += 8;
-    tile_bounds_rect.lry -= 8;
+    tile_bounds_rect.uly = tile_wrap_add(tile_bounds_rect.uly, 8);
+    tile_bounds_rect.lry = tile_wrap_sub(tile_bounds_rect.lry, 8);
 
     // Decrement one px to make sure rect is what engine expects it to be.
-    tile_bounds_rect.lrx -= 1;
-    tile_bounds_rect.lry -= 1;
+    tile_bounds_rect.lrx = tile_wrap_sub(tile_bounds_rect.lrx, 1);
+    tile_bounds_rect.lry = tile_wrap_sub(tile_bounds_rect.lry, 1);
 }
 
 int tile_inside_bound(Rect* rect)

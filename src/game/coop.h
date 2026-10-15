@@ -16,7 +16,7 @@ namespace fallout {
 #define COOP_MAX_PLAYERS 2
 
 // Co-op version, for the update check and bug reports.
-#define COOP_VERSION "1.7.1"
+#define COOP_VERSION "1.7.2"
 
 // fallout.cfg [coop] server=http://host[:port] - where UPDATE looks for
 // new versions (<server>/fallout-coop/latest.txt) and REPORT BUG sends
@@ -209,6 +209,11 @@ bool coop_any_player_has(int results);
 // Combat: true once a human turn started at `turnStart` (get_time()) has
 // used up [coop] turn_time.
 bool coop_turn_time_expired(unsigned int turnStart);
+
+// The length of `player`'s last turn, up to when it ended (not counting the
+// others' turns after it). For tests of the turn timer.
+void coop_note_turn_length(Object* player, unsigned int ms);
+unsigned int coop_longest_turn(int index);
 
 // [coop]knockout=1: a player who would die is knocked out instead while
 // another player is still up, can't be hurt while out, and wakes up by

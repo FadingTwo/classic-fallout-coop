@@ -2204,6 +2204,10 @@ static int combat_input()
         sharedFpsLimiter.throttle();
     }
 
+    // Co-op: how long the player's own part of the turn took (the turn
+    // timer's tests).
+    coop_note_turn_length(obj_dude, elapsed_time(turnStart));
+
     int old_user_wants_to_quit = game_user_wants_to_quit;
     if (game_user_wants_to_quit == 1) {
         game_user_wants_to_quit = 0;

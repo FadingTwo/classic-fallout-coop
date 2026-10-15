@@ -106,6 +106,9 @@ void coop_net_host_pump();
 // Host: true once a client has passed the handshake.
 bool coop_net_client_connected();
 
+// Host: how many times a client has joined so far.
+unsigned int coop_net_client_joins();
+
 // Host: next input event received from the client, if any.
 bool coop_net_next_input(CoopNetInput* input);
 

@@ -1,10 +1,10 @@
 #include "game/coop.h"
-#include "game/queue.h"
 
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
+#include <algorithm>
 #include <new>
 
 #include "game/art.h"
@@ -26,6 +26,7 @@
 #include "game/party.h"
 #include "game/perk.h"
 #include "game/protinst.h"
+#include "game/queue.h"
 #include "game/proto.h"
 #include "game/skill.h"
 #include "game/stat.h"
@@ -608,6 +609,22 @@ void coop_knockout_healed(Object* critter)
     queue_remove_this(critter, EVENT_TYPE_KNOCKOUT);
     critter_wake_up(critter, NULL);
     debug_printf("\nCOOP: %s woke up after healing\n", critter_name(critter));
+}
+
+static unsigned int coop_longest_turns[COOP_MAX_PLAYERS];
+
+void coop_note_turn_length(Object* player, unsigned int ms)
+{
+    for (int index = 0; index < coop_players_count && index < COOP_MAX_PLAYERS; index++) {
+        if (coop_players[index].obj == player) {
+            coop_longest_turns[index] = std::max(coop_longest_turns[index], ms);
+        }
+    }
+}
+
+unsigned int coop_longest_turn(int index)
+{
+    return index >= 0 && index < COOP_MAX_PLAYERS ? coop_longest_turns[index] : 0;
 }
 
 bool coop_turn_time_expired(unsigned int turnStart)
