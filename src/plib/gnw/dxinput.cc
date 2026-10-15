@@ -1,5 +1,8 @@
 #include "plib/gnw/dxinput.h"
 
+#include "plib/gnw/gamepad.h"
+#include "plib/gnw/mouse.h"
+
 #include <string.h>
 
 namespace fallout {
@@ -27,6 +30,9 @@ bool dxinput_init()
         goto err;
     }
 
+    // CE: game controllers (optional; the game works without).
+    gamepad_init();
+
     return true;
 
 err:
@@ -39,6 +45,7 @@ err:
 // 0x4E0478
 void dxinput_exit()
 {
+    gamepad_exit();
     SDL_QuitSubSystem(SDL_INIT_EVENTS);
 }
 
@@ -68,6 +75,20 @@ bool dxinput_get_mouse_state(MouseData* mouseState)
     Uint32 buttons = SDL_GetRelativeMouseState(&(mouseState->x), &(mouseState->y));
     mouseState->buttons[0] = (buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
     mouseState->buttons[1] = (buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)) != 0;
+
+    // CE: a game controller moves and clicks the same mouse.
+    int padX;
+    int padY;
+    int padButtons;
+    gamepad_mouse(&padX, &padY, &padButtons);
+    mouseState->x += padX;
+    mouseState->y += padY;
+    if ((padButtons & MOUSE_STATE_LEFT_BUTTON_DOWN) != 0) {
+        mouseState->buttons[0] = 1;
+    }
+    if ((padButtons & MOUSE_STATE_RIGHT_BUTTON_DOWN) != 0) {
+        mouseState->buttons[1] = 1;
+    }
     mouseState->wheelX = gMouseWheelDeltaX;
     mouseState->wheelY = gMouseWheelDeltaY;
 

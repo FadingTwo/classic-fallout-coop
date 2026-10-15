@@ -140,6 +140,7 @@ keeping their shape, and maps its mouse back into frame coordinates.
 | `coop_update.h/.cc` | Self-update: download, verify SHA-256, replace files. |
 | `coop_http.h/.cc` | A tiny HTTP client: WinHTTP on Windows, sockets plus the system's OpenSSL elsewhere. |
 | `coop_crash.h/.cc` | Crash reports written by signal / exception handlers. |
+| `plib/gnw/gamepad.h/.cc` | Game controllers: the stick moves the mouse, buttons become keys (not co-op only). |
 | `coop_autotest.cc` | The co-op test scripts (see `TESTING.md`). |
 | `tools/coop_server.py` | The co-op server: updates, reports, lobby, relay, play statistics. |
 

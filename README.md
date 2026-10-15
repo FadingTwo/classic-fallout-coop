@@ -40,6 +40,10 @@ pick **MULTIPLAYER** in the main menu. Without a co-op server (see
 [docs/coop/SERVER.md](docs/coop/SERVER.md)) you play on a LAN, on one PC,
 or online by entering the host's address.
 
+A controller works too (Xbox, PlayStation, Steam Deck): the left stick
+moves the cursor, A and B click. [COOP.md](COOP.md#controller) lists the
+buttons.
+
 For more about the engine itself (other platforms, `fallout.cfg`,
 `f1_res.ini`), see [Fallout CE's README](https://github.com/alexbatalov/fallout1-ce#readme).
 

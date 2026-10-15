@@ -47,6 +47,26 @@ verified byte for byte against upstream, see "Tests").
   dialog, barter...) or it is their combat turn, the game waits for them
   and the other player sees their screen with a status line.
 
+## Controller
+
+An Xbox or PlayStation controller works, and so do the Steam Deck's own
+controls (as a gamepad, not a mouse). Plug it in any time; the game uses
+the first one it finds. The left stick moves the mouse cursor (slowly when
+tilted a little, to hit a hex), the rest stand for keys:
+
+| Button | Does | Button | Does |
+|---|---|---|---|
+| A | left click | B | right click (change cursor mode) |
+| X | inventory (I) | Y | Pip-Boy (P) |
+| View / Back | character screen (C) | Menu / Start | Escape |
+| LB | skilldex (S) | RB | switch hand (B) |
+| LT | attack mode (A) | RT | end turn (Space) |
+| D-pad, right stick | scroll the map | L3 / R3 | Enter / co-op marker (G) |
+
+The game still sees a mouse and keyboard, so everything works as before,
+and a keyboard and mouse can be used at the same time. On one PC (ONE PC)
+both players share it, like they share the mouse.
+
 ## Getting started
 
 1. Start the game. The first time, if it cannot find your Fallout files,

@@ -97,6 +97,7 @@ static int coop_autotest_barter(AutotestNewGameProc* newGame);
 static int coop_autotest_give(AutotestNewGameProc* newGame);
 static int coop_autotest_poison(AutotestNewGameProc* newGame);
 static int coop_autotest_character(AutotestNewGameProc* newGame);
+static int coop_autotest_gamepad(AutotestNewGameProc* newGame);
 static int coop_autotest_net_character_host(AutotestNewGameProc* newGame);
 static int coop_autotest_net_character_client(AutotestNewGameProc* newGame);
 static bool coop_autotest_relay_host_setup();
@@ -145,6 +146,7 @@ void coop_autotest_register()
     autotest_add_script("coop_rads", coop_autotest_rads);
     autotest_add_script("coop_poison", coop_autotest_poison);
     autotest_add_script("coop_character", coop_autotest_character);
+    autotest_add_script("gamepad", coop_autotest_gamepad);
     autotest_add_script("coop_interact", coop_autotest_interact);
     autotest_add_script("map_time", coop_autotest_map_time);
     autotest_add_script("pack", coop_autotest_pack);
@@ -1652,6 +1654,91 @@ static int coop_autotest_net_character_client(AutotestNewGameProc* newGame)
     } else {
         autotest_log("kept a copy: %s, level %d", name.c_str(), level);
     }
+    return 0;
+}
+
+// Runs the input loop for `ms`, collecting the keys it returns.
+static std::vector<int> coop_autotest_input_for(unsigned int ms)
+{
+    std::vector<int> keys;
+    unsigned int start = get_time();
+    while (elapsed_time(start) < ms) {
+        int key = get_input();
+        if (key != -1) {
+            keys.push_back(key);
+        }
+        renderPresent();
+        SDL_Delay(10);
+    }
+    return keys;
+}
+
+// A game controller (a virtual one, made by SDL): the left stick moves the
+// cursor, A clicks, X is the inventory key and RT ends the turn (Space).
+static int coop_autotest_gamepad(AutotestNewGameProc* newGame)
+{
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    SDL_VirtualJoystickDesc desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.version = SDL_VIRTUAL_JOYSTICK_DESC_VERSION;
+    desc.type = SDL_JOYSTICK_TYPE_GAMECONTROLLER;
+    desc.naxes = SDL_CONTROLLER_AXIS_MAX;
+    desc.nbuttons = SDL_CONTROLLER_BUTTON_MAX;
+    desc.name = "Autotest pad";
+    int index = SDL_JoystickAttachVirtualEx(&desc);
+    SDL_Joystick* joystick = index >= 0 ? SDL_JoystickOpen(index) : NULL;
+    if (joystick == NULL) {
+        autotest_fail("no virtual controller: %s", SDL_GetError());
+        return -1;
+    }
+    coop_autotest_input_for(200);
+
+    mouse_set_position(100, 100);
+    int x0;
+    int y0;
+    mouse_get_position(&x0, &y0);
+    SDL_JoystickSetVirtualAxis(joystick, SDL_CONTROLLER_AXIS_LEFTX, 32767);
+    coop_autotest_input_for(300);
+    SDL_JoystickSetVirtualAxis(joystick, SDL_CONTROLLER_AXIS_LEFTX, 0);
+    coop_autotest_input_for(100);
+    int x1;
+    int y1;
+    mouse_get_position(&x1, &y1);
+    autotest_log("left stick right for 0.3 s: cursor %d,%d -> %d,%d", x0, y0, x1, y1);
+    if (x1 - x0 < 100 || y1 != y0) {
+        autotest_fail("the left stick did not move the cursor right");
+    }
+
+    SDL_JoystickSetVirtualButton(joystick, SDL_CONTROLLER_BUTTON_A, 1);
+    coop_autotest_input_for(100);
+    bool clicked = (mouse_get_buttons() & MOUSE_EVENT_LEFT_BUTTON_DOWN_REPEAT) != 0;
+    SDL_JoystickSetVirtualButton(joystick, SDL_CONTROLLER_BUTTON_A, 0);
+    coop_autotest_input_for(100);
+    autotest_log("A held: left button %d", clicked ? 1 : 0);
+    if (!clicked) {
+        autotest_fail("A did not press the left mouse button");
+    }
+
+    SDL_JoystickSetVirtualButton(joystick, SDL_CONTROLLER_BUTTON_X, 1);
+    std::vector<int> keys = coop_autotest_input_for(100);
+    SDL_JoystickSetVirtualButton(joystick, SDL_CONTROLLER_BUTTON_X, 0);
+    SDL_JoystickSetVirtualAxis(joystick, SDL_CONTROLLER_AXIS_TRIGGERRIGHT, 32767);
+    std::vector<int> more = coop_autotest_input_for(100);
+    SDL_JoystickSetVirtualAxis(joystick, SDL_CONTROLLER_AXIS_TRIGGERRIGHT, 0);
+    coop_autotest_input_for(100);
+    keys.insert(keys.end(), more.begin(), more.end());
+    bool inventory = std::find(keys.begin(), keys.end(), KEY_LOWERCASE_I) != keys.end();
+    bool space = std::find(keys.begin(), keys.end(), KEY_SPACE) != keys.end();
+    autotest_log("X gave the inventory key %d, RT gave Space %d", inventory ? 1 : 0, space ? 1 : 0);
+    if (!inventory || !space) {
+        autotest_fail("controller buttons did not give their keys");
+    }
+
+    SDL_JoystickClose(joystick);
+    SDL_JoystickDetachVirtual(index);
     return 0;
 }
 

@@ -19,7 +19,7 @@ namespace fallout {
 #define COOP_MAX_PLAYERS 2
 
 // Co-op version, for the update check and bug reports.
-#define COOP_VERSION "1.9"
+#define COOP_VERSION "1.10"
 
 // fallout.cfg [coop] server=http://host[:port] - where UPDATE looks for
 // new versions (<server>/fallout-coop/latest.txt) and REPORT BUG sends

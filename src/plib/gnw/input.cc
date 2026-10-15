@@ -8,6 +8,7 @@
 #include "plib/color/color.h"
 #include "plib/gnw/button.h"
 #include "plib/gnw/dxinput.h"
+#include "plib/gnw/gamepad.h"
 #include "plib/gnw/gnw.h"
 #include "plib/gnw/grbuf.h"
 #include "plib/gnw/inject.h"
@@ -50,6 +51,7 @@ static int default_pause_window();
 static void buf_blit(unsigned char* src, unsigned int src_pitch, unsigned int a3, unsigned int x, unsigned int y, unsigned int width, unsigned int height, unsigned int dest_x, unsigned int dest_y);
 static void GNW95_build_key_map();
 static void GNW95_process_key(KeyboardData* data);
+static void GNW95_gamepad_key(int scancode, bool down);
 
 static void idleImpl();
 
@@ -1173,6 +1175,10 @@ void GNW95_process_message()
         case SDL_QUIT:
             exit(EXIT_SUCCESS);
             break;
+        default:
+            // CE: game controllers.
+            gamepad_handle_event(&e, GNW95_gamepad_key);
+            break;
         }
     }
 
@@ -1207,6 +1213,19 @@ void GNW95_clear_time_stamps()
         GNW95_key_time_stamps[index].time = -1;
         GNW95_key_time_stamps[index].count = 0;
     }
+}
+
+// CE: a key from a game controller button, as if typed.
+static void GNW95_gamepad_key(int scancode, bool down)
+{
+    if (kb_is_disabled()) {
+        return;
+    }
+
+    KeyboardData keyboardData;
+    keyboardData.key = scancode;
+    keyboardData.down = down ? 1 : 0;
+    GNW95_process_key(&keyboardData);
 }
 
 // 0x4B465C
