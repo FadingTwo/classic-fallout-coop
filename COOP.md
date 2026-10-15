@@ -8,6 +8,24 @@ Co-op is off unless `fallout.cfg` has a `[coop]` section with
 `enabled=1`. Without it the game behaves exactly like Fallout CE (this is
 verified byte for byte against upstream, see "Tests").
 
+## Fallout 2 (beta)
+
+The package has Fallout 2 co-op too (`fallout2-ce`, built on Fallout 2
+Community Edition). With Fallout 2 installed, the setup screen asks which
+game to play (Enter picks the one played last); Fallout 2's settings are
+in `fallout2.cfg`. It plays like Fallout 1 co-op, with these differences
+for now:
+
+- Player 2 trades through conversations, like player 1 (with TALK set to
+  PLAYER 1 player 2 cannot trade).
+- No look to pick for player 2: they look like the Chosen One does at that
+  point of the story.
+- Your companions (Sulik, Vic...) follow player 1's orders as usual.
+
+Both players need Fallout 2 in the same version and language, like
+Fallout 1. It is new: please report what breaks (MULTIPLAYER, REPORT
+BUG).
+
 ## Rules
 
 - Player 2 creates their own character on the regular character creation

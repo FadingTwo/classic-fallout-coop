@@ -562,6 +562,32 @@ bool coop_any_player_has(int results)
     return false;
 }
 
+bool coop_game_lost()
+{
+    if (coop_any_player_has(DAM_DEAD)) {
+        return true;
+    }
+
+    if (!coop_any_player_has(DAM_KNOCKED_OUT)) {
+        return false;
+    }
+
+    if (!coop_knockout_enabled()) {
+        return true;
+    }
+
+    // Knocked out players wake up (or are healed) while someone is up.
+    for (int index = 0; index < coop_players_count; index++) {
+        Object* obj = coop_players[index].obj;
+        if (obj != NULL && (obj->flags & OBJECT_HIDDEN) == 0
+            && (obj->data.critter.combat.results & (DAM_DEAD | DAM_KNOCKED_OUT)) == 0) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 bool coop_talk_setting()
 {
     return coop_talk_on;

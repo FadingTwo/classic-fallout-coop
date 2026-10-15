@@ -12,13 +12,15 @@ Steam Deck support, since 1.11 both players talk to people. More
 [ideas](https://github.com/FadingTwo/classic-fallout-coop/issues?q=is%3Aissue+is%3Aopen+label%3Aenhancement)
 are waiting; add a 👍 to the ones you want.
 
-## 2. Fallout 2 (next)
+## 2. Fallout 2 (beta, now)
 
 Co-op for Fallout 2, built on
-[Fallout 2 Community Edition](https://github.com/alexbatalov/fallout2-ce).
-The engine is nearly the same, so most of this mod (network, server,
-menus, tests) can carry over. The same setup screen will find Fallout 1 or
-Fallout 2 and let you pick.
+[Fallout 2 Community Edition](https://github.com/alexbatalov/fallout2-ce),
+in the same package: the setup screen finds Fallout 1 and Fallout 2 and
+lets you pick. Most of Fallout 1 co-op carried over (network, server,
+menus, controller, conversations, giving items, knockout, bringing your
+own character); still to come is direct trading with TALK set to player 1.
+Please report what breaks.
 
 ## 3. Up to four players, and a harder mode (later)
 

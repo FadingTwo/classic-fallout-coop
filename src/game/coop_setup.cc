@@ -17,6 +17,8 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#else
+#include <unistd.h>
 #endif
 
 #include "game/config.h"
@@ -37,6 +39,16 @@ namespace fallout {
 #define SETUP_DIM 0x1E9940
 
 namespace fs = std::filesystem;
+
+// The game the installations are looked for: 1 (Fallout) or 2 (Fallout
+// 2; see coop_setup_choose_game).
+static int setup_game = 1;
+
+// The game's usual folder name ("Fallout", "Fallout 2").
+static const char* setup_folder()
+{
+    return setup_game == 2 ? "Fallout 2" : "Fallout";
+}
 
 typedef struct SetupInstall {
     std::string path;
@@ -70,7 +82,8 @@ static bool setup_is_install(const fs::path& dir)
 {
     fs::path master;
     fs::path critter;
-    return setup_find(dir, "master.dat", &master) && setup_find(dir, "critter.dat", &critter) && !setup_is_fallout2(dir);
+    return setup_find(dir, "master.dat", &master) && setup_find(dir, "critter.dat", &critter)
+        && setup_is_fallout2(dir) == (setup_game == 2);
 }
 
 static void setup_add(std::vector<SetupInstall>* installs, const fs::path& dir, const char* label)
@@ -110,7 +123,7 @@ static void setup_scan(std::vector<SetupInstall>* installs, const fs::path& root
 // Steam libraries listed in libraryfolders.vdf ("path" "...").
 static void setup_add_steam_libraries(std::vector<SetupInstall>* installs, const fs::path& steam)
 {
-    setup_add(installs, steam / "steamapps" / "common" / "Fallout", "Steam");
+    setup_add(installs, steam / "steamapps" / "common" / setup_folder(), "Steam");
 
     FILE* stream = fopen((steam / "steamapps" / "libraryfolders.vdf").string().c_str(), "rt");
     if (stream == NULL) {
@@ -140,7 +153,7 @@ static void setup_add_steam_libraries(std::vector<SetupInstall>* installs, const
             unescaped += library[index];
         }
 
-        setup_add(installs, fs::path(unescaped) / "steamapps" / "common" / "Fallout", "Steam");
+        setup_add(installs, fs::path(unescaped) / "steamapps" / "common" / setup_folder(), "Steam");
     }
 
     fclose(stream);
@@ -186,12 +199,13 @@ static std::vector<SetupInstall> setup_find_installs()
         setup_scan(&installs, root + "Epic Games", "Epic");
         setup_scan(&installs, root + "Amazon Games\\Library", "Amazon");
         setup_scan(&installs, root + "Program Files\\Amazon Games\\Library", "Amazon");
-        setup_add(&installs, root + "GOG Games\\Fallout", "GOG");
-        setup_add(&installs, root + "Program Files (x86)\\GOG Galaxy\\Games\\Fallout", "GOG");
-        setup_add(&installs, root + "Program Files\\GOG Galaxy\\Games\\Fallout", "GOG");
-        setup_add(&installs, root + "Games\\Fallout", "");
-        setup_add(&installs, root + "Fallout", "");
-        setup_add(&installs, root + "Program Files (x86)\\Interplay\\Fallout", "CD");
+        std::string folder = setup_folder();
+        setup_add(&installs, root + "GOG Games\\" + folder, "GOG");
+        setup_add(&installs, root + "Program Files (x86)\\GOG Galaxy\\Games\\" + folder, "GOG");
+        setup_add(&installs, root + "Program Files\\GOG Galaxy\\Games\\" + folder, "GOG");
+        setup_add(&installs, root + "Games\\" + folder, "");
+        setup_add(&installs, root + folder, "");
+        setup_add(&installs, root + "Program Files (x86)\\Interplay\\" + folder, "CD");
         setup_add_steam_libraries(&installs, root + "Program Files (x86)\\Steam");
         setup_add_steam_libraries(&installs, root + "Program Files\\Steam");
         setup_add_steam_libraries(&installs, root + "SteamLibrary");
@@ -200,16 +214,18 @@ static std::vector<SetupInstall> setup_find_installs()
     const char* home = getenv("HOME");
     if (home != NULL) {
         fs::path h = home;
-        setup_add(&installs, h / "Games" / "Heroic" / "Fallout", "Heroic");
-        setup_add(&installs, h / "GOG Games" / "Fallout", "GOG");
-        setup_add(&installs, h / "Games" / "Fallout", "");
+        const char* folder = setup_folder();
+        const char* lutris = setup_game == 2 ? "fallout-2" : "fallout";
+        setup_add(&installs, h / "Games" / "Heroic" / folder, "Heroic");
+        setup_add(&installs, h / "GOG Games" / folder, "GOG");
+        setup_add(&installs, h / "Games" / folder, "");
         // Lutris.
-        setup_add(&installs, h / "Games" / "fallout", "Lutris");
-        setup_add(&installs, h / "Games" / "gog" / "fallout", "Lutris");
-        setup_add(&installs, h / "Games" / "GOG" / "Fallout", "GOG");
-        setup_add(&installs, h / "Fallout", "");
-        setup_add(&installs, h / ".wine" / "drive_c" / "GOG Games" / "Fallout", "Wine");
-        setup_add(&installs, h / ".wine" / "drive_c" / "Program Files (x86)" / "GOG Galaxy" / "Games" / "Fallout", "Wine");
+        setup_add(&installs, h / "Games" / lutris, "Lutris");
+        setup_add(&installs, h / "Games" / "gog" / lutris, "Lutris");
+        setup_add(&installs, h / "Games" / "GOG" / folder, "GOG");
+        setup_add(&installs, h / folder, "");
+        setup_add(&installs, h / ".wine" / "drive_c" / "GOG Games" / folder, "Wine");
+        setup_add(&installs, h / ".wine" / "drive_c" / "Program Files (x86)" / "GOG Galaxy" / "Games" / folder, "Wine");
         setup_add_steam_libraries(&installs, h / ".steam" / "steam");
         setup_add_steam_libraries(&installs, h / ".local" / "share" / "Steam");
         setup_add_steam_libraries(&installs, h / ".var" / "app" / "com.valvesoftware.Steam" / ".local" / "share" / "Steam");
@@ -242,7 +258,9 @@ static bool setup_write_config(const char* configPath, const fs::path& dir)
     fs::path sound;
     fs::path music;
     std::string musicPath;
-    if (setup_find(data, "sound", &sound) && setup_find(sound, "music", &music)) {
+    // (Fallout 2 keeps it next to the .dat files.)
+    if ((setup_find(dir, "sound", &sound) && setup_find(sound, "music", &music))
+        || (setup_find(data, "sound", &sound) && setup_find(sound, "music", &music))) {
         musicPath = music.string() + std::string(1, (char)fs::path::preferred_separator);
     }
 
@@ -392,6 +410,247 @@ static void setup_save_screenshot(SetupScreen* screen, const char* path)
         SDL_SaveBMP(surface, path);
         SDL_FreeSurface(surface);
     }
+}
+
+// -----------------------------------------------------------------------------
+// Choosing the game (Fallout 1 or Fallout 2), when this package has both
+
+// Fallout 2 is set up: its fallout2.cfg (next to it) points at its data.
+static bool setup_fallout2_configured(const fs::path& base)
+{
+    Config config;
+    if (!config_init(&config)) {
+        return false;
+    }
+
+    std::string configPath = (base / "fallout2.cfg").string();
+    config_load(&config, configPath.c_str(), false);
+    char* master;
+    std::string masterPath = config_get_string(&config, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_MASTER_DAT_KEY, &master) ? master : "master.dat";
+    config_exit(&config);
+
+    std::error_code error;
+    fs::path path = masterPath;
+    if (path.is_relative()) {
+        path = base / path;
+    }
+    return fs::exists(path, error);
+}
+
+// Starts Fallout 2 (`exe`) with this game's command line. On success it
+// does not return (or this process should quit).
+static bool setup_start_fallout2(const fs::path& exe, int argc, char** argv)
+{
+#ifdef _WIN32
+    std::string commandLine = "\"" + exe.string() + "\"";
+    for (int index = 1; index < argc; index++) {
+        commandLine += " \"" + std::string(argv[index]) + "\"";
+    }
+    STARTUPINFOA startup;
+    PROCESS_INFORMATION process;
+    memset(&startup, 0, sizeof(startup));
+    startup.cb = sizeof(startup);
+    memset(&process, 0, sizeof(process));
+    std::string directory = exe.parent_path().string();
+    if (!CreateProcessA(exe.string().c_str(), &commandLine[0], NULL, NULL, FALSE, 0, NULL, directory.c_str(), &startup, &process)) {
+        return false;
+    }
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    return true;
+#else
+    std::vector<char*> args;
+    std::string path = exe.string();
+    args.push_back(&path[0]);
+    for (int index = 1; index < argc; index++) {
+        args.push_back(argv[index]);
+    }
+    args.push_back(NULL);
+    std::error_code error;
+    fs::current_path(exe.parent_path(), error);
+    execv(path.c_str(), args.data());
+    return false;
+#endif
+}
+
+int coop_setup_choose_game(int argc, char** argv)
+{
+    // Automated tests run the game they were started as.
+    for (int index = 1; index < argc; index++) {
+        if (strstr(argv[index], "[autotest]") != NULL && getenv("FALLOUT_SETUP_GAME") == NULL) {
+            return 1;
+        }
+    }
+
+    char* basePath = SDL_GetBasePath();
+    if (basePath == NULL) {
+        return 1;
+    }
+    fs::path base = basePath;
+    SDL_free(basePath);
+
+#ifdef _WIN32
+    fs::path fallout2 = base / "fallout2-ce.exe";
+#else
+    fs::path fallout2 = base / "fallout2-ce";
+#endif
+
+    // Only a package with both games asks; and only when Fallout 2 is there.
+    std::error_code error;
+    if (!fs::exists(fallout2, error)) {
+        return 1;
+    }
+
+    bool fallout2Found = setup_fallout2_configured(base);
+    if (!fallout2Found) {
+        setup_game = 2;
+        fallout2Found = !setup_find_installs().empty();
+        setup_game = 1;
+    }
+    if (!fallout2Found) {
+        return 1;
+    }
+
+    // The last choice, in fallout.cfg.
+    std::string configPath = (base / GAME_CONFIG_FILE_NAME).string();
+    int last = 1;
+    Config config;
+    if (config_init(&config)) {
+        config_load(&config, configPath.c_str(), false);
+        config_get_value(&config, COOP_CONFIG_KEY, COOP_CONFIG_GAME_KEY, &last);
+        config_exit(&config);
+    }
+
+    int choice = -1;
+    const char* forced = getenv("FALLOUT_SETUP_GAME");
+    if (forced != NULL) {
+        choice = atoi(forced);
+    }
+
+    if (choice == -1 && SDL_InitSubSystem(SDL_INIT_VIDEO) == 0) {
+        SetupScreen* screen = new SetupScreen();
+        screen->window = SDL_CreateWindow("Fallout - Setup", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, SETUP_WIDTH * 3 / 2, SETUP_HEIGHT * 3 / 2, SDL_WINDOW_RESIZABLE);
+        screen->renderer = screen->window != NULL ? SDL_CreateRenderer(screen->window, -1, 0) : NULL;
+        if (screen->renderer != NULL) {
+            SDL_RenderSetLogicalSize(screen->renderer, SETUP_WIDTH, SETUP_HEIGHT);
+            screen->texture = SDL_CreateTexture(screen->renderer, SDL_PIXELFORMAT_RGB888, SDL_TEXTUREACCESS_STREAMING, SETUP_WIDTH, SETUP_HEIGHT);
+
+            const char* entries[] = { "FALLOUT", "FALLOUT 2", "[ QUIT ]" };
+            const int count = 3;
+            const int listTop = SETUP_MARGIN + 5 * SETUP_LINE;
+            int selected = last == 2 ? 1 : 0;
+            const char* screenshot = getenv("FALLOUT_SETUP_SCREENSHOT");
+            int frame = 0;
+
+            while (choice == -1) {
+                int confirm = -1;
+                SDL_Event event;
+                while (SDL_PollEvent(&event)) {
+                    switch (event.type) {
+                    case SDL_QUIT:
+                        confirm = 2;
+                        break;
+                    case SDL_MOUSEMOTION:
+                    case SDL_MOUSEBUTTONDOWN:
+                        if (true) {
+                            int y = event.type == SDL_MOUSEMOTION ? event.motion.y : event.button.y;
+                            int line = (y - listTop) / SETUP_LINE;
+                            if (y >= listTop && line >= 0 && line < count) {
+                                selected = line;
+                                if (event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_LEFT) {
+                                    confirm = line;
+                                }
+                            }
+                        }
+                        break;
+                    case SDL_KEYDOWN:
+                        switch (event.key.keysym.sym) {
+                        case SDLK_UP:
+                            selected = (selected + count - 1) % count;
+                            break;
+                        case SDLK_DOWN:
+                            selected = (selected + 1) % count;
+                            break;
+                        case SDLK_1:
+                            confirm = 0;
+                            break;
+                        case SDLK_2:
+                            confirm = 1;
+                            break;
+                        case SDLK_RETURN:
+                        case SDLK_KP_ENTER:
+                            confirm = selected;
+                            break;
+                        case SDLK_ESCAPE:
+                            confirm = 2;
+                            break;
+                        }
+                        break;
+                    }
+                }
+
+                if (confirm != -1) {
+                    choice = confirm == 2 ? 0 : confirm + 1;
+                }
+
+                setup_clear(screen);
+                setup_fill(screen, 0, 0, SETUP_WIDTH, SETUP_LINE + 6, SETUP_GREEN);
+                setup_text(screen, SETUP_MARGIN, 4, "VAULT-TEC FALLOUT SETUP TERMINAL", 0x041A08);
+                setup_text(screen, SETUP_WIDTH - SETUP_MARGIN - (int)strlen("CO-OP v" COOP_VERSION) * COOP_SETUP_FONT_WIDTH, 4, "CO-OP v" COOP_VERSION, 0x041A08);
+                setup_text(screen, SETUP_MARGIN, SETUP_MARGIN + 2 * SETUP_LINE, "Which game do you want to play?", SETUP_GREEN);
+                setup_text(screen, SETUP_MARGIN, SETUP_MARGIN + 3 * SETUP_LINE, "Both play together the same way.", SETUP_DIM);
+                for (int index = 0; index < count; index++) {
+                    int y = listTop + index * SETUP_LINE;
+                    if (index == selected) {
+                        setup_fill(screen, SETUP_MARGIN - 6, y - 1, SETUP_WIDTH - 2 * SETUP_MARGIN + 12, SETUP_LINE - 1, SETUP_GREEN);
+                        setup_text(screen, SETUP_MARGIN, y, (std::string("> ") + entries[index]).c_str(), 0x041A08);
+                    } else {
+                        setup_text(screen, SETUP_MARGIN, y, (std::string("  ") + entries[index]).c_str(), SETUP_GREEN);
+                    }
+                }
+                setup_text(screen, SETUP_MARGIN, SETUP_HEIGHT - SETUP_MARGIN - SETUP_LINE, "1/2, Up/Down or mouse: choose   Enter: start   Esc: quit", SETUP_DIM);
+                setup_present(screen);
+
+                if (frame == 0 && screenshot != NULL) {
+                    setup_save_screenshot(screen, screenshot);
+                }
+                frame++;
+                SDL_Delay(16);
+            }
+
+            SDL_DestroyTexture(screen->texture);
+            SDL_DestroyRenderer(screen->renderer);
+        }
+        if (screen->window != NULL) {
+            SDL_DestroyWindow(screen->window);
+        }
+        delete screen;
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
+    }
+
+    if (choice == -1) {
+        return 1;
+    }
+
+    if (choice == 0) {
+        return 0;
+    }
+
+    if (choice != last && config_init(&config)) {
+        config_load(&config, configPath.c_str(), false);
+        config_set_value(&config, COOP_CONFIG_KEY, COOP_CONFIG_GAME_KEY, choice);
+        config_save(&config, configPath.c_str(), false);
+        config_exit(&config);
+    }
+
+    if (choice == 2) {
+        if (setup_start_fallout2(fallout2, argc, argv)) {
+            return 0;
+        }
+        // Could not start it: Fallout 1 then.
+    }
+
+    return 1;
 }
 
 bool coop_setup_ensure_game_data(int argc, char** argv)

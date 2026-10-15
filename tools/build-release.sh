@@ -7,6 +7,10 @@
 #
 #   tools/build-release.sh [out dir] [server url]
 #
+# With Fallout 2 co-op in ./fallout2 or next to this repository
+# (../fallout2-ce; or FALLOUT2_REPO), its game is built too and packaged alongside: the setup
+# screen then lets players pick Fallout or Fallout 2.
+#
 # The server URL is built in (-DCOOP_SERVER) and used in latest.txt.
 # Both are built with zig (pip install ziglang). Linux also needs SDL2
 # development files (or pass SDL2_INCLUDE_DIRS and SDL2_LIBRARIES in the
@@ -42,6 +46,36 @@ cmake -S "$repo" -B "$work/windows" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCOOP_S
     -DCMAKE_C_FLAGS="-gdwarf-4 $prefix_map" -DCMAKE_CXX_FLAGS="-gdwarf-4 $prefix_map" >/dev/null
 cmake --build "$work/windows"
 
+fallout2=${FALLOUT2_REPO:-}
+if [ -z "$fallout2" ]; then
+    # In the public repository Fallout 2 co-op is a subfolder.
+    if [ -f "$repo/fallout2/src/coop.h" ]; then fallout2=$repo/fallout2; else fallout2=$repo/../fallout2-ce; fi
+fi
+if [ -f "$fallout2/src/coop.h" ]; then
+    fallout2=$(cd "$fallout2" && pwd)
+    version2=$(sed -n 's/^#define COOP_VERSION "\(.*\)"/\1/p' "$fallout2/src/coop.h")
+    if [ "$version2" != "$version" ]; then
+        echo "Fallout 2 co-op is version $version2, Fallout 1 co-op $version: set both COOP_VERSIONs" >&2
+        exit 1
+    fi
+    prefix_map2="-ffile-prefix-map=$fallout2/= -ffile-prefix-map=$work/="
+
+    echo "== Fallout 2, Linux"
+    cmake -S "$fallout2" -B "$work/f2-linux" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCOOP_SERVER="$server" \
+        -DCMAKE_TOOLCHAIN_FILE="$repo/tools/zig-linux/toolchain.cmake" -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+        -DFALLOUT_VENDORED=OFF -DFALLOUT_VENDORED_ZLIB=ON \
+        -DCMAKE_C_FLAGS="-g $prefix_map2" -DCMAKE_CXX_FLAGS="-g $prefix_map2" "${sdl_args[@]}" >/dev/null
+    cmake --build "$work/f2-linux"
+
+    echo "== Fallout 2, Windows"
+    cmake -S "$fallout2" -B "$work/f2-windows" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCOOP_SERVER="$server" \
+        -DCMAKE_TOOLCHAIN_FILE="$repo/tools/zig-windows/toolchain.cmake" -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+        -DCMAKE_C_FLAGS="-gdwarf-4 $prefix_map2" -DCMAKE_CXX_FLAGS="-gdwarf-4 $prefix_map2" >/dev/null
+    cmake --build "$work/f2-windows"
+else
+    fallout2=
+fi
+
 package() {
     local dir=$1 binary=$2
     rm -rf "$dir"
@@ -55,17 +89,28 @@ name="classic-fallout-coop-$version"
 
 package "$work/$name-linux" "$work/linux/fallout-ce"
 strip "$work/$name-linux/fallout-ce"
+if [ -n "$fallout2" ]; then
+    cp "$work/f2-linux/fallout2-ce" "$work/$name-linux/"
+    strip "$work/$name-linux/fallout2-ce"
+fi
 
 # Symbols for reading crash reports (tools/crash-symbols.sh); not shipped.
 mkdir -p "$out/symbols/$version"
 cp "$work/linux/fallout-ce" "$out/symbols/$version/fallout-ce"
 cp "$work/windows/fallout-ce.exe" "$out/symbols/$version/"
+if [ -n "$fallout2" ]; then
+    cp "$work/f2-linux/fallout2-ce" "$work/f2-windows/fallout2-ce.exe" "$out/symbols/$version/"
+fi
 tar -C "$work" -czf "$out/$name-linux.tar.gz" "$name-linux"
 
 package "$work/$name-windows" "$work/windows/fallout-ce.exe"
 # DWARF debug info (for crash reports) stays in the symbols copy only; the
 # code is the same.
 objcopy --strip-debug "$work/$name-windows/fallout-ce.exe"
+if [ -n "$fallout2" ]; then
+    cp "$work/f2-windows/fallout2-ce.exe" "$work/$name-windows/"
+    objcopy --strip-debug "$work/$name-windows/fallout2-ce.exe"
+fi
 (cd "$work" && python3 -c "import shutil; shutil.make_archive('$out/$name-windows', 'zip', '.', '$name-windows')")
 
 {

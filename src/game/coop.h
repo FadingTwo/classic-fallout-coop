@@ -19,12 +19,14 @@ namespace fallout {
 #define COOP_MAX_PLAYERS 2
 
 // Co-op version, for the update check and bug reports.
-#define COOP_VERSION "1.11.1"
+#define COOP_VERSION "1.12"
 
 // fallout.cfg [coop] server=http://host[:port] - where UPDATE looks for
 // new versions (<server>/fallout-coop/latest.txt) and REPORT BUG sends
 // reports (<server>/fallout-coop/report).
 #define COOP_CONFIG_SERVER_KEY "server"
+// The game picked last in the setup screen (1 or 2).
+#define COOP_CONFIG_GAME_KEY "game"
 #define COOP_CONFIG_COLORBLIND_KEY "colorblind"
 #define COOP_CONFIG_OUTLINE1_KEY "outline_player1"
 #define COOP_CONFIG_OUTLINE2_KEY "outline_player2"
@@ -223,6 +225,10 @@ void coop_set_viewer(PlayerState* player);
 
 // True if any player character has one of the `results` flags (DAM_*).
 bool coop_any_player_has(int results);
+
+// The main loop's game over check: a player died, or is knocked out (as in
+// Fallout, unless KNOCKOUT is on: then only when nobody is left up).
+bool coop_game_lost();
 
 // Combat: true once a human turn started at `turnStart` (get_time()) has
 // used up [coop] turn_time.

@@ -1,7 +1,8 @@
 # Classic Fallout Co-op
 
 Play Fallout with a friend. This is a fan-made two-player co-op mod for
-Fallout 1, built on [Fallout Community Edition](https://github.com/alexbatalov/fallout1-ce).
+Fallout 1, built on [Fallout Community Edition](https://github.com/alexbatalov/fallout1-ce),
+and now also Fallout 2 (beta, built on [Fallout 2 Community Edition](https://github.com/alexbatalov/fallout2-ce)).
 Player 1 hosts the game; player 2 joins over a LAN, the internet, or on
 the same PC, with their own character.
 
@@ -12,8 +13,9 @@ explains the process.
 
 ![Two players in Junktown, each on their own computer: player 1's screen on the left, player 2's on the right](docs/coop/two-players.jpg)
 
-You need your own copy of Fallout (GOG or Steam). No game files are
-included. Co-op is off by default: without it the game plays exactly like
+You need your own copy of Fallout or Fallout 2 (GOG or Steam). No game
+files are included. With both installed, the setup screen asks which one
+to play. Co-op is off by default: without it the game plays exactly like
 Fallout CE.
 
 Co-op lives in Fallout's own main menu: **MULTIPLAYER** opens hosting,

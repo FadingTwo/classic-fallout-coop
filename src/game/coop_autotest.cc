@@ -1510,6 +1510,12 @@ static int coop_autotest_knockout(AutotestNewGameProc* newGame)
         autotest_fail("a knocked out player was hurt");
     }
 
+    // The main loop must not end the game while the other player is up (a
+    // fight can end with player 2 still out).
+    if (coop_game_lost()) {
+        autotest_fail("a knocked out player with the other one up counts as game over");
+    }
+
     critter_adjust_hits(p2obj, 10);
     results = p2obj->data.critter.combat.results;
     autotest_log("player 2 healed: %d hp, knocked out %d", critter_get_hits(p2obj), (results & DAM_KNOCKED_OUT) != 0 ? 1 : 0);
@@ -1526,6 +1532,9 @@ static int coop_autotest_knockout(AutotestNewGameProc* newGame)
     if ((p1obj->data.critter.combat.results & DAM_KNOCKED_OUT) == 0
         || (p2obj->data.critter.combat.results & DAM_DEAD) == 0) {
         autotest_fail("the last player up did not die");
+    }
+    if (!coop_game_lost()) {
+        autotest_fail("game over not detected with nobody left up");
     }
 
     return 0;

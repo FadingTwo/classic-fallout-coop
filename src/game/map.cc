@@ -1327,15 +1327,17 @@ void map_fix_critter_combat_data()
 // 0x475460
 int map_save()
 {
-    char temp[80];
+    // CE: was 80 characters, too short for a long data folder path (the
+    // co-op setup screen writes the installation's full path).
+    char temp[COMPAT_MAX_PATH];
     temp[0] = '\0';
 
     char* masterPatchesPath;
     if (config_get_string(&game_config, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_MASTER_PATCHES_KEY, &masterPatchesPath)) {
-        strcat(temp, masterPatchesPath);
+        snprintf(temp, sizeof(temp), "%s", masterPatchesPath);
         compat_mkdir(temp);
 
-        strcat(temp, "\\MAPS");
+        snprintf(temp, sizeof(temp), "%s\\MAPS", masterPatchesPath);
         compat_mkdir(temp);
     }
 

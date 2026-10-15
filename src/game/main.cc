@@ -106,6 +106,13 @@ int gnw_main(int argc, char** argv)
     coop_update_init(argc, argv);
     coop_update_cleanup();
 
+    // CE: Fallout 2 co-op next to us: which game? (Starts Fallout 2 if it
+    // is picked.)
+    if (coop_setup_choose_game(argc, argv) == 0) {
+        autorun_mutex_destroy();
+        return 0;
+    }
+
     // CE: First run - find the game data, or quit if the player gives up.
     if (!coop_setup_ensure_game_data(argc, argv)) {
         autorun_mutex_destroy();
@@ -396,8 +403,8 @@ static void main_game_loop()
             main_game_paused = 0;
         }
 
-        // Co-op: the game is lost when any player dies.
-        if (coop_any_player_has(DAM_DEAD | DAM_KNOCKED_OUT)) {
+        // Co-op: the game is lost when any player dies (see coop_game_lost).
+        if (coop_game_lost()) {
             main_show_death_scene = 1;
             game_user_wants_to_quit = 2;
         }
@@ -407,7 +414,7 @@ static void main_game_loop()
 
         // A death there (player 2 is obj_dude then) ends the game too, and
         // must get the death scene like any other.
-        if (coop_any_player_has(DAM_DEAD | DAM_KNOCKED_OUT)) {
+        if (coop_game_lost()) {
             main_show_death_scene = 1;
             game_user_wants_to_quit = 2;
         }
