@@ -51,7 +51,8 @@ start_slow_server() {
 }
 sleep 1
 
-sizes=(640x480 800x600 1024x768 1280x720 1366x768 1920x1080)
+# (1280x800: the Steam Deck.)
+sizes=(640x480 800x600 1024x768 1280x720 1280x800 1366x768 1920x1080)
 pick() { local list=("$@"); echo "${list[$((RANDOM % ${#list[@]}))]}"; }
 
 n=$(grep -c " run " "$out/summary.log" 2>/dev/null || echo 0)
@@ -66,6 +67,12 @@ while true; do
     RANDOM=$seed
     what=$(pick "${whats[@]}")
     how=$(pick direct relay relay slow asan wine)
+    # Player 2's scripted clicks in character creation come at fixed times,
+    # too early for a game slowed down by the address sanitizer.
+    [ "$what" = play ] && [ "$how" = asan ] && how=direct
+    # Four players under the address sanitizer are four slow processes at
+    # once: too heavy for a shared server.
+    [ "$what" = tour4 ] && [ "$how" = asan ] && how=direct
     hostRes=$(pick "${sizes[@]}")
     clientRes=$(pick "${sizes[@]}")
     rate=0

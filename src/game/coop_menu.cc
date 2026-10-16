@@ -677,7 +677,11 @@ static int coop_menu_report()
 
     std::string report = "Classic Fallout Co-op bug report\n";
     report += std::string("Version: ") + COOP_VERSION + "\n";
+    report += std::string("Game: ") + (strcmp(coop_net_game_name(), "fallout2") == 0 ? "Fallout 2" : "Fallout 1") + "\n";
     report += std::string("Platform: ") + SDL_GetPlatform() + "\n";
+    char checksum[32];
+    snprintf(checksum, sizeof(checksum), "%016llx", (unsigned long long)coop_net_data_checksum());
+    report += std::string("Game files: ") + checksum + "\n";
     report += std::string("Time: ") + timestamp + "\n";
     report += std::string("Description: ") + description + "\n";
 

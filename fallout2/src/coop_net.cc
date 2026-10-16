@@ -1039,8 +1039,10 @@ static void coop_host_handle(const CoopMessage& message)
             input.value = (int)reader.u32();
             // Positions in a scaled-down frame: back to this screen.
             if (input.kind == COOP_NET_INPUT_MOUSE && coop_sent_scaled_from_width != 0 && coop_sent_width > 0 && coop_sent_height > 0) {
-                input.x = input.x * coop_sent_scaled_from_width / coop_sent_width + coop_sent_scaled_from_width / coop_sent_width / 2;
-                input.y = input.y * coop_sent_scaled_from_height / coop_sent_height + coop_sent_scaled_from_height / coop_sent_height / 2;
+                // (The middle of the frame pixel: the integer rounding
+                // was a pixel short, enough to miss a small button.)
+                input.x = (2 * input.x + 1) * coop_sent_scaled_from_width / (2 * coop_sent_width);
+                input.y = (2 * input.y + 1) * coop_sent_scaled_from_height / (2 * coop_sent_height);
             }
             if (reader.ok()) {
                 coop_client_input.push_back(input);
@@ -2115,7 +2117,11 @@ int coop_net_client_run()
         int x;
         int y;
         mouse_get_position(&x, &y);
-        if (drawWidth != 0 && (drawWidth != frameWidth || drawHeight != frameHeight)) {
+        // Window -> frame: also when the frame is shown at its own size but
+        // off the corner (black bars: player 1's screen was scaled down to
+        // fit ours in one direction). Those clicks went that far off, e.g.
+        // 40 pixels with a 1920x1080 player 1 on a 1280x800 Steam Deck.
+        if (drawWidth != 0 && drawHeight != 0) {
             x = std::clamp((x - drawX) * frameWidth / drawWidth, 0, frameWidth - 1);
             y = std::clamp((y - drawY) * frameHeight / drawHeight, 0, frameHeight - 1);
         }
