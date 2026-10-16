@@ -126,6 +126,10 @@ static int coop_autotest_net_combat_host(AutotestNewGameProc* newGame);
 static int coop_autotest_net_combat_client(AutotestNewGameProc* newGame);
 static int coop_autotest_main_menu(AutotestNewGameProc* newGame);
 static int coop_autotest_menu_flow(AutotestNewGameProc* newGame);
+// How long a test host waits for a client to join (slow under the address
+// sanitizer, on a busy machine).
+#define COOP_AUTOTEST_JOIN_WAIT 90000
+
 static void coop_autotest_screenshot();
 static void coop_autotest_equip(PlayerState* player, const char* const* names, int count, int hand);
 static void coop_autotest_scene();
@@ -2102,6 +2106,10 @@ static int coop_autotest_net_four_client(AutotestNewGameProc* newGame)
     return 0;
 }
 
+static void coop_autotest_db_progress()
+{
+}
+
 // Every sound effect read into a buffer of exactly its listed size, with
 // guard bytes after it: none may be written past (the sound cache's heap
 // was found damaged after 16496-byte blocks).
@@ -2109,6 +2117,12 @@ static int coop_autotest_sfx_sizes(AutotestNewGameProc* newGame)
 {
     const char* paths[] = { "sound\\sfx\\*.ACM", "sound\\sfx\\*.SND" };
     int checked = 0;
+    // Twice: as usual, and with a progress callback, as while a map loads
+    // (that path once read past chunked files).
+    for (int pass = 0; pass < 2; pass++) {
+    if (pass == 1) {
+        db_register_callback(coop_autotest_db_progress, 1024);
+    }
     for (const char* pattern : paths) {
         char** names;
         int count = db_get_file_list(pattern, &names, NULL, 0);
@@ -2143,7 +2157,9 @@ static int coop_autotest_sfx_sizes(AutotestNewGameProc* newGame)
         }
         db_free_file_list(&names, NULL);
     }
-    autotest_log("%d sound effects checked", checked);
+    }
+    db_register_callback(NULL, 0);
+    autotest_log("%d sound effect reads checked", checked);
     return 0;
 }
 
@@ -2168,7 +2184,7 @@ static int coop_autotest_net_character_host(AutotestNewGameProc* newGame)
         return -1;
     }
 
-    if (!coop_autotest_session_frames(30000, true, false)) {
+    if (!coop_autotest_session_frames(COOP_AUTOTEST_JOIN_WAIT, true, false)) {
         autotest_fail("no client joined");
         return -1;
     }
@@ -2295,7 +2311,7 @@ static int coop_autotest_net_talk_host(AutotestNewGameProc* newGame)
         return -1;
     }
 
-    if (!coop_autotest_session_frames(30000, true, false)) {
+    if (!coop_autotest_session_frames(COOP_AUTOTEST_JOIN_WAIT, true, false)) {
         autotest_fail("no client joined");
         return -1;
     }
@@ -2551,7 +2567,7 @@ static int coop_autotest_net_host(AutotestNewGameProc* newGame)
     autotest_log("hosting, checksum %016llx", (unsigned long long)coop_net_data_checksum());
 
     unsigned int start = get_time();
-    while (elapsed_time(start) < 30000 && !coop_net_client_connected()) {
+    while (elapsed_time(start) < COOP_AUTOTEST_JOIN_WAIT && !coop_net_client_connected()) {
         coop_net_host_pump();
         coop_lobby_host_pump(critter_name(obj_dude), coop_net_client_connected() ? 2 : 1);
         SDL_Delay(10);
@@ -2835,7 +2851,7 @@ static int coop_autotest_net_combat_host(AutotestNewGameProc* newGame)
     }
 
     unsigned int start = get_time();
-    while (elapsed_time(start) < 30000 && !coop_net_client_connected()) {
+    while (elapsed_time(start) < COOP_AUTOTEST_JOIN_WAIT && !coop_net_client_connected()) {
         coop_net_host_pump();
         renderPresent();
         SDL_Delay(10);
@@ -3995,7 +4011,7 @@ static int coop_autotest_net_tour_host(AutotestNewGameProc* newGame)
     }
 
     unsigned int start = get_time();
-    while (elapsed_time(start) < 30000 && !coop_net_client_connected()) {
+    while (elapsed_time(start) < COOP_AUTOTEST_JOIN_WAIT && !coop_net_client_connected()) {
         coop_autotest_host_frame();
     }
 
@@ -4414,7 +4430,7 @@ static int coop_autotest_net_session_host(AutotestNewGameProc* newGame)
     if (!coop_autotest_relay_host_setup()) {
         return -1;
     }
-    if (!coop_autotest_session_frames(30000, true, false)) {
+    if (!coop_autotest_session_frames(COOP_AUTOTEST_JOIN_WAIT, true, false)) {
         autotest_fail("no client joined");
         return -1;
     }
@@ -4469,7 +4485,7 @@ static int coop_autotest_net_session_host(AutotestNewGameProc* newGame)
         autotest_fail("player 2's character is still out while they are away");
     }
 
-    if (!coop_autotest_session_frames(30000, true, false)) {
+    if (!coop_autotest_session_frames(COOP_AUTOTEST_JOIN_WAIT, true, false)) {
         autotest_fail("client did not come back");
         return -1;
     }
@@ -4715,7 +4731,7 @@ static int coop_autotest_net_ending_host(AutotestNewGameProc* newGame)
     if (!coop_autotest_relay_host_setup()) {
         return -1;
     }
-    if (!coop_autotest_session_frames(30000, true, false)) {
+    if (!coop_autotest_session_frames(COOP_AUTOTEST_JOIN_WAIT, true, false)) {
         autotest_fail("no client joined");
         return -1;
     }
@@ -4917,7 +4933,7 @@ static int coop_autotest_net_death_host(AutotestNewGameProc* newGame)
     }
 
     coop_host_init();
-    if (!coop_autotest_session_frames(30000, true, false)) {
+    if (!coop_autotest_session_frames(COOP_AUTOTEST_JOIN_WAIT, true, false)) {
         autotest_fail("no client joined");
         return -1;
     }

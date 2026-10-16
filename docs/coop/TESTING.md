@@ -39,7 +39,9 @@ All scripts live in `src/game/autotest.cc` (single player) and
 One process: `regress`, `coop` (players and switching), `coop_travel`,
 `coop_combat`, `coop_join` (character creation), `coop_looks`,
 `coop_barter`, `coop_rads`, `coop_interact` (pick up, doors, stimpak),
-`story_kill`, `pack` (frame packing), `map_time`, `movie`, `credits`, and
+`story_kill`, `pack` (frame packing), `map_time`, `movie`, `credits`,
+`coop_four` (four players on one PC, HARDER), `coop_roofs`, `coop_character`
+(character copies), `sfx_sizes` (every sound effect read in bounds), and
 the menu scripts `main_menu`, `menu_flow`, `menu_join`, `menu_server`,
 `menu_more`, `menu_host_code`, `menu_crash_report`.
 
@@ -53,14 +55,18 @@ Two processes (`nettest.sh <bin> <out> <host script> <client script>`):
 | `net_session_host` | `net_session_client` | Leave and rejoin, saving and loading with player 2 there, trading, the turn timer. |
 | `net_death_host` | `net_client` | Either player dying ends the game properly. |
 | `net_ending_host` | `net_client` | The ending: movie and credits with player 2 watching. |
-| `net_tour_host` | `net_tour_client` | Both players visit every map (`COOP_AUTOTEST_TOUR=ALL`). |
+| `net_tour_host` | `net_tour_client` | Both players visit every map (`COOP_AUTOTEST_TOUR=ALL`); with `COOP_AUTOTEST_PLAYERS=4` and `EXTRA_CLIENTS=2`, four players. |
+| `net_four_host` | `net_four_client` | Three clients join with their own characters (`EXTRA_CLIENTS=2`, `COOP_AUTOTEST_CHARACTER_FILE`), a fight where each plays their own turns, saving and loading. |
+| `net_character_host` | `net_character_client` | Player 2 brings their own character and keeps a copy. |
 
 ## Settings for tests
 
 `nettest.sh`: `HOST_RES` / `CLIENT_RES` (screen sizes, e.g. `1920x1080`),
 `HOST_EXTRA` / `CLIENT_EXTRA` (extra `fallout.cfg` settings),
 `CLIENT_BIN` (another binary for player 2, e.g. a Windows build under
-Wine), `HOST_WAIT` (seconds before the client starts).
+Wine), `HOST_WAIT` (seconds before the client starts), `EXTRA_CLIENTS`
+(more clients for players 3 and 4, in `client2`...), `EXTRA_CLIENT_BIN`
+(their binary).
 
 `regress.sh`: `AUTOTEST_SCRIPT`, `AUTOTEST_TIMEOUT` (seconds),
 `AUTOTEST_RES`, `AUTOTEST_SAVES` (start from saved games),
@@ -72,6 +78,7 @@ Environment for the scripts (read with `getenv` in `coop_autotest.cc`):
 |---|---|
 | `COOP_AUTOTEST_TOUR` | `ALL` or a list `A.MAP,B.MAP`. |
 | `COOP_AUTOTEST_ROUGH` | Fights are played quickly and players are kept alive. |
+| `COOP_AUTOTEST_PLAYERS` | `net_tour`: players 3 and up too (one client each). |
 | `COOP_AUTOTEST_SEED` | Shuffles the tour and where player 2 walks; the same seed repeats a run. |
 | `COOP_AUTOTEST_RELAY` / `_RELAY_FILE` / `_RELAY_CODE` | Connect through a relay (e.g. a local `coop_server.py --relay-port`). |
 | `COOP_AUTOTEST_STORY` | `CHIP,VATS,MASTER`: start with those story steps done. |

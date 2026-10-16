@@ -7,6 +7,7 @@
 #include <SDL.h>
 
 #include <algorithm>
+#include <chrono>
 #include <random>
 #include <string>
 #include <vector>
@@ -36,9 +37,11 @@
 #include "perk.h"
 #include "platform_compat.h"
 #include "party_member.h"
+#include "animation.h"
 #include "art.h"
 #include "game_movie.h"
 #include "proto.h"
+#include "random.h"
 #include "proto_instance.h"
 #include "queue.h"
 #include "scripts.h"
@@ -100,6 +103,10 @@ static int coop_autotest_net_client(AutotestNewGameProc* newGame);
 static int coop_autotest_net_play_host(AutotestNewGameProc* newGame);
 static int coop_autotest_net_play_client(AutotestNewGameProc* newGame);
 static void coop_autotest_click_centered(int x, int y);
+// How long a test host waits for a client to join (slow under the address
+// sanitizer, on a busy machine).
+#define COOP_AUTOTEST_JOIN_WAIT 90000
+
 static void coop_autotest_screenshot();
 
 // The enemy of the combat tests, and the player turns counted there.
@@ -1103,7 +1110,7 @@ static int coop_autotest_net_host(AutotestNewGameProc* newGame)
     autotest_log("hosting, checksum %016llx", (unsigned long long)coop_net_data_checksum());
 
     unsigned int start = get_time();
-    while (elapsed_time(start) < 30000 && !coop_net_client_connected()) {
+    while (elapsed_time(start) < COOP_AUTOTEST_JOIN_WAIT && !coop_net_client_connected()) {
         coop_net_host_pump();
         coop_lobby_host_pump(critter_name(obj_dude), coop_net_client_connected() ? 2 : 1);
         SDL_Delay(10);
@@ -1828,7 +1835,7 @@ static int coop_autotest_net_session_host(AutotestNewGameProc* newGame)
     if (!coop_autotest_relay_host_setup()) {
         return -1;
     }
-    if (!coop_autotest_session_frames(30000, true, false)) {
+    if (!coop_autotest_session_frames(COOP_AUTOTEST_JOIN_WAIT, true, false)) {
         autotest_fail("no client joined");
         return -1;
     }
@@ -1883,7 +1890,7 @@ static int coop_autotest_net_session_host(AutotestNewGameProc* newGame)
         autotest_fail("player 2's character is still out while they are away");
     }
 
-    if (!coop_autotest_session_frames(30000, true, false)) {
+    if (!coop_autotest_session_frames(COOP_AUTOTEST_JOIN_WAIT, true, false)) {
         autotest_fail("client did not come back");
         return -1;
     }
@@ -2141,6 +2148,49 @@ static bool coop_autotest_rough_turn(Object* player)
 // ALL; or A.MAP,B.MAP), every elevation, a few seconds each with player 2
 // walking around; fights are cleared, conversations answered. Paired with
 // net_tour_client.
+// COOP_AUTOTEST_VIDEO=1: screenshots become video frames,
+// vid-<wall clock ms>.raw (width, height, palette, pixels), so the frames
+// of the host and the clients can be matched up afterwards
+// (tools/make_video.py, make_video4.py in Fallout 1 co-op).
+static int coop_autotest_video_dump(int width, int height, unsigned char* buffer, unsigned char* palette)
+{
+    long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch())
+                       .count();
+    char name[64];
+    snprintf(name, sizeof(name), "vid-%lld.raw", ms);
+    FILE* stream = fopen(name, "wb");
+    if (stream == nullptr) {
+        return -1;
+    }
+    fwrite(&width, sizeof(width), 1, stream);
+    fwrite(&height, sizeof(height), 1, stream);
+    fwrite(palette, 1, 768, stream);
+    fwrite(buffer, 1, width * height, stream);
+    fclose(stream);
+    return 0;
+}
+
+static bool coop_autotest_video()
+{
+    return getenv("COOP_AUTOTEST_VIDEO") != nullptr;
+}
+
+// Player 1 strolls to a free tile a few hexes away.
+static void coop_autotest_stroll(Object* critter)
+{
+    for (int attempt = 0; attempt < 20; attempt++) {
+        int tile = tileGetTileInDirection(critter->tile, randomBetween(0, 5), randomBetween(3, 7));
+        if (tile != critter->tile && _obj_blocking_at(nullptr, tile, critter->elevation) == nullptr
+            && pathfinderFindPath(critter, critter->tile, tile, nullptr, 0, _obj_blocking_at) != 0) {
+            reg_anim_begin(ANIMATION_REQUEST_RESERVED);
+            animationRegisterMoveToTile(critter, tile, critter->elevation, -1, 0);
+            reg_anim_end();
+            return;
+        }
+    }
+}
+
 static int coop_autotest_net_tour_host(AutotestNewGameProc* newGame)
 {
     if (coop_net_mode() != COOP_NET_HOST) {
@@ -2150,6 +2200,11 @@ static int coop_autotest_net_tour_host(AutotestNewGameProc* newGame)
 
     if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
         return -1;
+    }
+
+    // Screenshots without "Saved screenshot." in the (shared) message box.
+    if (coop_autotest_video()) {
+        screenshotHandlerConfigure(KEY_F12, coop_autotest_video_dump);
     }
 
     PlayerState* p1 = coop_player(0);
@@ -2175,7 +2230,7 @@ static int coop_autotest_net_tour_host(AutotestNewGameProc* newGame)
         return -1;
     }
 
-    if (!coop_autotest_session_frames(30000, true, false)) {
+    if (!coop_autotest_session_frames(COOP_AUTOTEST_JOIN_WAIT, true, false)) {
         autotest_fail("no client joined");
         return -1;
     }
@@ -2230,6 +2285,11 @@ static int coop_autotest_net_tour_host(AutotestNewGameProc* newGame)
             continue;
         }
 
+        if (coop_autotest_video()) {
+            // Daylight for the video: noon (game time is in 1/10 s).
+            gameTimeSetTime(gameTimeGetTime() / 864000 * 864000 + 12 * 36000);
+        }
+
         MapTransition transition;
         memset(&transition, 0, sizeof(transition));
         transition.map = index;
@@ -2240,14 +2300,30 @@ static int coop_autotest_net_tour_host(AutotestNewGameProc* newGame)
         mapHandleTransition();
         autotest_log("%s loaded in %u ms", stop, getTicksSince(start));
 
+        // COOP_AUTOTEST_STAY_MS: longer on each map (videos).
+        unsigned int stay = getenv("COOP_AUTOTEST_STAY_MS") != nullptr ? (unsigned int)atoi(getenv("COOP_AUTOTEST_STAY_MS")) : 6000u;
         start = getTicks();
-        while (getTicksSince(start) < 6000 && coop_net_client_connected()) {
-            coop_autotest_heal_players();
+        unsigned int lastFrame = 0;
+        unsigned int lastStroll = 0;
+        while (getTicksSince(start) < stay && coop_net_client_connected()) {
+            if (!coop_autotest_video()) {
+                coop_autotest_heal_players();
+            }
             coop_autotest_host_frame();
+            if (coop_autotest_video()) {
+                if (getTicksSince(lastFrame) >= 100) {
+                    lastFrame = getTicks();
+                    takeScreenshot();
+                }
+                if (getTicksSince(lastStroll) >= 2500) {
+                    lastStroll = getTicks();
+                    coop_autotest_stroll(gDude);
+                }
+            }
         }
 
-        // The other elevations too.
-        for (int elevation = 0; elevation < ELEVATION_COUNT && coop_net_client_connected(); elevation++) {
+        // The other elevations too (not for videos).
+        for (int elevation = 0; elevation < ELEVATION_COUNT && coop_net_client_connected() && !coop_autotest_video(); elevation++) {
             if (gDude->elevation == elevation || objectFindFirstAtElevation(elevation) == nullptr) {
                 continue;
             }
@@ -2312,9 +2388,17 @@ static void coop_autotest_tour_walk()
         offset[1] = (int)(random() % 161) - 80;
     }
     coop_autotest_click_centered(320 + offset[0], 190 + offset[1]);
-    inject_wait(150);
-    inject_call(coop_autotest_screenshot);
-    inject_wait(90);
+    if (coop_autotest_video()) {
+        // A video frame about every 100 ms.
+        for (int frame = 0; frame < 30; frame++) {
+            inject_wait(6);
+            inject_call(coop_autotest_screenshot);
+        }
+    } else {
+        inject_wait(150);
+        inject_call(coop_autotest_screenshot);
+        inject_wait(90);
+    }
     inject_call(coop_autotest_tour_walk);
 }
 
@@ -2326,6 +2410,10 @@ static int coop_autotest_net_tour_client(AutotestNewGameProc* newGame)
     }
 
     coop_autotest_relay_client_setup();
+
+    if (coop_autotest_video()) {
+        screenshotHandlerConfigure(KEY_F12, coop_autotest_video_dump);
+    }
 
     inject_wait(300);
     inject_call(coop_autotest_tour_walk);
@@ -2484,7 +2572,7 @@ static int coop_autotest_net_character_host(AutotestNewGameProc* newGame)
         return -1;
     }
 
-    if (!coop_autotest_session_frames(30000, true, false)) {
+    if (!coop_autotest_session_frames(COOP_AUTOTEST_JOIN_WAIT, true, false)) {
         autotest_fail("no client joined");
         return -1;
     }
@@ -2822,7 +2910,7 @@ static int coop_autotest_net_talk_host(AutotestNewGameProc* newGame)
         return -1;
     }
 
-    if (!coop_autotest_session_frames(30000, true, false)) {
+    if (!coop_autotest_session_frames(COOP_AUTOTEST_JOIN_WAIT, true, false)) {
         autotest_fail("no client joined");
         return -1;
     }
@@ -2971,7 +3059,7 @@ static int coop_autotest_net_combat_host(AutotestNewGameProc* newGame)
         return -1;
     }
 
-    if (!coop_autotest_session_frames(30000, true, false)) {
+    if (!coop_autotest_session_frames(COOP_AUTOTEST_JOIN_WAIT, true, false)) {
         autotest_fail("no client joined");
         return -1;
     }

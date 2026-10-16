@@ -492,12 +492,21 @@ int db_read_to_buf(const char* filename, unsigned char* buf)
                             read_callback();
                         }
                     } else {
-                        read_count += lzss_decode_to_buf(current_database->stream, buf, v4);
+                        // CE: the decoded bytes move `buf` on too, like without
+                        // a progress callback (the next chunk overwrote this
+                        // one, and the loop read on into the next files, far
+                        // past `buf`: sound cache damage while maps loaded).
+                        int decoded = lzss_decode_to_buf(current_database->stream, buf, v4);
+                        buf += decoded;
+                        read_count += decoded;
                         while (read_count >= read_threshold) {
                             read_count -= read_threshold;
                             read_callback();
                         }
                     }
+                } else {
+                    // CE: a broken file: stop instead of looping forever.
+                    break;
                 }
             }
         } else {

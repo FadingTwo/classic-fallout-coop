@@ -906,7 +906,8 @@ static bool heap_find_free_block(Heap* heap, int size, void** blockPtr, int a4)
     HeapBlockHeader* blockHeader;
     HeapBlockFooter* blockFooter;
 
-    if (heap_system_only() && a4 == 0) {
+    // (Testing: every block, the caches' too, so writes past them show.)
+    if (heap_system_only()) {
         goto system;
     }
 

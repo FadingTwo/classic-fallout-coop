@@ -119,6 +119,14 @@ while true; do
     if [[ "$host" != *"PASS"* || "$client" != *"PASS"* || "$asan" != "0" ]]; then
         status=FAIL
     fi
+    # Players 3 and 4's clients (tour4) count too: a hung one has no result.
+    for extra in "$dir"/client[2-9]; do
+        [ -d "$extra" ] || continue
+        if ! grep -qh "result: PASS" "$extra/autotest/result.txt" 2>/dev/null; then
+            status=FAIL
+            echo "    $(basename "$extra"): no PASS" >>"$out/summary.extra"
+        fi
+    done
 
     line="run $n $what $how"
     [ "$how" = slow ] && line="$line ${rate}B/s"

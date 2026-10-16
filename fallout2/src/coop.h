@@ -27,7 +27,7 @@ namespace fallout {
 // active (and `gDude` their critter) for the code inside it.
 
 // The co-op version (shared with Classic Fallout Co-op for Fallout 1).
-#define COOP_VERSION "1.13"
+#define COOP_VERSION "1.13.1"
 
 #define COOP_MAX_PLAYERS 4
 
