@@ -638,7 +638,11 @@ int backgroundSoundLoad(const char* fileName, int a2, int a3, int a4)
     _background_storage_requested = a3;
     _background_loop_requested = a4;
 
-    strcpy(gBackgroundSoundFileName, fileName);
+    // CE: backgroundSoundRestart() passes this very buffer (copying onto
+    // itself is undefined).
+    if (fileName != gBackgroundSoundFileName) {
+        strcpy(gBackgroundSoundFileName, fileName);
+    }
 
     if (!gGameSoundInitialized) {
         return -1;

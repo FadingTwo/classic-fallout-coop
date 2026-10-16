@@ -1582,9 +1582,25 @@ static int _anim_set_end(int animationSequenceIndex)
         }
     }
 
+    // CE: The objects erased here are freed; the loop below must not look
+    // at them again (found with AddressSanitizer in Fallout 1 CE).
+    Object* erased[ANIMATION_DESCRIPTION_LIST_CAPACITY];
+    int erasedCount = 0;
+
     for (i = 0; i < animationSequence->length; i++) {
         animationDescription = &(animationSequence->animations[i]);
         if (animationDescription->kind == ANIM_KIND_HIDE && ((i < animationSequence->animationIndex) || (animationDescription->extendedFlags & ANIMATION_SEQUENCE_FORCED))) {
+            bool alreadyErased = false;
+            for (int e = 0; e < erasedCount; e++) {
+                if (erased[e] == animationDescription->owner) {
+                    alreadyErased = true;
+                }
+            }
+            if (alreadyErased) {
+                continue;
+            }
+
+            erased[erasedCount++] = animationDescription->owner;
             Rect rect;
             int elevation = animationDescription->owner->elevation;
             objectDestroy(animationDescription->owner, &rect);
@@ -1602,7 +1618,13 @@ static int _anim_set_end(int animationSequenceIndex)
             // TODO: Check.
             if (animationDescription->kind != ANIM_KIND_PING) {
                 Object* owner = animationDescription->owner;
-                if (FID_TYPE(owner->fid) == OBJ_TYPE_CRITTER) {
+                bool ownerErased = false;
+                for (int e = 0; e < erasedCount; e++) {
+                    if (erased[e] == owner) {
+                        ownerErased = true;
+                    }
+                }
+                if (!ownerErased && FID_TYPE(owner->fid) == OBJ_TYPE_CRITTER) {
                     int j = 0;
                     for (; j < i; j++) {
                         AnimationDescription* ad = &(animationSequence->animations[j]);
