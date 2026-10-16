@@ -2782,27 +2782,30 @@ void _dark_trans_buf_to_buf(unsigned char* src, int srcWidth, int srcHeight, int
     unsigned char* sp = src;
     unsigned char* dp = dest + destPitch * destY + destX;
 
-    int srcStep = srcPitch - srcWidth;
-    int destStep = destPitch - srcWidth;
     int intensityIndex = intensity / 512;
+
+    // CE: each color at this light level, looked up once per call instead
+    // of once per pixel (the same colors; this loop is much of a full
+    // redraw's time). Colors 0xE5 and up (the cycling ones) stay as they
+    // are.
+    unsigned char shade[256];
+    for (int index = 0; index < 0xE5; index++) {
+        shade[index] = intensityColorTable[index][intensityIndex];
+    }
+    for (int index = 0xE5; index < 256; index++) {
+        shade[index] = (unsigned char)index;
+    }
 
     for (int y = 0; y < srcHeight; y++) {
         for (int x = 0; x < srcWidth; x++) {
-            unsigned char color = *sp;
+            unsigned char color = sp[x];
             if (color != 0) {
-                if (color < 0xE5) {
-                    color = intensityColorTable[color][intensityIndex];
-                }
-
-                *dp = color;
+                dp[x] = shade[color];
             }
-
-            sp++;
-            dp++;
         }
 
-        sp += srcStep;
-        dp += destStep;
+        sp += srcPitch;
+        dp += destPitch;
     }
 }
 

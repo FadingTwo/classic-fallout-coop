@@ -27,11 +27,20 @@ static bool cacheResetStatistics(Cache* cache);
 static bool cacheEnsureSize(Cache* cache, int size);
 static bool cacheSweep(Cache* cache);
 static bool cacheSetCapacity(Cache* cache, int newCapacity);
+
 static int cacheEntriesCompareByUsage(const void* a1, const void* a2);
 static int cacheEntriesCompareByMostRecentHit(const void* a1, const void* a2);
 
 // 0x510938
 static int _lock_sound_ticker = 0;
+
+// How many cache reads are in progress (see cacheFetchEntryForKey).
+static int gCacheLoadingDepth = 0;
+
+bool cacheIsLoading()
+{
+    return gCacheLoadingDepth > 0;
+}
 
 // cache_init
 // 0x41FCC0
@@ -267,7 +276,14 @@ static bool cacheFetchEntryForKey(Cache* cache, int key, int* indexPtr)
                 break;
             }
 
-            if (cache->readProc(key, &size, cacheEntry->data) != 0) {
+            // CE: reading can call back into the game (the mouse refresh
+            // while a map loads), which must not use a cache meanwhile: it
+            // could move or free blocks while this one is being filled
+            // (found in Fallout 1 co-op's soak test).
+            gCacheLoadingDepth++;
+            bool readFailed = cache->readProc(key, &size, cacheEntry->data) != 0;
+            gCacheLoadingDepth--;
+            if (readFailed) {
                 break;
             }
 
@@ -341,32 +357,28 @@ static int cacheFindIndexForKey(Cache* cache, int key, int* indexPtr)
         return 3;
     }
 
-    int r = length - 1;
+    // CE: a real binary search. The original moved l and r one entry at a
+    // time: it finds the same index, but looks at most entries on the way
+    // (a quarter of a full redraw's time at 1920x1080 went here).
     int l = 0;
-    int mid;
-    int cmp;
-
-    do {
-        mid = (l + r) / 2;
-
-        cmp = key - cache->entries[mid]->key;
-        if (cmp == 0) {
+    int r = length - 1;
+    while (l <= r) {
+        int mid = l + (r - l) / 2;
+        int entryKey = cache->entries[mid]->key;
+        if (key == entryKey) {
             *indexPtr = mid;
             return 2;
         }
 
-        if (cmp > 0) {
-            l = l + 1;
+        if (key > entryKey) {
+            l = mid + 1;
         } else {
-            r = r - 1;
+            r = mid - 1;
         }
-    } while (r >= l);
-
-    if (cmp < 0) {
-        *indexPtr = mid;
-    } else {
-        *indexPtr = mid + 1;
     }
+
+    // Where the key would go.
+    *indexPtr = l;
 
     return 3;
 }

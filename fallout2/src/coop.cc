@@ -2,7 +2,10 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+#include <algorithm>
 
 #include "art.h"
 #include "character_editor.h"
@@ -19,6 +22,7 @@
 #include "game_vars.h"
 #include "input.h"
 #include "interface.h"
+#include "map.h"
 #include "object.h"
 #include "palette.h"
 #include "party_member.h"
@@ -31,6 +35,7 @@
 #include "perk.h"
 #include "tile.h"
 #include "trait.h"
+#include "window_manager.h"
 
 namespace fallout {
 
@@ -218,6 +223,46 @@ PlayerState* coop_player_of(Object* obj)
     }
 
     return nullptr;
+}
+
+int coop_effect_volume_for(int index, int tile, int elevation, int volume)
+{
+    PlayerState* player = coop_player(index);
+    if (player == nullptr || player->obj == nullptr || tile < 0 || tile >= HEX_GRID_SIZE) {
+        return volume;
+    }
+
+    Object* critter = player->obj;
+    if (critter->elevation != elevation) {
+        return 0x2AAA;
+    }
+
+    // As _gsound_compute_relative_volume() does: full when it is on their
+    // screen (here within half a window of them, whom their camera
+    // follows)...
+    int x;
+    int y;
+    int playerX;
+    int playerY;
+    tileToScreenXY(tile, &x, &y, elevation);
+    tileToScreenXY(critter->tile, &playerX, &playerY, elevation);
+    Rect window;
+    windowGetRect(gIsoWindow, &window);
+    if (abs(x - playerX) <= (window.right - window.left + 1) / 2 && abs(y - playerY) <= (window.bottom - window.top + 1) / 2) {
+        return 0x7FFF;
+    }
+
+    // ...else by distance: full within their Perception, a third from
+    // twice that.
+    int distance = tileDistanceBetween(tile, critter->tile);
+    int perception = std::max(critterGetStat(critter, STAT_PERCEPTION), 1);
+    if (distance <= perception) {
+        return 0x7FFF;
+    }
+    if (distance < 2 * perception) {
+        return 0x7FFF - 0x5554 * (distance - perception) / perception;
+    }
+    return 0x2AAA;
 }
 
 PlayerState* coop_player_by_pid(int pid)

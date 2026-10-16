@@ -2,6 +2,7 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <algorithm>
@@ -23,6 +24,7 @@
 #include "game/gconfig.h"
 #include "game/gdialog.h"
 #include "game/gmouse.h"
+#include "game/map.h"
 #include "game/object.h"
 #include "game/palette.h"
 #include "game/party.h"
@@ -39,6 +41,7 @@
 #include "plib/color/color.h"
 #include "plib/db/db.h"
 #include "plib/gnw/debug.h"
+#include "plib/gnw/gnw.h"
 #include "plib/gnw/svga.h"
 #include "plib/gnw/input.h"
 #include "plib/gnw/intrface.h"
@@ -213,6 +216,46 @@ static void coop_sync_base()
     if (coop_scope_stack_depth == 0) {
         coop_active->obj = obj_dude;
     }
+}
+
+int coop_effect_volume_for(int index, int tile, int elevation, int volume)
+{
+    PlayerState* player = coop_player(index);
+    if (player == NULL || player->obj == NULL || tile < 0 || tile >= HEX_GRID_SIZE) {
+        return volume;
+    }
+
+    Object* critter = player->obj;
+    if (critter->elevation != elevation) {
+        return 0x2AAA;
+    }
+
+    // As gsound_compute_relative_volume() does: full when it is on their
+    // screen (here within half a window of them, whom their camera
+    // follows)...
+    int x;
+    int y;
+    int playerX;
+    int playerY;
+    tile_coord(tile, &x, &y, elevation);
+    tile_coord(critter->tile, &playerX, &playerY, elevation);
+    Rect window;
+    win_get_rect(display_win, &window);
+    if (abs(x - playerX) <= (window.lrx - window.ulx + 1) / 2 && abs(y - playerY) <= (window.lry - window.uly + 1) / 2) {
+        return 0x7FFF;
+    }
+
+    // ...else by distance: full within their Perception, a third from
+    // twice that.
+    int distance = tile_dist(tile, critter->tile);
+    int perception = std::max(stat_level(critter, STAT_PERCEPTION), 1);
+    if (distance <= perception) {
+        return 0x7FFF;
+    }
+    if (distance < 2 * perception) {
+        return 0x7FFF - 0x5554 * (distance - perception) / perception;
+    }
+    return 0x2AAA;
 }
 
 PlayerState* coop_player_of(Object* obj)

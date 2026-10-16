@@ -88,7 +88,8 @@ int ambientSoundEffectEventProcess(Object* a1, void* a2);
 // CE: reports sounds as they start, e.g. to replay them on a co-op client.
 // nullptr when unused.
 typedef enum GsoundEvent {
-    // name, volume.
+    // name, volume, and the tile and elevation it comes from (tile -1:
+    // nowhere in particular).
     GSOUND_EVENT_SFX,
     // name and the backgroundSoundLoad() arguments.
     GSOUND_EVENT_MUSIC,

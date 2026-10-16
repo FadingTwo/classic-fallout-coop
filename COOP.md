@@ -44,9 +44,10 @@ in `fallout2.cfg`. It plays like Fallout 1 co-op, with these differences:
   suit), or like their armor.
 - Your companions (Sulik, Vic...) follow player 1's orders as usual.
 
-Both players need Fallout 2 in the same version and language, like
-Fallout 1. It is new: please report what breaks (MULTIPLAYER, REPORT
-BUG).
+Everyone plays the same game (Fallout 1 or Fallout 2); since 1.13.3 its
+release, language or patches may differ (the game runs on player 1's
+computer; those players join as a new character). Fallout 2 co-op is
+new: please report what breaks (MULTIPLAYER, REPORT BUG).
 
 ## Rules
 
@@ -78,6 +79,9 @@ BUG).
   knocked out instead while another is still up: they can't be hurt
   while out and wake up by themselves or when healed (Stimpak, First
   Aid, Doctor). The last player standing dies as usual.
+- Each player's camera follows their own character, however far apart
+  you are, and each hears sound effects as loud as they are where they
+  stand (music and speech are the same for everyone).
 - Press T to chat (over the network). Enter sends, Esc cancels.
 - Press G to mark the spot under your mouse for the other player; it
   blinks on both screens for five seconds.

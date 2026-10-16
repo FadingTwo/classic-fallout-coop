@@ -1661,7 +1661,19 @@ static int _anim_set_end(int animationSequenceIndex)
             }
         } else if (i >= animationSequence->field_0) {
             if (animationDescription->extendedFlags & ANIMATION_SEQUENCE_FORCED) {
-                animationDescription->callback(animationDescription->param1, animationDescription->param2);
+                // CE: not with an object erased above: an explosion's
+                // scenery callback is for the explosion, which is hidden
+                // (erased) after it, and a map change stops the sequence
+                // before either ran (found with AddressSanitizer).
+                bool paramErased = false;
+                for (int e = 0; e < erasedCount; e++) {
+                    if ((void*)erased[e] == animationDescription->param1) {
+                        paramErased = true;
+                    }
+                }
+                if (!paramErased) {
+                    animationDescription->callback(animationDescription->param1, animationDescription->param2);
+                }
             } else {
                 if (animationDescription->kind == ANIM_KIND_CALLBACK && animationDescription->callback == (AnimationCallback*)_gsnd_anim_sound) {
                     soundEffectDelete((Sound*)animationDescription->param1);

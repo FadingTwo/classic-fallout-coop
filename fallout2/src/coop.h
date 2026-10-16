@@ -27,7 +27,7 @@ namespace fallout {
 // active (and `gDude` their critter) for the code inside it.
 
 // The co-op version (shared with Classic Fallout Co-op for Fallout 1).
-#define COOP_VERSION "1.13.2"
+#define COOP_VERSION "1.13.3"
 
 #define COOP_MAX_PLAYERS 4
 
@@ -149,6 +149,12 @@ PlayerState* coop_player_of(Object* obj);
 
 // The player whose critter has proto id `pid`, or NULL.
 PlayerState* coop_player_by_pid(int pid);
+
+// How loud (0 to 0x7FFF) a sound effect from `tile` at `elevation` is for
+// player `index` + 1, the way the game works it out for player 1: full on
+// their screen, quieter further away, by their Perception. `volume` when
+// it comes from nowhere in particular (tile -1).
+int coop_effect_volume_for(int index, int tile, int elevation, int volume);
 
 // True when player 1 is the active player.
 bool coop_primary_is_active();

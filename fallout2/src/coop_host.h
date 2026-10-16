@@ -28,6 +28,12 @@ void coop_host_end_main_input();
 // Main game loop, before renderPresent(): player 2's part of the frame.
 void coop_host_frame();
 
+// Testing: the camera's tile in player `slot` + 1's last part of a frame,
+// and how many parts they had (a part waits while their client can't take
+// a frame).
+int coop_host_view_center(int slot);
+unsigned int coop_host_view_parts(int slot);
+
 // Chat while playing over the network: T starts typing for the active
 // player, Enter sends ("Name: text" in the message window), Esc cancels.
 // Returns true when the key was used for chat (also every key typed).

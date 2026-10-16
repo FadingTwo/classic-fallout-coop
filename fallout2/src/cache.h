@@ -70,6 +70,10 @@ bool cacheUnlock(Cache* cache, CacheEntry* cacheEntry);
 bool cacheFlush(Cache* cache);
 bool cachePrintStats(Cache* cache, char* dest, size_t size);
 
+// CE: true while a cache is reading an entry in; code called back during
+// the read (e.g. the mouse refresh while a map loads) must not use caches.
+bool cacheIsLoading();
+
 } // namespace fallout
 
 #endif /* CACHE_H */

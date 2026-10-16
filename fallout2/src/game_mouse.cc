@@ -9,6 +9,7 @@
 #include "actions.h"
 #include "animation.h"
 #include "art.h"
+#include "cache.h"
 #include "color.h"
 #include "combat.h"
 #include "critter.h"
@@ -2460,7 +2461,12 @@ static void customMouseModeFrmsInit()
 
 void gameMouseRefreshImmediately()
 {
-    gameMouseRefresh();
+    // CE: called while files are read; moving the cursor locks art, which
+    // must wait while a cache is filling an entry (see
+    // cacheFetchEntryForKey).
+    if (!cacheIsLoading()) {
+        gameMouseRefresh();
+    }
     renderPresent();
 }
 

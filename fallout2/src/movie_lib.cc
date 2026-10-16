@@ -5,6 +5,7 @@
 #include "movie_lib.h"
 
 #include <assert.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -65,6 +66,12 @@ static int _MVE_sndDecompM16(unsigned short* a1, unsigned char* a2, int a3, int 
 static int _MVE_sndDecompS16(unsigned short* a1, unsigned char* a2, int a3, int a4);
 static void _nfPkConfig();
 static void _nfPkDecomp(unsigned char* buf, unsigned char* a2, int a3, int a4, int a5, int a6);
+
+// CE: movie data isn't aligned; these read it without undefined behavior
+// (as in Fallout 1 CE).
+static constexpr uint16_t loadUInt16LE(const uint8_t* b);
+static constexpr uint32_t loadUInt32LE(const uint8_t* b);
+static int getOffset(uint16_t v);
 
 // 0x51EBE0
 static unsigned short word_51EBE0[256] = {
@@ -600,7 +607,7 @@ static unsigned char* ioNextRecord()
         return nullptr;
     }
 
-    io_next_hdr = *(unsigned int*)(buf + (io_next_hdr & 0xFFFF));
+    io_next_hdr = loadUInt32LE(buf + (io_next_hdr & 0xFFFF));
 
     return buf;
 }
@@ -665,7 +672,7 @@ LABEL_5:
     }
 
     while (1) {
-        v5 = *(unsigned int*)((unsigned char*)v1 + v0);
+        v5 = loadUInt32LE((unsigned char*)v1 + v0);
         v1 = (unsigned short*)((unsigned char*)v1 + v0 + 4);
         v0 = v5 & 0xFFFF;
 
@@ -688,7 +695,7 @@ LABEL_5:
             } else {
                 v7 = (v1[1] & 0x04) >> 2;
             }
-            v8 = *(unsigned int*)((unsigned char*)v1 + 6);
+            v8 = loadUInt32LE((unsigned char*)v1 + 6);
             if ((v5 >> 24) == 0) {
                 v8 &= 0xFFFF;
             }
@@ -1145,10 +1152,10 @@ static int _MVE_sndAdd(unsigned char* dest, unsigned char** src_ptr, int a3, int
 
     if (!_snd_comp) {
         if (a5) {
-            v9 = *(unsigned short*)src;
+            v9 = loadUInt16LE(src);
             src += 2;
 
-            *(unsigned short*)dest = v9;
+            memcpy(dest, &v9, 2);
             v10 = (unsigned short*)(dest + 2);
             v11 = a3 - 2;
         } else {
@@ -1163,10 +1170,10 @@ static int _MVE_sndAdd(unsigned char* dest, unsigned char** src_ptr, int a3, int
     }
 
     if (a5) {
-        v12 = *(unsigned int*)src;
+        v12 = loadUInt32LE(src);
         src += 4;
 
-        *(unsigned int*)dest = v12;
+        memcpy(dest, &v12, 4);
         v13 = (unsigned short*)(dest + 4);
         v14 = a3 - 4;
     } else {
@@ -1468,7 +1475,7 @@ static void _nfPkDecomp(unsigned char* a1, unsigned char* a2, int a3, int a4, in
                         } else {
                             v11 = v11;
                         }
-                        v10 = ((v11 << 24) >> 24) + dword_51F018[v11 >> 8];
+                        v10 = getOffset(v11);
                         break;
                     case 4:
                     case 5:
@@ -1476,23 +1483,18 @@ static void _nfPkDecomp(unsigned char* a1, unsigned char* a2, int a3, int a4, in
                             byte = *a2++;
                             v13 = word_51F418[byte];
                         } else {
-                            v13 = *(unsigned short*)a2;
+                            v13 = loadUInt16LE(a2);
                             a2 += 2;
                         }
 
-                        v10 = ((v13 << 24) >> 24) + dword_51F018[v13 >> 8] + (nf_buf_prv - nf_buf_cur);
+                        v10 = getOffset(v13) + (nf_buf_prv - nf_buf_cur);
                         break;
                     }
 
                     value2 = nf_width;
 
                     for (i = 0; i < 8; i++) {
-                        src_ptr = (unsigned int*)(dest + v10);
-                        dest_ptr = (unsigned int*)dest;
-
-                        dest_ptr[0] = src_ptr[0];
-                        dest_ptr[1] = src_ptr[1];
-
+                        memcpy(dest, dest + v10, 8);
                         dest += value2;
                     }
 
@@ -2211,11 +2213,8 @@ static void _nfPkDecomp(unsigned char* a1, unsigned char* a2, int a3, int a4, in
                 case 11:
                     value2 = nf_width;
 
-                    src_ptr = (unsigned int*)a2;
                     for (i = 0; i < 8; i++) {
-                        dest_ptr = (unsigned int*)dest;
-                        dest_ptr[0] = src_ptr[i * 2];
-                        dest_ptr[1] = src_ptr[i * 2 + 1];
+                        memcpy(dest, &a2[i * 8], 8);
                         dest += value2;
                     }
 
@@ -2305,7 +2304,7 @@ static void _nfPkDecomp(unsigned char* a1, unsigned char* a2, int a3, int a4, in
                         value1 = byte | (byte << 8) | (byte << 16) | (byte << 24);
                         value2 = value1;
                     } else {
-                        byte = *(unsigned short*)a2;
+                        byte = loadUInt16LE(a2);
                         a2 += 2;
                         value1 = byte | (byte << 16);
                         value2 = value1;
@@ -2334,6 +2333,21 @@ static void _nfPkDecomp(unsigned char* a1, unsigned char* a2, int a3, int a4, in
 
         dest += var_8;
     }
+}
+
+constexpr uint16_t loadUInt16LE(const uint8_t* b)
+{
+    return (b[1] << 8) | b[0];
+}
+
+constexpr uint32_t loadUInt32LE(const uint8_t* b)
+{
+    return ((uint32_t)b[3] << 24) | (b[2] << 16) | (b[1] << 8) | b[0];
+}
+
+int getOffset(uint16_t v)
+{
+    return static_cast<int8_t>(v & 0xFF) + dword_51F018[v >> 8];
 }
 
 } // namespace fallout

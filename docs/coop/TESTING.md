@@ -41,7 +41,9 @@ One process: `regress`, `coop` (players and switching), `coop_travel`,
 `coop_barter`, `coop_rads`, `coop_interact` (pick up, doors, stimpak),
 `story_kill`, `pack` (frame packing), `map_time`, `movie`, `credits`,
 `coop_four` (four players on one PC, HARDER), `coop_roofs`, `coop_character`
-(character copies), `sfx_sizes` (every sound effect read in bounds), and
+(character copies), `sfx_sizes` (every sound effect read in bounds),
+`draw_bench` (how long a full redraw takes at the screen size: what the
+host pays for each other player's view; `COOP_AUTOTEST_BENCH_MAP`), and
 the menu scripts `main_menu`, `menu_flow`, `menu_join`, `menu_server`,
 `menu_more`, `menu_host_code`, `menu_crash_report`.
 
@@ -100,6 +102,14 @@ relay, through a slow relay, under the address sanitizer
 (`SOAK_ASAN_BIN`) or with a Windows player 2 (`SOAK_WINE`); random screen
 sizes and a random seed. Every run adds a line to `summary.log` with what
 you need to repeat it; failed runs keep their logs in `fail-<n>`.
+`SOAK_PORT_OFFSET=n` moves its local relay servers' ports, to run a second
+soak next to another (e.g. a work branch beside the main one).
+
+The host's debug log has a line every ten seconds on how it keeps up:
+`COOP HOST: <frames> frames in <ms> ms, <ms> of them for the other
+players' parts (drawing, sending; views not needed)`. A view is only drawn
+when its client takes a frame (online, frames wait for acknowledgements);
+the ones skipped are the "views not needed".
 
 ## Other tools
 

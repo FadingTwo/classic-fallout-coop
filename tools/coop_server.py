@@ -19,10 +19,11 @@ Endpoints (plain HTTP):
     POST /fallout-coop/report   saves the report (text, at most 1 MB) as
                                 <root>/reports/<time>-<address>.txt
     POST /fallout-coop/lobby    a host lists its game (action=announce, port,
-                                players, version, checksum, name; one per
-                                line) or removes it (action=remove, port)
+                                players, version, checksum, name, relay,
+                                game; one per line) or removes it
+                                (action=remove, port)
     GET  /fallout-coop/lobby    the listed games, one per line:
-                                address|port|players|version|checksum|name|relay
+                                address|port|players|version|checksum|name|relay|game
                                 (a game is dropped 90 s after its last
                                 announce; games with a relay code are
                                 joined through the relay and their
@@ -34,12 +35,15 @@ start with an HTTP upgrade (GET /fallout-coop/relay, Upgrade: fcoop-relay;
 answered with 101, X-Real-IP gives the player's address). Then each
 connection starts with one line:
 
-    FCOOP-RELAY HOST <code or ->      player 1's control connection; answer
-                                      "ROOM <code>", then "CONN <id>" for
-                                      each player 2 (and PING now and then)
-    FCOOP-RELAY JOIN <code>           player 2; answer "OK" once player 1
+    FCOOP-RELAY HOST <code or -> [game]  player 1's control connection;
+                                      answer "ROOM <code>", then "CONN <id>"
+                                      for each player 2 (and PING now and
+                                      then)
+    FCOOP-RELAY JOIN <code> [game]    player 2; answer "OK" once player 1
                                       accepted (or "ERR <reason>"), then the
-                                      game's own bytes
+                                      game's own bytes. A Fallout 1 player
+                                      never reaches a Fallout 2 game (game:
+                                      fallout1 or fallout2, since 1.13.3).
     FCOOP-RELAY ACCEPT <code> <id>    player 1's connection for CONN <id>;
                                       no answer, then the game's own bytes
 
@@ -141,7 +145,7 @@ def _status():
         games = [{"code": g["code"], "minutes": int((now - g["since"]) / 60)} for g in _relay_games.values()]
     with _lobby_lock:
         _lobby_expire(now)
-        listed = [{"name": g["name"], "version": g["version"], "players": g["players"], "online": bool(g["relay"])}
+        listed = [{"name": g["name"], "version": g["version"], "players": g["players"], "online": bool(g["relay"]), "game": g["game"]}
                   for g in _lobby.values()]
     with _stats_lock:
         days = dict(sorted(_stats["days"].items())[-30:])
@@ -221,7 +225,17 @@ def _relay_pipe(a, b):
         _relay_pipes -= 1
 
 
-def _relay_host(conn, address, wanted):
+def _game_name(text):
+    """fallout1 or fallout2 (what 1.13.3 and later send), else empty."""
+    text = (text or "").lower()
+    return text if text in ("fallout1", "fallout2") else ""
+
+
+def _game_title(game):
+    return "Fallout 2" if game == "fallout2" else "Fallout 1"
+
+
+def _relay_host(conn, address, wanted, game=""):
     with _relay_lock:
         if len(_rooms) >= RELAY_MAX_ROOMS or sum(1 for r in _rooms.values() if r["address"] == address) >= RELAY_MAX_ROOMS_PER_ADDRESS:
             conn.sendall(b"ERR The server is busy. Try again later.\n")
@@ -240,7 +254,7 @@ def _relay_host(conn, address, wanted):
         if code is None:
             conn.close()
             return
-        room = {"control": conn, "address": address, "pending": {}, "send_lock": threading.Lock()}
+        room = {"control": conn, "address": address, "pending": {}, "send_lock": threading.Lock(), "game": game}
         _rooms[code] = room
     _stats_add("online_hosts")
     print("relay: room %s for %s" % (code, address), flush=True)
@@ -263,7 +277,7 @@ def _relay_host(conn, address, wanted):
     print("relay: room %s closed" % code, flush=True)
 
 
-def _relay_join(conn, code, address):
+def _relay_join(conn, code, address, game=""):
     global _relay_next_id, _relay_pipes
     code = code.upper().replace("-", "")
     with _relay_lock:
@@ -283,6 +297,14 @@ def _relay_join(conn, code, address):
         if room is None:
             print("relay: join %s from %s: no such game" % (code, address), flush=True)
             conn.sendall(b"ERR No game with that code.\n")
+            conn.close()
+            return
+        # Fallout 1 and Fallout 2 never meet: refused here, before player 1
+        # hears of it.
+        if game and room["game"] and game != room["game"]:
+            print("relay: join %s from %s: %s player, %s game" % (code, address, game, room["game"]), flush=True)
+            title = _game_title(room["game"])
+            conn.sendall(("ERR That game is %s: start %s to join it.\n" % (title, title)).encode())
             conn.close()
             return
         if _relay_pipes >= RELAY_MAX_PIPES:
@@ -379,9 +401,9 @@ def _relay_connection(conn, address):
             line = _relay_read_line(conn)
         parts = (line or "").split()
         if len(parts) >= 3 and parts[0] == "FCOOP-RELAY" and parts[1] == "HOST":
-            _relay_host(conn, address, parts[2])
+            _relay_host(conn, address, parts[2], _game_name(parts[3]) if len(parts) >= 4 else "")
         elif len(parts) >= 3 and parts[0] == "FCOOP-RELAY" and parts[1] == "JOIN":
-            _relay_join(conn, parts[2], address)
+            _relay_join(conn, parts[2], address, _game_name(parts[3]) if len(parts) >= 4 else "")
         elif len(parts) >= 4 and parts[0] == "FCOOP-RELAY" and parts[1] == "ACCEPT" and parts[3].isdigit():
             _relay_accept(conn, parts[2], int(parts[3]))
         else:
@@ -464,8 +486,8 @@ class Handler(BaseHTTPRequestHandler):
             now = time.time()
             with _lobby_lock:
                 _lobby_expire(now)
-                lines = ["%s|%d|%d|%s|%s|%s|%s" % ("relay" if g["relay"] else address, port, g["players"], g["version"],
-                                                   g["checksum"], g["name"], g["relay"])
+                lines = ["%s|%d|%d|%s|%s|%s|%s|%s" % ("relay" if g["relay"] else address, port, g["players"], g["version"],
+                                                      g["checksum"], g["name"], g["relay"], g["game"])
                          for (address, port), g in sorted(_lobby.items(), key=lambda item: -item[1]["seen"])]
             return self._send(200, ("\n".join(lines) + "\n" if lines else "").encode())
 
@@ -524,6 +546,7 @@ class Handler(BaseHTTPRequestHandler):
                 "checksum": _clean(fields.get("checksum", ""), 32),
                 "name": _clean(fields.get("name", ""), 24),
                 "relay": _clean(fields.get("relay", ""), 8),
+                "game": _game_name(fields.get("game", "")),
                 "seen": now,
             }
         return self._send(200, b"listed\n")

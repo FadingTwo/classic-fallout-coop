@@ -1489,7 +1489,12 @@ int scriptExecProc(int sid, int proc)
 
     _executeProcedure(program, v9);
 
-    script->source = nullptr;
+    // CE: the procedure can remove its own script (an object destroying
+    // itself frees its script, and with the last one the script list's
+    // block): look it up again (found with AddressSanitizer).
+    if (scriptGetScript(sid, &script) == 0) {
+        script->source = nullptr;
+    }
 
     return 0;
 }

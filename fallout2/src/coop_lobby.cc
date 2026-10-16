@@ -44,7 +44,8 @@ typedef int LobbySocket;
 #define lobby_close close
 #endif
 
-// Search: "FCOOP?". Answer: "FCOOP!|version|checksum|tcp port|players|name".
+// Search: "FCOOP?". Answer: "FCOOP!|version|checksum|tcp port|players|name|game"
+// (game since 1.13.3).
 #define LOBBY_QUERY "FCOOP?"
 #define LOBBY_ANSWER "FCOOP!"
 
@@ -181,8 +182,8 @@ void coop_lobby_host_pump(const std::string& name, int players)
             }
 
             char answer[160];
-            snprintf(answer, sizeof(answer), "%s|%s|%s|%d|%d|%s", LOBBY_ANSWER, COOP_VERSION,
-                lobby_checksum_text().c_str(), coop_net_port(), players, cleanName.c_str());
+            snprintf(answer, sizeof(answer), "%s|%s|%s|%d|%d|%s|%s", LOBBY_ANSWER, COOP_VERSION,
+                lobby_checksum_text().c_str(), coop_net_port(), players, cleanName.c_str(), coop_net_game_name());
             sendto(lobby_host_socket, answer, (int)strlen(answer), 0, (sockaddr*)&from, fromLength);
         }
     }
@@ -198,8 +199,8 @@ void coop_lobby_host_pump(const std::string& name, int players)
         lobby_announced_players = players;
 
         char body[256];
-        snprintf(body, sizeof(body), "action=announce\nport=%d\nplayers=%d\nversion=%s\nchecksum=%s\nname=%s\nrelay=%s\n",
-            coop_net_port(), players, COOP_VERSION, lobby_checksum_text().c_str(), cleanName.c_str(), coop_net_relay_code());
+        snprintf(body, sizeof(body), "action=announce\nport=%d\nplayers=%d\nversion=%s\nchecksum=%s\nname=%s\nrelay=%s\ngame=%s\n",
+            coop_net_port(), players, COOP_VERSION, lobby_checksum_text().c_str(), cleanName.c_str(), coop_net_relay_code(), coop_net_game_name());
         lobby_post_in_background(body);
     }
 }
@@ -249,6 +250,16 @@ static std::vector<unsigned int> lobby_search_targets()
 
 static int lobby_other_versions = 0;
 
+// Whether a listed game is ours: the same game (since 1.13.3 hosts say
+// which; other game files of it are fine), or else the same game files.
+static bool lobby_same_game(const std::string& game, const std::string& gameChecksum, const std::string& checksum)
+{
+    if (!game.empty()) {
+        return game == coop_net_game_name();
+    }
+    return gameChecksum == checksum;
+}
+
 static void lobby_find_lan(std::vector<CoopLobbyGame>& games, const std::string& checksum)
 {
     if (!lobby_socket_startup()) {
@@ -291,7 +302,7 @@ static void lobby_find_lan(std::vector<CoopLobbyGame>& games, const std::string&
         }
         buffer[received] = '\0';
 
-        // FCOOP!|version|checksum|port|players|name
+        // FCOOP!|version|checksum|port|players|name|game
         std::vector<std::string> fields;
         std::string current;
         for (int index = 0; index < received; index++) {
@@ -306,7 +317,7 @@ static void lobby_find_lan(std::vector<CoopLobbyGame>& games, const std::string&
         if (fields.size() < 6 || fields[0] != LOBBY_ANSWER) {
             continue;
         }
-        if (fields[1] != COOP_VERSION || fields[2] != checksum) {
+        if (fields[1] != COOP_VERSION || !lobby_same_game(fields.size() >= 7 ? fields[6] : std::string(), fields[2], checksum)) {
             lobby_other_versions++;
             continue;
         }
@@ -378,17 +389,25 @@ static void lobby_find_public(std::vector<CoopLobbyGame>& games, const std::stri
         if (atoi(fields[2].c_str()) >= COOP_LOBBY_FULL) {
             continue;
         }
-        if (fields[3] != COOP_VERSION || fields[4] != checksum) {
-            lobby_other_versions++;
-            continue;
-        }
-
+        // name|relay|game (game since 1.13.3).
         std::string name = fields[5];
         std::string relay;
+        std::string gameName;
         size_t bar = name.find('|');
         if (bar != std::string::npos) {
-            relay = lobby_clean(name.substr(bar + 1), 8);
+            relay = name.substr(bar + 1);
             name = name.substr(0, bar);
+            size_t gameBar = relay.find('|');
+            if (gameBar != std::string::npos) {
+                gameName = relay.substr(gameBar + 1);
+                relay = relay.substr(0, gameBar);
+            }
+            relay = lobby_clean(relay, 8);
+        }
+
+        if (fields[3] != COOP_VERSION || !lobby_same_game(gameName, fields[4], checksum)) {
+            lobby_other_versions++;
+            continue;
         }
 
         CoopLobbyGame game;

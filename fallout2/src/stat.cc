@@ -435,7 +435,11 @@ int critterGetBaseStat(Object* critter, int stat)
     Proto* proto;
 
     if (stat >= 0 && stat < SAVEABLE_STAT_COUNT) {
-        protoGetProto(critter->pid, &proto);
+        // CE: only critters have stats; other objects (a door hit in a
+        // fight, say) used to read past their smaller proto.
+        if (PID_TYPE(critter->pid) != OBJ_TYPE_CRITTER || protoGetProto(critter->pid, &proto) == -1) {
+            return 0;
+        }
         return proto->critter.data.baseStats[stat];
     } else {
         switch (stat) {
@@ -455,8 +459,11 @@ int critterGetBaseStat(Object* critter, int stat)
 int critterGetBonusStat(Object* critter, int stat)
 {
     if (stat >= 0 && stat < SAVEABLE_STAT_COUNT) {
+        // CE: only critters (see critterGetBaseStat).
         Proto* proto;
-        protoGetProto(critter->pid, &proto);
+        if (PID_TYPE(critter->pid) != OBJ_TYPE_CRITTER || protoGetProto(critter->pid, &proto) == -1) {
+            return 0;
+        }
         return proto->critter.data.bonusStats[stat];
     }
 

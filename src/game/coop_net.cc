@@ -1,6 +1,7 @@
 #include "game/coop_net.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <algorithm>
@@ -56,6 +57,26 @@ namespace fallout {
 
 // Bumped whenever the wire format changes; both sides must match.
 #define COOP_NET_PROTOCOL_VERSION 1
+
+// Which game this is (sent in HELLO since 1.13.3): a Fallout 1 player can't
+// join a Fallout 2 game.
+#define COOP_NET_GAME 1
+
+// Which game we say we are: this one, or ([coop]test_game=1 or 2, for
+// tests) another.
+static int coop_net_game_id()
+{
+    int value;
+    if (config_get_value(&game_config, COOP_CONFIG_KEY, "test_game", &value) && (value == 1 || value == 2)) {
+        return value;
+    }
+    return COOP_NET_GAME;
+}
+
+const char* coop_net_game_name()
+{
+    return coop_net_game_id() == 1 ? "fallout1" : "fallout2";
+}
 
 // Messages: u32 length (of type + payload), u8 type, payload.
 #define COOP_NET_HEADER_SIZE 5
@@ -961,6 +982,11 @@ static void coop_host_handle(const CoopMessage& message)
                 coop_client_screen_height = reader.u16();
                 debug_printf("COOP: player 2's screen is %dx%d\n", coop_client_screen_width, coop_client_screen_height);
             }
+            // Since 1.13.3: which game they play (0: an older client).
+            int clientGame = 0;
+            if (!reader.atEnd()) {
+                clientGame = reader.u8();
+            }
             coop_set_outline_colors(coop_net_selected(), outlines);
             debug_printf("COOP: player %d outlines: %s, %s\n", coop_net_selected() + 1, coop_outline_color_name(outlines[0]), coop_outline_color_name(outlines[1]));
 
@@ -970,10 +996,25 @@ static void coop_host_handle(const CoopMessage& message)
             } else if (protocol != COOP_NET_PROTOCOL_VERSION) {
                 coop_host_welcome(false, "Different co-op version.");
                 coop_client.failed = true;
-            } else if (checksum != coop_net_data_checksum()) {
+            } else if (clientGame != 0 && clientGame != COOP_NET_GAME) {
+                coop_host_welcome(false, COOP_NET_GAME == 1 ? "Player 1 is playing Fallout 1: start Fallout 1 to join." : "Player 1 is playing Fallout 2: start Fallout 2 to join.");
+                coop_client.failed = true;
+            } else if (checksum != coop_net_data_checksum() && clientGame == 0) {
                 coop_host_welcome(false, "Game data differs (version, language or patches).");
                 coop_client.failed = true;
             } else {
+                // Other game files (another store's release, language or
+                // patches) are fine: the game runs here, the other player
+                // only sees it. Their own character stays home though (its
+                // items may not exist here), and some sounds may be missing.
+                if (checksum != coop_net_data_checksum()) {
+                    debug_printf("\nCOOP NET: player %d's game files differ from ours\n", coop_net_selected() + 1);
+                    char message[160];
+                    snprintf(message, sizeof(message), "Player %d's game files differ from yours (another release or language)%s.", coop_net_selected() + 1,
+                        coop_client_brings_character ? ": they make a new character here" : "");
+                    display_print(message);
+                    coop_client_brings_character = false;
+                }
                 coop_host_welcome(true, "");
                 coop_client_ready = true;
                 coop_sent_width = 0;
@@ -1206,14 +1247,23 @@ static unsigned int coop_read_varint(CoopReader* reader)
 // varint pixels unchanged, varint count, count new pixels.
 static std::vector<unsigned char> coop_frame_scratch;
 
-void coop_net_send_screen(const unsigned char* pixels, int pitch, int width, int height, const unsigned char* palette)
+bool coop_net_can_send_frame()
 {
     if (!coop_client_ready || coop_client.out.size() > COOP_NET_MAX_BACKLOG) {
-        return;
+        return false;
     }
 
     // Enough on the way already: the next frame shows the changes since.
     if (coop_client_acks && !coop_net_no_flow && coop_frames_sent - coop_frames_acked >= COOP_NET_FRAMES_IN_FLIGHT) {
+        return false;
+    }
+
+    return true;
+}
+
+void coop_net_send_screen(const unsigned char* pixels, int pitch, int width, int height, const unsigned char* palette)
+{
+    if (!coop_net_can_send_frame()) {
         return;
     }
 
@@ -1402,12 +1452,14 @@ void coop_net_send_sound(int event, const char* name, int a, int b, int c)
         coop_music_playing = false;
     }
 
-    // Every player hears it.
+    // Every player hears it, effects as loud as they are where that player
+    // is.
     CoopPeer* selected = coop_peer;
     for (int slot = 1; slot < COOP_MAX_PLAYERS; slot++) {
         coop_peer = &(coop_peers[slot]);
         if (coop_client_ready && coop_client.out.size() < COOP_NET_MAX_BACKLOG) {
-            coop_net_write_sound(event, name, a, b, c);
+            int volume = event == GSOUND_EVENT_SFX ? coop_effect_volume_for(slot, b, c, a) : a;
+            coop_net_write_sound(event, name, volume, b, c);
         }
     }
     coop_peer = selected;
@@ -1635,7 +1687,7 @@ static CoopSocket coop_relay_request_room(const std::string& server, const std::
     }
 
     std::string line;
-    if (!coop_relay_send_line(socket, "FCOOP-RELAY HOST " + (wanted.empty() ? std::string("-") : wanted))
+    if (!coop_relay_send_line(socket, "FCOOP-RELAY HOST " + (wanted.empty() ? std::string("-") : wanted) + " " + coop_net_game_name())
         || !coop_relay_read_line(socket, COOP_RELAY_CONNECT_TIMEOUT, &line)
         || line.compare(0, 5, "ROOM ") != 0) {
         *error = line.compare(0, 4, "ERR ") == 0 ? line.substr(4) : "The co-op server did not answer.";
@@ -1813,7 +1865,7 @@ static CoopSocket coop_relay_join(std::string* error)
     }
 
     std::string line;
-    if (!coop_relay_send_line(socket, "FCOOP-RELAY JOIN " + coop_relay_join_code)
+    if (!coop_relay_send_line(socket, "FCOOP-RELAY JOIN " + coop_relay_join_code + " " + coop_net_game_name())
         || !coop_relay_read_line(socket, COOP_RELAY_JOIN_TIMEOUT, &line)
         || line != "OK") {
         *error = line.compare(0, 4, "ERR ") == 0 ? line.substr(4) : "No answer through the co-op server.";
@@ -1899,6 +1951,7 @@ static bool coop_client_connect(CoopConnection* connection, std::string* error)
     hello.u8(outlines[1]);
     hello.u16((unsigned int)screenGetWidth());
     hello.u16((unsigned int)screenGetHeight());
+    hello.u8(coop_net_game_id());
     coop_connection_send(connection, COOP_NET_MSG_HELLO, hello.data);
     if (!coop_bring_character.empty()) {
         coop_connection_send(connection, COOP_NET_MSG_CHARACTER, coop_bring_character);

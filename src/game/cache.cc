@@ -503,32 +503,28 @@ static int cache_find(Cache* cache, int key, int* indexPtr)
         return 3;
     }
 
-    int r = length - 1;
+    // CE: a real binary search. The original moved l and r one entry at a
+    // time: it finds the same index, but looks at most entries on the way
+    // (a quarter of a full redraw's time at 1920x1080 went here).
     int l = 0;
-    int mid;
-    int cmp;
-
-    do {
-        mid = (l + r) / 2;
-
-        cmp = key - cache->entries[mid]->key;
-        if (cmp == 0) {
+    int r = length - 1;
+    while (l <= r) {
+        int mid = l + (r - l) / 2;
+        int entryKey = cache->entries[mid]->key;
+        if (key == entryKey) {
             *indexPtr = mid;
             return 2;
         }
 
-        if (cmp > 0) {
-            l = l + 1;
+        if (key > entryKey) {
+            l = mid + 1;
         } else {
-            r = r - 1;
+            r = mid - 1;
         }
-    } while (r >= l);
-
-    if (cmp < 0) {
-        *indexPtr = mid;
-    } else {
-        *indexPtr = mid + 1;
     }
+
+    // Where the key would go.
+    *indexPtr = l;
 
     return 3;
 }

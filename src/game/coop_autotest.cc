@@ -33,6 +33,7 @@
 #include "game/gconfig.h"
 #include "game/endgame.h"
 #include "game/gdialog.h"
+#include "int/sound.h"
 #include "plib/db/db.h"
 #include "game/gmovie.h"
 #include "game/gsound.h"
@@ -142,6 +143,11 @@ static int coop_autotest_net_tour_client(AutotestNewGameProc* newGame);
 static int coop_autotest_net_session_host(AutotestNewGameProc* newGame);
 static int coop_autotest_net_ending_host(AutotestNewGameProc* newGame);
 static int coop_autotest_movie(AutotestNewGameProc* newGame);
+static int coop_autotest_draw_bench(AutotestNewGameProc* newGame);
+static int coop_autotest_sound(AutotestNewGameProc* newGame);
+static int coop_autotest_far_tile(Object* player);
+static void coop_autotest_check_far_cameras(const char* mapName);
+static void coop_autotest_heal_players();
 static int coop_autotest_menu_more(AutotestNewGameProc* newGame);
 static int coop_autotest_credits(AutotestNewGameProc* newGame);
 static int coop_autotest_net_death_host(AutotestNewGameProc* newGame);
@@ -203,6 +209,8 @@ void coop_autotest_register()
     autotest_add_script("net_talk_client", coop_autotest_net_talk_client);
     autotest_add_script("net_ending_host", coop_autotest_net_ending_host);
     autotest_add_script("movie", coop_autotest_movie);
+    autotest_add_script("draw_bench", coop_autotest_draw_bench);
+    autotest_add_script("coop_sound", coop_autotest_sound);
     autotest_add_script("menu_more", coop_autotest_menu_more);
     autotest_add_script("credits", coop_autotest_credits);
     autotest_add_script("net_death_host", coop_autotest_net_death_host);
@@ -2629,6 +2637,87 @@ static int coop_autotest_net_client(AutotestNewGameProc* newGame)
     return 0;
 }
 
+// A free tile some 24 hexes left or right of player 1 where a camera may
+// center (as single player's would with the player standing there), or -1.
+static int coop_autotest_far_tile(Object* player)
+{
+    int start = obj_dude->tile;
+    int savedCenter = tile_center_tile;
+    bool limiting = tile_get_scroll_limiting();
+    const int offsets[] = { 24, -24, 26, -26, 22, -22 };
+    int found = -1;
+    for (int offset : offsets) {
+        int tile = start + offset;
+        if (tile <= 0 || tile >= 40000 || tile / 200 != start / 200) {
+            continue;
+        }
+        if (obj_blocking_at(NULL, tile, player->elevation) != NULL) {
+            continue;
+        }
+        // With the player there, the scroll limit (counted from them) lets
+        // the camera center; the map's edges and scroll blockers decide.
+        tile_disable_scroll_limiting();
+        bool centers = tile_set_center(tile, 0) == 0;
+        if (limiting) {
+            tile_enable_scroll_limiting();
+        }
+        tile_set_center(savedCenter, TILE_SET_CENTER_FLAG_IGNORE_SCROLL_RESTRICTIONS);
+        if (centers) {
+            found = tile;
+            break;
+        }
+    }
+    return found;
+}
+
+// The tour's camera check: each other player put some 24 hexes from player
+// 1 in turn; a little later their view must be centered on them. Then back
+// next to player 1. Not in a fight (whose turns show one view).
+static void coop_autotest_check_far_cameras(const char* mapName)
+{
+    for (int index = 1; index < coop_player_count() && coop_net_clients_connected() > 0; index++) {
+        if (isInCombat()) {
+            return;
+        }
+
+        Object* player = coop_player(index)->obj;
+        if (player == NULL || player->elevation != obj_dude->elevation || critter_is_dead(player) || (player->flags & OBJECT_HIDDEN) != 0) {
+            continue;
+        }
+
+        int distant = coop_autotest_far_tile(player);
+        if (distant == -1) {
+            autotest_log("%s: no tile far from player 1 for player %d's camera", mapName, index + 1);
+            continue;
+        }
+
+        register_clear(player);
+        Rect rect;
+        obj_move_to_tile(player, distant, player->elevation, &rect);
+        tile_refresh_rect(&rect, player->elevation);
+        // Two parts of theirs at least (over a slow line a part waits for
+        // their client).
+        unsigned int parts = coop_host_view_parts(index);
+        unsigned int start = get_time();
+        while (coop_host_view_parts(index) < parts + 2 && elapsed_time(start) < 15000 && coop_net_clients_connected() > 0) {
+            coop_autotest_heal_players();
+            coop_autotest_host_frame();
+        }
+
+        // (Unless they walked on meanwhile, or a fight began.)
+        int center = coop_host_view_center(index);
+        if (coop_host_view_parts(index) < parts + 2) {
+            autotest_log("%s: player %d had no part for 15 s, camera not checked", mapName, index + 1);
+        } else if (!isInCombat() && player->tile == distant && center != distant) {
+            autotest_fail("%s: player %d's camera stayed at tile %d, %d hexes from them", mapName, index + 1, center, tile_dist(center, distant));
+        } else {
+            autotest_log("%s: player %d's camera follows them %d hexes from player 1", mapName, index + 1, tile_dist(obj_dude->tile, distant));
+        }
+
+        obj_attempt_placement(player, obj_dude->tile, obj_dude->elevation, 2);
+    }
+}
+
 // Network play, host side: runs the real main loop pieces while the client
 // creates player 2 and walks them somewhere. Paired with net_play_client.
 static int coop_autotest_net_play_host(AutotestNewGameProc* newGame)
@@ -2654,6 +2743,13 @@ static int coop_autotest_net_play_host(AutotestNewGameProc* newGame)
 
     int startTile = -1;
     bool moved = false;
+    // The camera check (below).
+    int lastTile = -1;
+    int settledFrames = 0;
+    int farTile = -1;
+    int farFrames = 0;
+    unsigned int farParts = 0;
+    bool cameraChecked = false;
     const int chatKeys[] = { KEY_LOWERCASE_T, 'W', 'a', 'r', ' ', 'n', 'e', 'v', 'e', 'r', ' ', 'c', 'h', 'a', 'n', 'g', 'e', 's', KEY_RETURN };
     int chatKey = 0;
     unsigned int start = get_time();
@@ -2688,6 +2784,37 @@ static int coop_autotest_net_play_host(AutotestNewGameProc* newGame)
                 moved = true;
                 autotest_log("player 2 moving (tile %d)", p2->tile);
             }
+
+            // Player 2's camera follows them far from player 1 too (scroll
+            // limits count from the player the view is for). Once player 2
+            // stands still after walking, they are put some 24 hexes from
+            // player 1, and their view is checked a little later.
+            if (moved && farTile == -1 && !cameraChecked) {
+                settledFrames = p2->tile == lastTile ? settledFrames + 1 : 0;
+                lastTile = p2->tile;
+                if (settledFrames >= 30) {
+                    farTile = coop_autotest_far_tile(p2);
+                    if (farTile == -1) {
+                        autotest_log("camera check: no free tile far from player 1 here");
+                        cameraChecked = true;
+                    } else {
+                        register_clear(p2);
+                        Rect rect;
+                        obj_move_to_tile(p2, farTile, p2->elevation, &rect);
+                        tile_refresh_rect(&rect, p2->elevation);
+                        autotest_log("camera check: player 2 put at tile %d, %d hexes from player 1", farTile, tile_dist(obj_dude->tile, farTile));
+                        farParts = coop_host_view_parts(1);
+                    }
+                }
+            } else if (farTile != -1 && !cameraChecked && ++farFrames >= 30 && coop_host_view_parts(1) >= farParts + 2) {
+                cameraChecked = true;
+                int center = coop_host_view_center(1);
+                if (center != farTile) {
+                    autotest_fail("player 2's camera stayed at tile %d, %d hexes from player 2", center, tile_dist(center, farTile));
+                } else {
+                    autotest_log("camera check: player 2's view is centered on them");
+                }
+            }
         }
 
         if (!coop_net_client_connected() && startTile != -1) {
@@ -2699,6 +2826,8 @@ static int coop_autotest_net_play_host(AutotestNewGameProc* newGame)
         autotest_fail("player 2 never joined");
     } else if (!moved) {
         autotest_fail("player 2 never moved");
+    } else if (!cameraChecked) {
+        autotest_fail("player 2's camera wasn't checked");
     } else {
         autotest_log("player 2 ended at tile %d (distance %d from start)", coop_player(1)->obj->tile,
             tile_dist(startTile, coop_player(1)->obj->tile));
@@ -4230,6 +4359,12 @@ static int coop_autotest_net_tour_host(AutotestNewGameProc* newGame)
             }
         }
 
+        // Each other player's camera follows them far from player 1 (some 24
+        // hexes away, where a camera may center), then back next to player 1.
+        if (!coop_autotest_video()) {
+            coop_autotest_check_far_cameras(map_data.name);
+        }
+
         // Rough tour: the other elevations too.
         for (int elevation = 1; coop_autotest_rough && elevation < ELEVATION_COUNT && coop_net_client_connected(); elevation++) {
             if (map_is_elevation_empty(elevation) || obj_dude->elevation == elevation) {
@@ -4783,6 +4918,146 @@ static int coop_autotest_movie(AutotestNewGameProc* newGame)
     }
     gmovie_play(MOVIE_WALKM, 0);
     autotest_log("movie done");
+    return 0;
+}
+
+// How long one full redraw of the map and the interface takes at this
+// screen size: what the host pays for each other player's view every frame
+// (COOP_AUTOTEST_BENCH_MAP, default Junktown).
+static int coop_autotest_draw_bench(AutotestNewGameProc* newGame)
+{
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    const char* name = getenv("COOP_AUTOTEST_BENCH_MAP") != NULL ? getenv("COOP_AUTOTEST_BENCH_MAP") : "JUNKENT.MAP";
+    int index = map_match_map_name(name);
+    if (index == -1) {
+        autotest_fail("no map %s", name);
+        return -1;
+    }
+    MapTransition transition;
+    transition.map = index;
+    transition.elevation = 0;
+    transition.tile = -1;
+    transition.rotation = 0;
+    map_leave_map(&transition);
+    map_check_state();
+
+    for (int round = 0; round < 3; round++) {
+        unsigned int start = get_time();
+        int count = 0;
+        while (count < 20 || elapsed_time(start) < 2000) {
+            tile_refresh_display();
+            intface_redraw();
+            count++;
+        }
+        unsigned int elapsed = elapsed_time(start);
+        autotest_log("draw: %u us per full redraw at %dx%d (%d redraws)",
+            (unsigned int)((unsigned long long)elapsed * 1000 / count), screenGetWidth(), screenGetHeight(), count);
+    }
+    return 0;
+}
+
+// The last effect the host passed on (the hook the co-op host sets).
+static std::string coop_autotest_reported_effect;
+
+static void coop_autotest_capture_effect(int event, const char* name, int a, int b, int c)
+{
+    if (event == GSOUND_EVENT_SFX) {
+        coop_autotest_reported_effect = name;
+    }
+}
+
+// Sound effects as loud as they are for each player (what the host sends
+// each client): player 2 put some 24 hexes from player 1, off each other's
+// screens at the tests' 640x480.
+static int coop_autotest_sound(AutotestNewGameProc* newGame)
+{
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    PlayerState* player2 = coop_add_player("premade\\stealth.gcd");
+    if (player2 == NULL) {
+        autotest_fail("coop_add_player failed");
+        return -1;
+    }
+
+    int distant = coop_autotest_far_tile(player2->obj);
+    if (distant == -1) {
+        autotest_fail("no free tile far from player 1");
+        return -1;
+    }
+    Rect rect;
+    obj_move_to_tile(player2->obj, distant, obj_dude->elevation, &rect);
+
+    int here = obj_dude->tile;
+    int elevation = obj_dude->elevation;
+    struct Check {
+        const char* what;
+        int index;
+        int tile;
+        int elevation;
+        int expected;
+    };
+    const Check checks[] = {
+        { "next to player 1, for player 1", 0, here, elevation, 0x7FFF },
+        { "next to player 1, for player 2", 1, here, elevation, 0x2AAA },
+        { "next to player 2, for player 2", 1, distant, elevation, 0x7FFF },
+        { "next to player 2, for player 1", 0, distant, elevation, 0x2AAA },
+        { "another elevation, for player 2", 1, distant, (elevation + 1) % 3, 0x2AAA },
+        { "from nowhere, for player 2", 1, -1, elevation, 1234 },
+    };
+    for (const Check& check : checks) {
+        int volume = coop_effect_volume_for(check.index, check.tile, check.elevation, 1234);
+        if (volume != check.expected) {
+            autotest_fail("effect %s: volume %d, expected %d", check.what, volume, check.expected);
+        } else {
+            autotest_log("effect %s: volume %d", check.what, volume);
+        }
+    }
+
+    // The players' hit and death sounds (most only exist as aliases, by
+    // gender) as the host passes them on: a client, without the critter,
+    // must be able to load each name it gets.
+    GsoundEventHook* savedHook = gsound_event_hook;
+    gsound_event_hook = coop_autotest_capture_effect;
+    int passed = 0;
+    int heard = 0;
+    Object* critters[] = { obj_dude, player2->obj };
+    const int anims[] = { ANIM_HIT_FROM_FRONT, ANIM_HIT_FROM_BACK };
+    for (Object* critter : critters) {
+        for (int anim : anims) {
+            for (int extra = 0; extra < 2; extra++) {
+                char* name = gsnd_build_character_sfx_name(critter, anim, extra == 0 ? CHARACTER_SOUND_EFFECT_UNUSED : CHARACTER_SOUND_EFFECT_DIE);
+                std::string requested = name;
+                Sound* sound = gsound_load_sound(requested.c_str(), critter);
+                if (sound == NULL) {
+                    continue;
+                }
+                heard++;
+                coop_autotest_reported_effect.clear();
+                gsound_play_sound(sound);
+                std::string reported = coop_autotest_reported_effect;
+                // (Stopped, so it doesn't hold one of the few effect slots.)
+                soundStop(sound);
+                gsound_delete_sfx(sound);
+                Sound* onClient = reported.empty() ? NULL : gsound_load_sound(reported.c_str(), NULL);
+                if (onClient == NULL) {
+                    autotest_fail("effect %s passed on as '%s', which a client can't load", requested.c_str(), reported.c_str());
+                } else {
+                    passed++;
+                    if (reported != requested) {
+                        autotest_log("effect %s passed on as %s", requested.c_str(), reported.c_str());
+                    }
+                    gsound_delete_sfx(onClient);
+                }
+            }
+        }
+    }
+    gsound_event_hook = savedHook;
+    autotest_log("%d of %d critter sounds loadable on a client", passed, heard);
     return 0;
 }
 

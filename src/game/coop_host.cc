@@ -66,6 +66,8 @@ static int coop_host_turn_slot = 0;
 // For the debug log: time spent drawing the others' views and sending them.
 static unsigned int coop_host_draw_ms = 0;
 static unsigned int coop_host_send_ms = 0;
+// Views not drawn because their client wasn't taking frames.
+static unsigned int coop_host_views_skipped = 0;
 
 // That player opened a menu (an input loop runs inside their part).
 static bool coop_host_turn_menu = false;
@@ -77,6 +79,11 @@ static bool coop_host_free_roam_present = false;
 // Each other player's view while player 1's is current (and player 1's in
 // that player's slot during their part of the frame).
 static CoopView coop_host_views[COOP_MAX_PLAYERS];
+
+// Testing: the camera's tile in each player's last part of a frame, and
+// how many parts they had.
+static int coop_host_view_centers[COOP_MAX_PLAYERS];
+static unsigned int coop_host_view_part_count[COOP_MAX_PLAYERS];
 
 void coop_host_init()
 {
@@ -580,7 +587,14 @@ static void coop_host_view_load(CoopView* view, Object* incoming, const CoopView
         view->followedTile = incoming->tile;
     }
 
+    // Scroll limits count from the player the view is for. tile_set_center()
+    // measures from obj_dude, still player 1 here: it refused to follow a
+    // player some 15 hexes or more from player 1, who then walked off their
+    // own screen.
+    Object* dude = obj_dude;
+    obj_dude = incoming;
     tile_set_center(view->cameraTile, 0);
+    obj_dude = dude;
     mouse_set_context(&(view->mouse));
     gmouse_3d_set_mode(view->mode);
     gmouse_set_cursor(view->cursor);
@@ -603,6 +617,8 @@ static void coop_host_player_turn(int slot)
 
     coop_host_turn_slot = slot;
     coop_host_turn_menu = false;
+    coop_host_view_centers[slot] = tile_center_tile;
+    coop_host_view_part_count[slot]++;
 
     {
         ActivePlayerScope scope(player2);
@@ -630,17 +646,26 @@ static void coop_host_player_turn(int slot)
         // Hover: 3D cursor for player 2's mouse.
         gmouse_bk_process();
 
-        unsigned int drawStart = get_time();
-        tile_refresh_display();
-        intface_update_items(false);
-        intface_redraw();
-        coop_host_draw_ms += elapsed_time(drawStart);
         coop_host_update_status();
-        coop_host_marker_draw();
-        unsigned int sendStart = get_time();
-        coop_net_send_current_screen();
-        coop_host_send_ms += elapsed_time(sendStart);
-        coop_host_marker_restore();
+
+        // Their view, when their client takes a frame now: online, frames
+        // wait for acknowledgements, and a view nobody gets would cost a
+        // full redraw for nothing (player 1's view is redrawn at the end of
+        // the frame anyway).
+        if (coop_net_can_send_frame()) {
+            unsigned int drawStart = get_time();
+            tile_refresh_display();
+            intface_update_items(false);
+            intface_redraw();
+            coop_host_draw_ms += elapsed_time(drawStart);
+            coop_host_marker_draw();
+            unsigned int sendStart = get_time();
+            coop_net_send_current_screen();
+            coop_host_send_ms += elapsed_time(sendStart);
+            coop_host_marker_restore();
+        } else {
+            coop_host_views_skipped++;
+        }
     }
 
     coop_set_viewer(NULL);
@@ -699,6 +724,16 @@ static void coop_host_send_character_copy(int slot, bool requested)
     if (coop_export_player(slot, &data)) {
         coop_net_send_character(data);
     }
+}
+
+int coop_host_view_center(int slot)
+{
+    return slot >= 0 && slot < COOP_MAX_PLAYERS ? coop_host_view_centers[slot] : -1;
+}
+
+unsigned int coop_host_view_parts(int slot)
+{
+    return slot >= 0 && slot < COOP_MAX_PLAYERS ? coop_host_view_part_count[slot] : 0;
 }
 
 void coop_host_frame()
@@ -761,7 +796,16 @@ void coop_host_frame()
             if (coop_player_count() == slot) {
                 coop_host_player_joins(slot);
             } else if (slot < coop_player_count()) {
-                turns[turnCount++] = slot;
+                // Their part (input and view) when their client takes a
+                // frame now: online, frames wait for acknowledgements, and a
+                // part whose view nobody gets costs two full redraws for
+                // nothing (theirs, and player 1's again after it). Their
+                // input waits until then.
+                if (coop_net_can_send_frame()) {
+                    turns[turnCount++] = slot;
+                } else {
+                    coop_host_views_skipped++;
+                }
             }
         }
     }
@@ -807,14 +851,15 @@ void coop_host_frame()
     statsFrames++;
     if (elapsed_time(statsSince) >= 10000) {
         if (coop_net_clients_connected() > 0) {
-            debug_printf("\nCOOP HOST: %u frames in %u ms, %u ms of them for the other players' parts (drawing %u, sending %u)\n",
-                statsFrames, elapsed_time(statsSince), statsBusy, coop_host_draw_ms, coop_host_send_ms);
+            debug_printf("\nCOOP HOST: %u frames in %u ms, %u ms of them for the other players' parts (drawing %u, sending %u; %u views not needed)\n",
+                statsFrames, elapsed_time(statsSince), statsBusy, coop_host_draw_ms, coop_host_send_ms, coop_host_views_skipped);
         }
         statsSince = get_time();
         statsFrames = 0;
         statsBusy = 0;
         coop_host_draw_ms = 0;
         coop_host_send_ms = 0;
+        coop_host_views_skipped = 0;
     }
 
     coop_host_free_roam_present = true;

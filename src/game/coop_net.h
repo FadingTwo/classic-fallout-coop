@@ -149,6 +149,15 @@ void coop_net_send_screen(const unsigned char* pixels, int pitch, int width, int
 // Host: sends the screen as currently composed.
 void coop_net_send_current_screen();
 
+// Whether the selected client takes a frame now: frames wait for its
+// acknowledgements (only a few on the way at once) and for a long send
+// queue to empty. A view drawn while it can't is drawn for nothing.
+bool coop_net_can_send_frame();
+
+// "fallout1" or "fallout2": which game this is, for the co-op server (its
+// relay and listing keep the two apart) and the game search.
+const char* coop_net_game_name();
+
 // Host: a sound for the client to play (GSOUND_EVENT_*, see gsound.h).
 void coop_net_send_sound(int event, const char* name, int a, int b, int c);
 

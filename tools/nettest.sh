@@ -5,7 +5,9 @@
 #   tools/nettest.sh <fallout-ce binary> <out dir> [host script] [client script] [--tamper]
 #
 # Scripts default to net_host / net_client (see coop_autotest.cc). With
-# --tamper the client's game data differs, so the host must refuse it.
+# --tamper the client's game data differs: since 1.13.3 the host lets them
+# in (as a new character; CLIENT_EXTRA="[coop]test_game=2" pretends to be Fallout 2,
+# which the host refuses).
 # Needs FALLOUT_DATA, like tools/regress.sh. CLIENT_BIN runs the client
 # with another binary (e.g. a Windows build under Wine), HOST_WAIT sets the
 # seconds to wait for the host (default 4), HOST_EXTRA adds host settings

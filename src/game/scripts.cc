@@ -1265,7 +1265,12 @@ int exec_script_proc(int sid, int action)
         executeProcedure(program, proc);
     }
 
-    script->source = NULL;
+    // CE: the procedure can remove its own script (an object destroying
+    // itself frees its script, and with the last one the script list's
+    // block): look it up again (found with AddressSanitizer in Fallout 2).
+    if (scr_ptr(sid, &script) == 0) {
+        script->source = NULL;
+    }
 
     return 0;
 }

@@ -16,7 +16,8 @@
 # SOAK_ASAN_BIN, SOAK_WINE (a Wine runner script for the Windows build),
 # DISPLAY for Wine. For Fallout 2 co-op: SOAK_BIN (its fallout2-ce),
 # SOAK_TOOLS (its tools folder, for nettest.sh) and SOAK_WHAT (the tests to
-# draw from, e.g. "tour session play").
+# draw from, e.g. "tour session play"). SOAK_PORT_OFFSET moves the local
+# relay servers' ports, so a second soak can run next to another.
 set -uo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -24,7 +25,7 @@ out=$1
 mkdir -p "$out"
 bin=${SOAK_BIN:-$here/../build/fallout-ce}
 tools=${SOAK_TOOLS:-$here}
-read -r -a whats <<<"${SOAK_WHAT:-tour tour4 session session combat talk}"
+read -r -a whats <<<"${SOAK_WHAT:-tour tour4 session session combat talk play}"
 
 until_epoch=0
 if [ -n "${SOAK_UNTIL:-}" ]; then
@@ -32,9 +33,10 @@ if [ -n "${SOAK_UNTIL:-}" ]; then
     [ "$until_epoch" -le "$(date +%s)" ] && until_epoch=$(date -d "tomorrow ${SOAK_UNTIL}" +%s)
 fi
 
-relay_port=27980
-slow_port=27981
-python3 "$here/coop_server.py" --port 18090 --bind 127.0.0.1 --root "$out/server" \
+offset=${SOAK_PORT_OFFSET:-0}
+relay_port=$((27980 + offset))
+slow_port=$((27981 + offset))
+python3 "$here/coop_server.py" --port $((18090 + offset)) --bind 127.0.0.1 --root "$out/server" \
     --relay-port $relay_port --relay-bind 127.0.0.1 >"$out/server.log" 2>&1 &
 server=$!
 slow_server=
@@ -42,7 +44,7 @@ trap 'kill $server $slow_server 2>/dev/null' EXIT
 
 start_slow_server() {
     kill $slow_server 2>/dev/null
-    COOP_RELAY_TEST_RATE=$1 python3 "$here/coop_server.py" --port 18091 --bind 127.0.0.1 --root "$out/server-slow" \
+    COOP_RELAY_TEST_RATE=$1 python3 "$here/coop_server.py" --port $((18091 + offset)) --bind 127.0.0.1 --root "$out/server-slow" \
         --relay-port $slow_port --relay-bind 127.0.0.1 >"$out/server-slow.log" 2>&1 &
     slow_server=$!
     sleep 1

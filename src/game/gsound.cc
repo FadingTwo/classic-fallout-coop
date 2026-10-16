@@ -33,10 +33,14 @@ namespace fallout {
 
 GsoundEventHook* gsound_event_hook = NULL;
 
-// Names (and volumes) of loaded effects, while gsound_event_hook is set.
+// Names (and volumes) of loaded effects, while gsound_event_hook is set,
+// and where they come from (tile -1: nowhere in particular), so each
+// co-op player can hear them as loud as they are for them.
 typedef struct GsoundLoadedEffect {
     std::string name;
     int volume;
+    int tile;
+    int elevation;
 } GsoundLoadedEffect;
 
 static std::unordered_map<Sound*, GsoundLoadedEffect> gsound_loaded_effects;
@@ -46,11 +50,32 @@ static void gsound_report_effect(Sound* sound)
     if (gsound_event_hook != NULL) {
         auto it = gsound_loaded_effects.find(sound);
         if (it != gsound_loaded_effects.end()) {
-            gsound_event_hook(GSOUND_EVENT_SFX, it->second.name.c_str(), it->second.volume, 0, 0);
+            gsound_event_hook(GSOUND_EVENT_SFX, it->second.name.c_str(), it->second.volume, it->second.tile, it->second.elevation);
         }
     }
 }
 
+
+// Remembers a loaded effect for the event hook: under the name of the file
+// really loaded (an alias needs the object to be found, which a co-op
+// client doesn't have), and where it comes from.
+static Sound* gsound_remember_effect(Sound* sound, const char* name, Object* object)
+{
+    if (gsound_event_hook != NULL) {
+        int tile = -1;
+        int elevation = 0;
+        if (object != NULL) {
+            Object* source = obj_top_environment(object);
+            if (source == NULL) {
+                source = object;
+            }
+            tile = source->tile;
+            elevation = source->elevation;
+        }
+        gsound_loaded_effects[sound] = { name, VOLUME_MAX, tile, elevation };
+    }
+    return sound;
+}
 
 static void gsound_bkg_proc();
 static int gsound_open(const char* fname, int flags);
@@ -1241,11 +1266,7 @@ Sound* gsound_load_sound(const char* name, Object* object)
             debug_printf("succeeded.\n");
         }
 
-        if (gsound_event_hook != NULL) {
-            gsound_loaded_effects[sound] = { name, VOLUME_MAX };
-        }
-
-        return sound;
+        return gsound_remember_effect(sound, name, object);
     }
 
     if (object != NULL) {
@@ -1272,7 +1293,9 @@ Sound* gsound_load_sound(const char* name, Object* object)
                     debug_printf("succeeded (with alias).\n");
                 }
 
-                return sound;
+                char alias[COMPAT_MAX_PATH];
+                snprintf(alias, sizeof(alias), "H%cXXXX%s", v9, name + 6);
+                return gsound_remember_effect(sound, alias, object);
             }
 
             if (v9 == 'F') {
@@ -1287,7 +1310,9 @@ Sound* gsound_load_sound(const char* name, Object* object)
                         debug_printf("succeeded (with male alias).\n");
                     }
 
-                    return sound;
+                    char alias[COMPAT_MAX_PATH];
+                    snprintf(alias, sizeof(alias), "HMXXXX%s", name + 6);
+                    return gsound_remember_effect(sound, alias, object);
                 }
             }
         }
@@ -1305,7 +1330,9 @@ Sound* gsound_load_sound(const char* name, Object* object)
                 debug_printf("succeeded (with alias).\n");
             }
 
-            return sound;
+            char alias[COMPAT_MAX_PATH];
+            snprintf(alias, sizeof(alias), "MAMTNT%s", name + 6);
+            return gsound_remember_effect(sound, alias, object);
         }
     }
 
