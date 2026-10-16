@@ -321,6 +321,13 @@ void gameMovieFadeOut()
 }
 
 // 0x44EB04
+void gameMovieSetSeen(int movie)
+{
+    if (movie >= 0 && movie < MOVIE_COUNT) {
+        gGameMoviesSeen[movie] = 1;
+    }
+}
+
 bool gameMovieIsSeen(int movie)
 {
     return gGameMoviesSeen[movie] == 1;

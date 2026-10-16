@@ -40,6 +40,9 @@ int gameMoviesSave(File* stream);
 int gameMoviePlay(int movie, int flags);
 void gameMovieFadeOut();
 bool gameMovieIsSeen(int movie);
+
+// CE: marks `movie` seen without playing it (co-op tests).
+void gameMovieSetSeen(int movie);
 bool gameMovieIsPlaying();
 
 } // namespace fallout

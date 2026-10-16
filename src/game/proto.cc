@@ -73,8 +73,9 @@ static const size_t proto_sizes[11] = {
 // 0x50752C
 static int protos_been_initialized = 0;
 
-// Co-op player 2's counterpart of `pc_proto`, see coop.h.
-static CritterProto coop_pc_proto;
+// Co-op: players 2 and up's counterparts of `pc_proto` (index 0 unused),
+// see COOP_PLAYER_PID in coop.h.
+static CritterProto coop_pc_protos[COOP_MAX_PLAYERS];
 
 // 0x507530
 static CritterProto pc_proto = {
@@ -1168,10 +1169,20 @@ void proto_reset()
 // Resets co-op player 2's proto, see coop.h.
 void proto_player2_reset()
 {
+    proto_player_reset(1);
+}
+
+void proto_player_reset(int index)
+{
+    if (index < 1 || index >= COOP_MAX_PLAYERS) {
+        return;
+    }
+
+    CritterProto* proto = &(coop_pc_protos[index]);
     // TODO: Get rid of cast.
-    proto_critter_init((Proto*)&coop_pc_proto, COOP_PLAYER2_PID);
-    coop_pc_proto.pid = COOP_PLAYER2_PID;
-    coop_pc_proto.fid = art_id(OBJ_TYPE_CRITTER, 1, 0, 0, 0);
+    proto_critter_init((Proto*)proto, COOP_PLAYER_PID(index));
+    proto->pid = COOP_PLAYER_PID(index);
+    proto->fid = art_id(OBJ_TYPE_CRITTER, 1, 0, 0, 0);
 }
 
 // 0x48EC98
@@ -1754,8 +1765,8 @@ int proto_ptr(int pid, Proto** protoPtr)
         return 0;
     }
 
-    if (pid == COOP_PLAYER2_PID) {
-        *protoPtr = (Proto*)&coop_pc_proto;
+    if (COOP_IS_PLAYER_PID(pid)) {
+        *protoPtr = (Proto*)&(coop_pc_protos[COOP_PLAYER_INDEX_OF_PID(pid)]);
         return 0;
     }
 

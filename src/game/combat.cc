@@ -3476,6 +3476,9 @@ static void compute_damage(Attack* attack, int rounds, int damage_multiplier)
         }
     }
 
+    // CE: co-op: enemies hold out longer with more players, if set.
+    *damage_ptr = coop_harder_damage(critter, *damage_ptr);
+
     if (knockback_distance_ptr != NULL) {
         if ((critter->flags & OBJECT_MULTIHEX) == 0) {
             if (damage_type == DAMAGE_TYPE_EXPLOSION || attack->weapon == NULL || item_w_subtype(attack->weapon, attack->hitMode) == ATTACK_TYPE_MELEE) {

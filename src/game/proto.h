@@ -134,6 +134,8 @@ int proto_update_init(Object* obj);
 int proto_dude_update_gender();
 int proto_dude_init(const char* path);
 void proto_player2_reset();
+// Co-op: the proto of player `index` (1 and up), see COOP_PLAYER_PID.
+void proto_player_reset(int index);
 int proto_data_member(int pid, int member, ProtoDataMemberValue* value);
 int proto_init();
 void proto_reset();

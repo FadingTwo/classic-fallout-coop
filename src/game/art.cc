@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <algorithm>
+
 #include "game/anim.h"
 #include "game/coop.h"
 #include "game/game.h"
@@ -106,6 +108,10 @@ int art_init()
     if (!config_get_value(&game_config, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_ART_CACHE_SIZE_KEY, &cacheSize)) {
         cacheSize = 8;
     }
+
+    // CE: co-op: every player's view needs its art at once (several towns'
+    // worth with four players); 8 MB thrashed. Plenty for a modern PC.
+    cacheSize = std::max(cacheSize, 32);
 
     if (!cache_init(&art_cache, art_data_size, art_data_load, art_data_free, cacheSize << 20)) {
         debug_printf("cache_init failed in art_init\n");

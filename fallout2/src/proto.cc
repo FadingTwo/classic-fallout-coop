@@ -89,7 +89,7 @@ static int _protos_been_initialized = 0;
 // obj_dude_proto
 // 0x51C370
 // CE: co-op player 2's counterpart of `gDudeProto`, see coop.h.
-static CritterProto gCoopPlayer2Proto;
+static CritterProto gCoopPlayerProtos[COOP_MAX_PLAYERS];
 
 static CritterProto gDudeProto = {
     0x1000000,
@@ -1470,10 +1470,20 @@ int protoInit()
 // CE: resets co-op player 2's proto, see coop.h.
 void protoPlayer2Reset()
 {
+    protoPlayerReset(1);
+}
+
+void protoPlayerReset(int index)
+{
+    if (index < 1 || index >= COOP_MAX_PLAYERS) {
+        return;
+    }
+
+    CritterProto* proto = &(gCoopPlayerProtos[index]);
     // TODO: Get rid of cast.
-    proto_critter_init((Proto*)&gCoopPlayer2Proto, COOP_PLAYER2_PID);
-    gCoopPlayer2Proto.pid = COOP_PLAYER2_PID;
-    gCoopPlayer2Proto.fid = buildFid(OBJ_TYPE_CRITTER, 1, 0, 0, 0);
+    proto_critter_init((Proto*)proto, COOP_PLAYER_PID(index));
+    proto->pid = COOP_PLAYER_PID(index);
+    proto->fid = buildFid(OBJ_TYPE_CRITTER, 1, 0, 0, 0);
 }
 
 void protoReset()
@@ -2148,8 +2158,8 @@ int protoGetProto(int pid, Proto** protoPtr)
         return 0;
     }
 
-    if (pid == COOP_PLAYER2_PID) {
-        *protoPtr = (Proto*)&gCoopPlayer2Proto;
+    if (COOP_IS_PLAYER_PID(pid)) {
+        *protoPtr = (Proto*)&(gCoopPlayerProtos[COOP_PLAYER_INDEX_OF_PID(pid)]);
         return 0;
     }
 

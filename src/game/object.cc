@@ -58,6 +58,7 @@ static int obj_node_ptr(Object* obj, ObjectListNode** out_node, ObjectListNode**
 static void obj_insert(ObjectListNode* ptr);
 static int obj_remove(ObjectListNode* a1, ObjectListNode* a2);
 static int obj_connect_to_tile(ObjectListNode* node, int tile_index, int elev, Rect* rect);
+static void obj_update_roof(int tile, int elevation, Rect* rect);
 static int obj_adjust_light(Object* obj, int a2, Rect* rect);
 static void obj_render_outline(Object* object, Rect* rect);
 static void obj_render_object(Object* object, Rect* rect, int light);
@@ -1440,36 +1441,7 @@ int obj_move_to_tile(Object* obj, int tile, int elevation, Rect* rect)
         // NOTE: Uninline.
         obj_set_seen(tile);
 
-        int roofX = tile % 200 / 2;
-        int roofY = tile / 200 / 2;
-        if (roofX != obj_last_roof_x || roofY != obj_last_roof_y || elevation != obj_last_elev) {
-            int currentSquare = square[elevation]->field_0[roofX + 100 * roofY];
-            int currentSquareFid = art_id(OBJ_TYPE_TILE, (currentSquare >> 16) & 0xFFF, 0, 0, 0);
-            // CE: Add additional checks for -1 to prevent array lookup at index -101.
-            int previousSquare = obj_last_roof_x != -1 && obj_last_roof_y != -1
-                ? square[elevation]->field_0[obj_last_roof_x + 100 * obj_last_roof_y]
-                : 0;
-            bool isEmpty = art_id(OBJ_TYPE_TILE, 1, 0, 0, 0) == currentSquareFid;
-
-            if (isEmpty != obj_last_is_empty || (((currentSquare >> 16) & 0xF000) >> 12) != (((previousSquare >> 16) & 0xF000) >> 12)) {
-                if (!obj_last_is_empty) {
-                    tile_fill_roof(obj_last_roof_x, obj_last_roof_y, elevation, true);
-                }
-
-                if (!isEmpty) {
-                    tile_fill_roof(roofX, roofY, elevation, false);
-                }
-
-                if (rect != NULL) {
-                    rect_min_bound(rect, &scr_size, rect);
-                }
-            }
-
-            obj_last_roof_x = roofX;
-            obj_last_roof_y = roofY;
-            obj_last_elev = elevation;
-            obj_last_is_empty = isEmpty;
-        }
+        obj_update_roof(tile, elevation, rect);
 
         if (rect != NULL) {
             Rect r;
@@ -1490,9 +1462,62 @@ int obj_move_to_tile(Object* obj, int tile, int elevation, Rect* rect)
         if (elevation != obj_last_elev && PID_TYPE(obj->pid) == OBJ_TYPE_CRITTER) {
             combat_delete_critter(obj);
         }
+
+        // Co-op: roofs open over another player in control (on one PC).
+        if (coop_player_of(obj) != NULL && coop_player_of(obj) == coop_controlled_player()) {
+            obj_follow_viewer(obj);
+        }
     }
 
     return 0;
+}
+
+// Hides the roof over `tile` (inside a building) and shows the one hidden
+// before, as the player moves. (Uncollapsed from obj_move_to_tile().)
+static void obj_update_roof(int tile, int elevation, Rect* rect)
+{
+    int roofX = tile % 200 / 2;
+    int roofY = tile / 200 / 2;
+    if (roofX != obj_last_roof_x || roofY != obj_last_roof_y || elevation != obj_last_elev) {
+        int currentSquare = square[elevation]->field_0[roofX + 100 * roofY];
+        int currentSquareFid = art_id(OBJ_TYPE_TILE, (currentSquare >> 16) & 0xFFF, 0, 0, 0);
+        // CE: Add additional checks for -1 to prevent array lookup at index -101.
+        int previousSquare = obj_last_roof_x != -1 && obj_last_roof_y != -1
+            ? square[elevation]->field_0[obj_last_roof_x + 100 * obj_last_roof_y]
+            : 0;
+        bool isEmpty = art_id(OBJ_TYPE_TILE, 1, 0, 0, 0) == currentSquareFid;
+
+        if (isEmpty != obj_last_is_empty || (((currentSquare >> 16) & 0xF000) >> 12) != (((previousSquare >> 16) & 0xF000) >> 12)) {
+            if (!obj_last_is_empty) {
+                tile_fill_roof(obj_last_roof_x, obj_last_roof_y, elevation, true);
+            }
+
+            if (!isEmpty) {
+                tile_fill_roof(roofX, roofY, elevation, false);
+            }
+
+            if (rect != NULL) {
+                rect_min_bound(rect, &scr_size, rect);
+            }
+        }
+
+        obj_last_roof_x = roofX;
+        obj_last_roof_y = roofY;
+        obj_last_elev = elevation;
+        obj_last_is_empty = isEmpty;
+    }
+}
+
+// Co-op: roofs and the see-through egg around `obj`, the player whose view
+// is drawn next (on the same elevation as the map shown).
+void obj_follow_viewer(Object* obj)
+{
+    if (obj == NULL || obj->tile == -1 || obj->elevation != map_elevation || obj->elevation != obj_last_elev) {
+        return;
+    }
+
+    obj_update_roof(obj->tile, obj->elevation, NULL);
+    obj_move_to_tile(obj_egg, obj->tile, obj->elevation, NULL);
 }
 
 // 0x47C588
@@ -4502,8 +4527,9 @@ static void obj_render_outline(Object* object, Rect* rect)
             v44 = 0;
             break;
         case OUTLINE_TYPE_COOP_PLAYER2:
-            // Yellow unless the viewer picked another color.
-            color = coop_viewer_outline_color(1);
+            // Yellow unless the viewer picked another color; players 3 and
+            // 4 in colors the viewer doesn't use.
+            color = coop_viewer_outline_color(coop_player_of(object) != NULL ? (int)(coop_player_of(object) - coop_player(0)) : 1);
             v53 = 0;
             v44 = 0;
             break;

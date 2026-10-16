@@ -30,6 +30,7 @@ Object* partyMemberFindByPid(int a1);
 bool _isPotentialPartyMember(Object* object);
 bool objectIsPartyMember(Object* object);
 int _getPartyMemberCount();
+int partyMemberCountForScripts();
 int _partyMemberPrepItemSaveAll();
 int partyMemberGetBestSkill(Object* object);
 Object* partyMemberGetBestInSkill(int skill);

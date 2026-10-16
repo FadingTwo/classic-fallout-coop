@@ -918,6 +918,9 @@ int gameHandleKey(int eventCode, bool isInCombatMode)
             }
         }
         break;
+    case KEY_SHIFT_F9:
+        coop_handle_add_player_key();
+        break;
     case KEY_F9:
         // CE: co-op on one PC: player 2 joins, then switches control.
         coop_handle_switch_key();

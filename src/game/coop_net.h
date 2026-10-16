@@ -110,6 +110,17 @@ bool coop_net_host_start();
 void coop_net_host_pump();
 
 // Host: true once a client has passed the handshake.
+// The client (player `slot` + 1) the host functions act on: whether it's
+// connected, its input, frames, status and character (default 1, player 2).
+// Sounds go to every client.
+void coop_net_select(int slot);
+int coop_net_selected();
+// How many clients may join (1 to COOP_MAX_PLAYERS - 1), and how many are
+// connected.
+void coop_net_set_max_clients(int count);
+int coop_net_max_clients_value();
+int coop_net_clients_connected();
+
 bool coop_net_client_connected();
 
 // Host: how many times a client has joined so far.

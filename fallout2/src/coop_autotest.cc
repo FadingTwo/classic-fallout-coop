@@ -35,6 +35,9 @@
 #include "palette.h"
 #include "perk.h"
 #include "platform_compat.h"
+#include "party_member.h"
+#include "art.h"
+#include "game_movie.h"
 #include "proto.h"
 #include "proto_instance.h"
 #include "queue.h"
@@ -65,6 +68,17 @@ static int coop_autotest_gamepad(AutotestNewGameProc* newGame);
 static int coop_autotest_give(AutotestNewGameProc* newGame);
 static int coop_autotest_knockout(AutotestNewGameProc* newGame);
 static int coop_autotest_character(AutotestNewGameProc* newGame);
+static int coop_autotest_barter(AutotestNewGameProc* newGame);
+static int coop_autotest_looks(AutotestNewGameProc* newGame);
+static int coop_autotest_roofs(AutotestNewGameProc* newGame);
+static int coop_autotest_four(AutotestNewGameProc* newGame);
+static int coop_autotest_net_four_host(AutotestNewGameProc* newGame);
+static int coop_autotest_net_four_client(AutotestNewGameProc* newGame);
+static void coop_autotest_press_space_forever();
+static int coop_autotest_net_talk_host(AutotestNewGameProc* newGame);
+static int coop_autotest_net_talk_client(AutotestNewGameProc* newGame);
+static int coop_autotest_net_combat_host(AutotestNewGameProc* newGame);
+static int coop_autotest_net_combat_client(AutotestNewGameProc* newGame);
 static int coop_autotest_net_character_host(AutotestNewGameProc* newGame);
 static int coop_autotest_net_character_client(AutotestNewGameProc* newGame);
 static int coop_autotest_net_session_host(AutotestNewGameProc* newGame);
@@ -109,6 +123,16 @@ void coop_autotest_register()
     autotest_add_script("coop_give", coop_autotest_give);
     autotest_add_script("coop_knockout", coop_autotest_knockout);
     autotest_add_script("coop_character", coop_autotest_character);
+    autotest_add_script("coop_barter", coop_autotest_barter);
+    autotest_add_script("coop_looks", coop_autotest_looks);
+    autotest_add_script("coop_roofs", coop_autotest_roofs);
+    autotest_add_script("coop_four", coop_autotest_four);
+    autotest_add_script("net_four_host", coop_autotest_net_four_host);
+    autotest_add_script("net_four_client", coop_autotest_net_four_client);
+    autotest_add_script("net_talk_host", coop_autotest_net_talk_host);
+    autotest_add_script("net_talk_client", coop_autotest_net_talk_client);
+    autotest_add_script("net_combat_host", coop_autotest_net_combat_host);
+    autotest_add_script("net_combat_client", coop_autotest_net_combat_client);
     autotest_add_script("net_character_host", coop_autotest_net_character_host);
     autotest_add_script("net_character_client", coop_autotest_net_character_client);
     autotest_add_script("net_session_host", coop_autotest_net_session_host);
@@ -151,6 +175,13 @@ static int coop_autotest_players(AutotestNewGameProc* newGame)
     if (p2 == nullptr) {
         autotest_fail("coop_add_player failed");
         return -1;
+    }
+
+    // Player 2 takes no companion's place (scripts count the party against
+    // Charisma).
+    autotest_log("party: %d members, %d for scripts", _getPartyMemberCount(), partyMemberCountForScripts());
+    if (partyMemberCountForScripts() != 1 || _getPartyMemberCount() != 2) {
+        autotest_fail("player 2 counts as a companion");
     }
 
     Object* p2obj = p2->obj;
@@ -832,9 +863,28 @@ static void coop_autotest_clear_critters()
 
 static void coop_autotest_mouse_transform(int* x, int* y)
 {
+    bool client = coop_net_mode() == COOP_NET_CLIENT;
+    // The layout is centered on the host's screen; a client's frames may
+    // be that screen scaled down.
+    int hostWidth = screenGetWidth();
+    int hostHeight = screenGetHeight();
+    int frameWidth = 0;
+    int frameHeight = 0;
+    bool frames = client && coop_net_client_frame_size(&frameWidth, &frameHeight);
+    // (Before any frames came, e.g. in the menus, this screen.)
+    if (frames && (!coop_net_client_host_size(&hostWidth, &hostHeight) || hostWidth <= 0 || hostHeight <= 0)) {
+        hostWidth = frameWidth;
+        hostHeight = frameHeight;
+    }
     if ((*x & COOP_AUTOTEST_CENTERED) != 0) {
-        *x = (*x & ~COOP_AUTOTEST_CENTERED) + (screenGetWidth() - 640) / 2;
-        *y += (screenGetHeight() - 480) / 2;
+        *x = (*x & ~COOP_AUTOTEST_CENTERED) + (hostWidth - 640) / 2;
+        *y += (hostHeight - 480) / 2;
+    }
+    if (frames) {
+        // Host screen -> frame (centre of the pixel) -> this window.
+        *x = (2 * *x + 1) * frameWidth / (2 * hostWidth);
+        *y = (2 * *y + 1) * frameHeight / (2 * hostHeight);
+        coop_net_client_frame_to_window(x, y);
     }
 }
 
@@ -2053,11 +2103,20 @@ static bool coop_autotest_rough_turn(Object* player)
     }
 
     // Collect first: killing moves objects around in the object list.
+    // Near ones first; if the fight goes on (enemies shooting from afar),
+    // any distance.
+    static unsigned int roughTurns = 0;
+    static unsigned int lastRough = 0;
+    if (getTicksSince(lastRough) > 120000) {
+        roughTurns = 0;
+    }
+    lastRough = getTicks();
+    int reach = ++roughTurns > 3 ? 500 : 20;
     int team = player->data.critter.combat.team;
     std::vector<Object*> targets;
     for (Object* obj = objectFindFirstAtElevation(player->elevation); obj != nullptr; obj = objectFindNextAtElevation()) {
         if (PID_TYPE(obj->pid) == OBJ_TYPE_CRITTER && coop_player_of(obj) == nullptr && !critterIsDead(obj)
-            && obj->data.critter.combat.team != team && objectGetDistanceBetween(obj, player) <= 20) {
+            && obj->data.critter.combat.team != team && objectGetDistanceBetween(obj, player) <= reach) {
             targets.push_back(obj);
         }
     }
@@ -2066,6 +2125,13 @@ static bool coop_autotest_rough_turn(Object* player)
     }
     if (!targets.empty()) {
         autotest_log("%s: cleared %d hostile critters", gMapHeader.name, (int)targets.size());
+    } else if (roughTurns == 5) {
+        for (Object* obj = objectFindFirstAtElevation(player->elevation); obj != nullptr; obj = objectFindNextAtElevation()) {
+            if (PID_TYPE(obj->pid) == OBJ_TYPE_CRITTER && !critterIsDead(obj)) {
+                autotest_log("%s: %s team %d (players %d) distance %d", gMapHeader.name, critterGetName(obj),
+                    obj->data.critter.combat.team, team, objectGetDistanceBetween(obj, player));
+            }
+        }
     }
     combatAttemptEnd();
     return true;
@@ -2093,6 +2159,16 @@ static int coop_autotest_net_tour_host(AutotestNewGameProc* newGame)
         return -1;
     }
 
+    // COOP_AUTOTEST_PLAYERS=n: players 3 and up too (one client each, see
+    // nettest.sh EXTRA_CLIENTS).
+    int players = getenv("COOP_AUTOTEST_PLAYERS") != nullptr ? atoi(getenv("COOP_AUTOTEST_PLAYERS")) : 2;
+    for (int index = 2; index < players && index < COOP_MAX_PLAYERS; index++) {
+        if (coop_add_player(index == 2 ? "premade\\diplomat.gcd" : "premade\\combat.gcd") == nullptr) {
+            autotest_fail("could not add player %d", index + 1);
+            return -1;
+        }
+    }
+
     coop_host_init();
     if (!coop_host_active() || !coop_autotest_relay_host_setup()) {
         autotest_fail("cannot host");
@@ -2101,6 +2177,15 @@ static int coop_autotest_net_tour_host(AutotestNewGameProc* newGame)
 
     if (!coop_autotest_session_frames(30000, true, false)) {
         autotest_fail("no client joined");
+        return -1;
+    }
+
+    unsigned int joinStart = getTicks();
+    while (getTicksSince(joinStart) < 90000 && coop_net_clients_connected() < players - 1) {
+        coop_autotest_session_frames(250, false, false);
+    }
+    if (coop_net_clients_connected() < players - 1) {
+        autotest_fail("only %d clients joined", coop_net_clients_connected());
         return -1;
     }
 
@@ -2188,7 +2273,15 @@ static int coop_autotest_net_tour_host(AutotestNewGameProc* newGame)
             gMapHeader.name, p1obj->tile, p1obj->elevation, critterGetHitPoints(p1obj),
             p2obj->tile, p2obj->elevation, critterGetHitPoints(p2obj), objectGetDistanceBetween(p1obj, p2obj));
 
-        if (coop_player_count() != 2 || p2obj->elevation != p1obj->elevation || p2obj->tile == -1) {
+        bool together = coop_player_count() == players;
+        for (int index = 1; index < coop_player_count(); index++) {
+            Object* other = coop_player(index)->obj;
+            if (other->elevation != p1obj->elevation || other->tile == -1) {
+                autotest_log("%s: player %d at tile %d elev %d", gMapHeader.name, index + 1, other->tile, other->elevation);
+                together = false;
+            }
+        }
+        if (!together) {
             autotest_fail("%s: players separated", stop);
         }
         if (coop_any_player_has(DAM_DEAD)) {
@@ -2476,6 +2569,957 @@ static int coop_autotest_net_character_client(AutotestNewGameProc* newGame)
         autotest_fail("no copy of the character was kept");
     } else {
         autotest_log("kept a copy: %s, level %d", name.c_str(), level);
+    }
+    return 0;
+}
+
+// Player 2 reaching a merchant trades directly (no conversation).
+static int coop_autotest_barter(AutotestNewGameProc* newGame)
+{
+    if (!coop_is_enabled()) {
+        autotest_fail("needs [coop]enabled=1");
+        return -1;
+    }
+
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    // COOP_AUTOTEST_HEADS: lists every map's merchants and the talking head
+    // their trade screen shows, and stops there.
+    if (getenv("COOP_AUTOTEST_HEADS") != nullptr) {
+        int merchants = 0;
+        int heads = 0;
+        for (int index = 0; index < 1000; index++) {
+            char name[64];
+            if (wmMapIdxToName(index, name, sizeof(name)) != 0) {
+                break;
+            }
+            if (mapLoadById(index) != 0) {
+                continue;
+            }
+            for (Object* obj = objectFindFirst(); obj != nullptr; obj = objectFindNext()) {
+                if (obj == gDude || !coop_can_barter_with(obj) || objectIsPartyMember(obj)) {
+                    continue;
+                }
+                int head = -1;
+                int background = -1;
+                bool found = scriptsFindDialogHead(obj, &head, &background);
+                merchants++;
+                heads += found ? 1 : 0;
+                autotest_log("%s: %s head %d background %d", name, critterGetName(obj), head, background);
+            }
+        }
+        autotest_log("%d merchants, %d with a talking head", merchants, heads);
+        return 0;
+    }
+
+    // COOP_AUTOTEST_MAP: the merchant's map (default Maida's in Klamath).
+    const char* mapName = getenv("COOP_AUTOTEST_MAP");
+    const char* merchantName = getenv("COOP_AUTOTEST_MERCHANT");
+    if (mapName == nullptr) {
+        mapName = "kladwtwn.map";
+        if (merchantName == nullptr) {
+            merchantName = "Maida";
+        }
+    }
+    {
+        char name[64];
+        snprintf(name, sizeof(name), "%s", mapName);
+        if (mapLoadByName(name) != 0) {
+            autotest_fail("cannot load %s", mapName);
+            return -1;
+        }
+    }
+
+    PlayerState* p2 = coop_add_player("premade\\stealth.gcd");
+    if (p2 == nullptr) {
+        autotest_fail("coop_add_player failed");
+        return -1;
+    }
+
+    // A merchant of the map by name (COOP_AUTOTEST_MERCHANT), else the
+    // first critter proto that barters (without a script: no trade).
+    Object* merchant = nullptr;
+    if (merchantName != nullptr) {
+        for (Object* obj = objectFindFirst(); obj != nullptr; obj = objectFindNext()) {
+            if (PID_TYPE(obj->pid) == OBJ_TYPE_CRITTER && strstr(critterGetName(obj), merchantName) != nullptr) {
+                merchant = obj;
+                break;
+            }
+        }
+        if (merchant == nullptr) {
+            autotest_log("no %s on this map", merchantName);
+        }
+    }
+
+    if (merchant != nullptr) {
+        _obj_attempt_placement(p2->obj, merchant->tile, merchant->elevation, 1);
+        tileSetCenter(p2->obj->tile, TILE_SET_CENTER_REFRESH_WINDOW);
+    } else {
+        int merchantPid = -1;
+        for (int index = 1; index < 1000 && merchantPid == -1; index++) {
+            Proto* proto;
+            if (protoGetProto(0x1000000 | index, &proto) != -1 && (proto->critter.data.flags & CRITTER_BARTER) != 0
+                && strstr(protoGetName(0x1000000 | index), "Hero") == nullptr) {
+                merchantPid = 0x1000000 | index;
+            }
+        }
+        if (merchantPid == -1 || objectCreateWithPid(&merchant, merchantPid) == -1) {
+            autotest_fail("could not create a merchant");
+            return -1;
+        }
+        _obj_attempt_placement(merchant, p2->obj->tile, p2->obj->elevation, 1);
+    }
+
+    Object* stimpak;
+    if (objectCreateWithPid(&stimpak, PROTO_ID_STIMPACK) == 0 && itemAdd(merchant, stimpak, 2) == 0) {
+        _obj_disconnect(stimpak, nullptr);
+    }
+
+    if (!coop_can_barter_with(merchant)) {
+        autotest_fail("merchant does not barter");
+        return -1;
+    }
+
+    if (coop_can_barter_with(gDude)) {
+        autotest_fail("player 1 counts as a merchant");
+    }
+
+    int head;
+    int background;
+    if (scriptsFindDialogHead(merchant, &head, &background)) {
+        autotest_log("%s has talking head %d (background %d)", critterGetName(merchant), head, background);
+    }
+
+    // Screenshot of the barter screen, then leave it.
+    inject_wait(20);
+    inject_call(takeScreenshot);
+    inject_wait(3);
+    inject_key(KEY_ESCAPE);
+
+    int itemsBefore = merchant->data.inventory.length;
+    unsigned int start = getTicks();
+    coop_request_barter(p2, merchant);
+    scriptsHandleRequests();
+    coop_process_requests();
+
+    while (inject_pending()) {
+        inject_update();
+    }
+
+    if (getTicksSince(start) < 200) {
+        autotest_fail("the barter screen did not open");
+    }
+    autotest_log("%s had %d kinds of items before and %d after", critterGetName(merchant), itemsBefore, merchant->data.inventory.length);
+
+    if (gDude != coop_player(0)->obj || coop_active_player() != coop_player(0)) {
+        autotest_fail("barter left player 2 active");
+    }
+
+    autotest_log("barter with %s done", critterGetName(merchant));
+
+    tileWindowRefresh();
+    takeScreenshot();
+
+    return 0;
+}
+
+// Each player looks as their gender (and the story) has it: tribal, then
+// the vault suit after its movie, also after a map change and save/load.
+static int coop_autotest_looks(AutotestNewGameProc* newGame)
+{
+    if (!coop_is_enabled()) {
+        autotest_fail("needs [coop]enabled=1");
+        return -1;
+    }
+
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    // Chitsa, a woman.
+    PlayerState* p2 = coop_add_player("premade\\diplomat.gcd");
+    if (p2 == nullptr) {
+        autotest_fail("coop_add_player failed");
+        return -1;
+    }
+
+    auto check = [&](const char* when, int look) {
+        int p1Art = gDude->fid & 0xFFF;
+        int p2Art = p2->obj->fid & 0xFFF;
+        int p1Gender = critterGetStat(gDude, STAT_GENDER);
+        int p2Gender = critterGetStat(p2->obj, STAT_GENDER);
+        autotest_log("%s: player 1 art %d (gender %d), player 2 art %d (gender %d)", when, p1Art, p1Gender, p2Art, p2Gender);
+        if (p1Art != _art_vault_person_nums[look][p1Gender] || p2Art != _art_vault_person_nums[look][p2Gender]) {
+            autotest_fail("%s: a player looks wrong", when);
+        }
+    };
+
+    if (critterGetStat(p2->obj, STAT_GENDER) != GENDER_FEMALE) {
+        autotest_fail("player 2 is not a woman");
+    }
+    check("start", DUDE_NATIVE_LOOK_TRIBAL);
+
+    gameMovieSetSeen(MOVIE_VSUIT);
+    char mapName[] = "arvillag.map";
+    if (mapLoadByName(mapName) != 0) {
+        autotest_fail("cannot load %s", mapName);
+        return -1;
+    }
+    p2 = coop_player(1);
+    check("after the vault suit movie and a map change", DUDE_NATIVE_LOOK_JUMPSUIT);
+
+    lsgSetQuickSlot(COOP_AUTOTEST_SLOT);
+    if (lsgSaveGame(LOAD_SAVE_MODE_QUICK) != 1 || lsgLoadGame(LOAD_SAVE_MODE_QUICK) != 1 || coop_player_count() != 2) {
+        autotest_fail("save and load failed");
+        return -1;
+    }
+    p2 = coop_player(1);
+    check("after save and load", DUDE_NATIVE_LOOK_JUMPSUIT);
+
+    return 0;
+}
+
+// While net_talk_host's conversation runs: whose it is.
+static void coop_autotest_net_talk_watch()
+{
+    if (_gdialogActive() && !coop_autotest_talk_seen) {
+        coop_autotest_talk_seen = true;
+        coop_autotest_talk_dude = gDude;
+        autotest_log("conversation on: dude %s", critterGetName(gDude));
+    }
+}
+
+// Over the network, player 2 talks to Klint at the temple, answering with
+// their own keys (net_talk_client); the host never answers for them. With
+// COOP_AUTOTEST_NET_BARTER (and [coop]talk=0) player 2 trades with Maida
+// in Klamath instead and leaves the barter screen with Escape.
+static int coop_autotest_net_talk_host(AutotestNewGameProc* newGame)
+{
+    if (coop_net_mode() != COOP_NET_HOST) {
+        autotest_fail("needs [coop]mode=host");
+        return -1;
+    }
+
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    bool barter = getenv("COOP_AUTOTEST_NET_BARTER") != nullptr;
+
+    // Player 2's character is ready (no character creation over the
+    // network).
+    PlayerState* p2 = coop_add_player("premade\\stealth.gcd");
+    if (p2 == nullptr) {
+        autotest_fail("coop_add_player failed");
+        return -1;
+    }
+
+    coop_host_init();
+    if (!coop_host_active() || !coop_autotest_relay_host_setup()) {
+        autotest_fail("cannot host");
+        return -1;
+    }
+
+    if (!coop_autotest_session_frames(30000, true, false)) {
+        autotest_fail("no client joined");
+        return -1;
+    }
+
+    if (barter) {
+        // Both players to Klamath.
+        char mapName[] = "kladwtwn.map";
+        MapTransition transition;
+        memset(&transition, 0, sizeof(transition));
+        transition.map = wmMapMatchNameToIdx(mapName);
+        transition.tile = -1;
+        mapSetTransition(&transition);
+        mapHandleTransition();
+        if (coop_player_count() != 2 || p2->obj->elevation != gDude->elevation) {
+            autotest_fail("player 2 did not come along to %s", mapName);
+        }
+    }
+
+    const char* name = barter ? "Maida" : "Klint";
+    Object* npc = nullptr;
+    for (Object* obj = objectFindFirst(); obj != nullptr; obj = objectFindNext()) {
+        if (PID_TYPE(obj->pid) == OBJ_TYPE_CRITTER && strstr(critterGetName(obj), name) != nullptr) {
+            npc = obj;
+            break;
+        }
+    }
+    if (npc == nullptr) {
+        autotest_fail("no %s", name);
+        return -1;
+    }
+    _obj_attempt_placement(p2->obj, npc->tile, npc->elevation, 1);
+    coop_autotest_session_frames(2000, false, false);
+
+    coop_autotest_talk_seen = false;
+    tickersAdd(coop_autotest_net_talk_watch);
+    unsigned int start = getTicks();
+    if (barter) {
+        if (!coop_can_barter_with(npc)) {
+            autotest_fail("%s does not trade", name);
+        }
+        coop_request_barter(p2, npc);
+    } else {
+        scriptsRequestDialogBy(p2->obj, npc);
+    }
+    scriptsHandleRequests();
+    coop_process_requests();
+    tickersRemove(coop_autotest_net_talk_watch);
+    autotest_log("player 2's %s took %u ms", barter ? "trade" : "conversation", getTicksSince(start));
+
+    if (!coop_autotest_talk_seen) {
+        autotest_fail("the conversation did not start");
+    } else if (coop_autotest_talk_dude != p2->obj) {
+        autotest_fail("the conversation was not player 2's");
+    }
+    if (gDude != coop_player(0)->obj || coop_active_player() != coop_player(0)) {
+        autotest_fail("the conversation left player 2 active");
+    }
+    if (_gdialogActive()) {
+        autotest_fail("the conversation did not end");
+    }
+
+    coop_autotest_session_frames(1000, false, false);
+    takeScreenshot();
+    coop_host_exit();
+    return 0;
+}
+
+static void coop_autotest_net_talk_keys()
+{
+    // The first option a few times, then Escape (which also leaves a
+    // barter screen).
+    static int presses = 0;
+    inject_wait(60);
+    inject_key(++presses % 4 == 0 ? KEY_ESCAPE : KEY_1);
+    if (presses % 4 == 1) {
+        inject_call(coop_autotest_screenshot);
+    }
+    inject_call(coop_autotest_net_talk_keys);
+}
+
+static int coop_autotest_net_talk_client(AutotestNewGameProc* newGame)
+{
+    if (coop_net_mode() != COOP_NET_CLIENT) {
+        autotest_fail("needs [coop]mode=client");
+        return -1;
+    }
+
+    coop_autotest_relay_client_setup();
+    inject_wait(300);
+    inject_call(coop_autotest_net_talk_keys);
+    int rc = coop_net_client_run();
+    autotest_log("client finished with %d", rc);
+    return 0;
+}
+
+static int coop_autotest_net_combat_player2_turns = 0;
+
+static bool coop_autotest_net_combat_turn(Object* player)
+{
+    if (player == coop_player(0)->obj) {
+        // COOP_AUTOTEST_COMBAT_CHAT: player 1 chats in their first turn
+        // (the space must not end it), then ends it with Space.
+        static bool chatted = false;
+        if (getenv("COOP_AUTOTEST_COMBAT_CHAT") != nullptr && !chatted) {
+            chatted = true;
+            inject_key(KEY_LOWERCASE_T);
+            for (const char* c = "on my way"; *c != '\0'; c++) {
+                inject_key(*c);
+            }
+            inject_key(KEY_RETURN);
+            inject_wait(5);
+            inject_key(KEY_SPACE);
+            return false;
+        }
+        return coop_autotest_attack_turn(player);
+    }
+
+    // Player 2: played by the client.
+    coop_autotest_net_combat_player2_turns++;
+    autotest_log("player 2's turn %d", coop_autotest_net_combat_player2_turns);
+    return false;
+}
+
+// Over the network: a fight in which player 2's turns come from the client
+// (which ends them with Space); player 1 punches the enemy.
+static int coop_autotest_net_combat_host(AutotestNewGameProc* newGame)
+{
+    if (coop_net_mode() != COOP_NET_HOST) {
+        autotest_fail("needs [coop]mode=host");
+        return -1;
+    }
+
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    PlayerState* p2 = coop_add_player("premade\\stealth.gcd");
+    if (p2 == nullptr) {
+        autotest_fail("coop_add_player failed");
+        return -1;
+    }
+
+    coop_host_init();
+    if (!coop_host_active() || !coop_autotest_relay_host_setup()) {
+        autotest_fail("cannot host");
+        return -1;
+    }
+
+    if (!coop_autotest_session_frames(30000, true, false)) {
+        autotest_fail("no client joined");
+        return -1;
+    }
+    coop_autotest_session_frames(500, false, false);
+
+    if (coop_player_count() != 2 || coop_player(1) != p2) {
+        autotest_fail("player 2 was not kept for the joining client");
+    }
+
+    coop_autotest_clear_critters();
+
+    Object* enemy = coop_autotest_spawn_enemy(coop_player(0)->obj);
+    if (enemy == nullptr) {
+        return -1;
+    }
+
+    coop_autotest_enemy = enemy;
+    coop_autotest_turns_total = 0;
+    memset(coop_autotest_turns, 0, sizeof(coop_autotest_turns));
+    coop_set_turn_hook(coop_autotest_net_combat_turn);
+
+    CombatStartData attack;
+    memset(&attack, 0, sizeof(attack));
+    attack.attacker = coop_player(0)->obj;
+    attack.defender = enemy;
+    _combat(&attack);
+
+    coop_set_turn_hook(nullptr);
+
+    autotest_log("combat over: enemy dead %d, player 2 turns %d, players dead %d",
+        critterIsDead(enemy) ? 1 : 0, coop_autotest_net_combat_player2_turns, coop_any_player_has(DAM_DEAD) ? 1 : 0);
+
+    if (coop_autotest_net_combat_player2_turns == 0) {
+        autotest_fail("player 2 never had a turn");
+    }
+
+    if (!critterIsDead(enemy) && !coop_any_player_has(DAM_DEAD)) {
+        autotest_fail("combat ended without a result");
+    }
+
+    coop_host_exit();
+    return 0;
+}
+
+static void coop_autotest_press_space_forever()
+{
+    // Re-queues itself: Space every second until the host leaves.
+    inject_wait(60);
+    inject_key(KEY_SPACE);
+    inject_call(coop_autotest_press_space_forever);
+}
+
+static int coop_autotest_net_combat_client(AutotestNewGameProc* newGame)
+{
+    if (coop_net_mode() != COOP_NET_CLIENT) {
+        autotest_fail("needs [coop]mode=client");
+        return -1;
+    }
+
+    coop_autotest_relay_client_setup();
+
+    inject_wait(400);
+    inject_call(coop_autotest_screenshot);
+    // COOP_AUTOTEST_COMBAT_CHAT: chat in a turn first; the space in the
+    // message must not end the turn.
+    if (getenv("COOP_AUTOTEST_COMBAT_CHAT") != nullptr) {
+        inject_key(KEY_LOWERCASE_T);
+        for (const char* c = "hello there"; *c != '\0'; c++) {
+            inject_key(*c);
+            inject_wait(2);
+        }
+        inject_wait(10);
+        inject_call(coop_autotest_screenshot);
+        inject_key(KEY_RETURN);
+        inject_wait(30);
+    }
+    inject_call(coop_autotest_press_space_forever);
+
+    int rc = coop_net_client_run();
+    autotest_log("client finished with %d", rc);
+    if (rc != 0) {
+        autotest_fail("client failed");
+    }
+
+    return 0;
+}
+
+// Roofs open over the player whose view is drawn: player 2 (in control on
+// one PC) inside a building in Klamath sees in, player 1 outside sees the
+// roof (COOP_AUTOTEST_MAP, default kladwtwn.map).
+static int coop_autotest_roofs(AutotestNewGameProc* newGame)
+{
+    if (!coop_is_enabled()) {
+        autotest_fail("needs [coop]enabled=1");
+        return -1;
+    }
+
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    PlayerState* p2 = coop_add_player("premade\\stealth.gcd");
+    if (p2 == nullptr) {
+        autotest_fail("coop_add_player failed");
+        return -1;
+    }
+
+    char mapName[64];
+    snprintf(mapName, sizeof(mapName), "%s", getenv("COOP_AUTOTEST_MAP") != nullptr ? getenv("COOP_AUTOTEST_MAP") : "kladwtwn.map");
+    MapTransition transition;
+    memset(&transition, 0, sizeof(transition));
+    transition.map = wmMapMatchNameToIdx(mapName);
+    transition.tile = -1;
+    mapSetTransition(&transition);
+    mapHandleTransition();
+    p2 = coop_player(1);
+    Object* p1obj = coop_player(0)->obj;
+
+    auto roofAt = [](int tile, int elevation, bool* hidden) {
+        int square = _square[elevation]->field_0[tile % 200 / 2 + 100 * (tile / 200 / 2)];
+        int roof = (square >> 16) & 0xFFFF;
+        *hidden = (((roof & 0xF000) >> 12) & 0x01) != 0;
+        return buildFid(OBJ_TYPE_TILE, roof & 0xFFF, 0, 0, 0) != buildFid(OBJ_TYPE_TILE, 1, 0, 0, 0);
+    };
+
+    bool hidden;
+    if (roofAt(p1obj->tile, p1obj->elevation, &hidden)) {
+        autotest_fail("player 1 starts under a roof");
+        return -1;
+    }
+
+    // A free tile under a roof, near player 1.
+    int inside = -1;
+    for (int tile = 0; tile < HEX_GRID_SIZE && inside == -1; tile++) {
+        if (tileDistanceBetween(tile, p1obj->tile) < 40 && roofAt(tile, p1obj->elevation, &hidden)
+            && _obj_blocking_at(nullptr, tile, p1obj->elevation) == nullptr) {
+            inside = tile;
+        }
+    }
+    if (inside == -1) {
+        autotest_fail("no roof near player 1");
+        return -1;
+    }
+
+    // Player 2 in control walks in.
+    coop_handle_switch_key();
+    if (coop_controlled_player() != p2) {
+        autotest_fail("cannot switch to player 2");
+        return -1;
+    }
+    {
+        ActivePlayerScope scope(p2);
+        objectSetLocation(p2->obj, inside, p1obj->elevation, nullptr);
+    }
+    tileSetCenter(p2->obj->tile, TILE_SET_CENTER_REFRESH_WINDOW);
+    roofAt(inside, p1obj->elevation, &hidden);
+    autotest_log("player 2 at %d, under a roof: hidden %d", inside, hidden ? 1 : 0);
+    takeScreenshot();
+    if (!hidden) {
+        autotest_fail("the roof stays over player 2");
+    }
+
+    // Back to player 1, outside.
+    coop_handle_switch_key();
+    tileSetCenter(p1obj->tile, TILE_SET_CENTER_REFRESH_WINDOW);
+    roofAt(inside, p1obj->elevation, &hidden);
+    autotest_log("player 1 in control: the roof hidden %d", hidden ? 1 : 0);
+    if (hidden) {
+        autotest_fail("the roof stays open for player 1");
+    }
+
+    // And to player 2 again.
+    coop_handle_switch_key();
+    roofAt(inside, p1obj->elevation, &hidden);
+    if (!hidden) {
+        autotest_fail("the roof did not open again for player 2");
+    }
+    coop_handle_switch_key();
+    return 0;
+}
+
+// Every player's turn counted; once each had one, they punch.
+static bool coop_autotest_four_turn(Object* player)
+{
+    bool all = true;
+    for (int index = 0; index < coop_player_count(); index++) {
+        if (coop_autotest_turns[index] == 0 && coop_player(index)->obj != player) {
+            all = false;
+        }
+    }
+    if (!all) {
+        coop_autotest_count_turn(player);
+        return true;
+    }
+    return coop_autotest_attack_turn(player);
+}
+
+// Four players on one PC: their own critters, protos and stats, outline
+// colors, travel together, a fight with a turn each, save and load, and a
+// character copy of player 4 joining as player 2 of another game.
+static int coop_autotest_four(AutotestNewGameProc* newGame)
+{
+    if (!coop_is_enabled()) {
+        autotest_fail("needs [coop]enabled=1");
+        return -1;
+    }
+
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    const char* premades[] = { "premade\\stealth.gcd", "premade\\diplomat.gcd", "premade\\stealth.gcd" };
+    for (int index = 0; index < 3; index++) {
+        if (coop_add_player(premades[index]) == nullptr) {
+            autotest_fail("could not add player %d", index + 2);
+            return -1;
+        }
+    }
+    if (coop_add_player("premade\\combat.gcd") != nullptr) {
+        autotest_fail("a fifth player was added");
+    }
+
+    auto report = [](const char* when) {
+        for (int index = 0; index < coop_player_count(); index++) {
+            PlayerState* player = coop_player(index);
+            ActivePlayerScope scope(player);
+            autotest_log("%s: player %d %s pid %x tile %d level %d hp %d ST %d", when, index + 1, critterGetName(player->obj),
+                player->obj->pid, player->obj->tile, pcGetStat(PC_STAT_LEVEL), critterGetHitPoints(player->obj),
+                critterGetStat(player->obj, STAT_STRENGTH));
+        }
+    };
+    report("start");
+
+    for (int index = 1; index < coop_player_count(); index++) {
+        Object* obj = coop_player(index)->obj;
+        if (obj->pid != COOP_PLAYER_PID(index) || coop_player_by_pid(obj->pid) != coop_player(index)) {
+            autotest_fail("player %d has the wrong proto id %x", index + 1, obj->pid);
+        }
+        Proto* proto;
+        if (protoGetProto(obj->pid, &proto) == -1) {
+            autotest_fail("player %d has no proto", index + 1);
+        }
+        for (int other = 0; other < index; other++) {
+            if (coop_player(other)->obj == obj) {
+                autotest_fail("players %d and %d share a critter", other + 1, index + 1);
+            }
+        }
+    }
+
+    // Stats stay each player's own.
+    {
+        ActivePlayerScope scope(coop_player(2));
+        pcAddExperience(1000);
+    }
+    for (int index = 0; index < coop_player_count(); index++) {
+        ActivePlayerScope scope(coop_player(index));
+        autotest_log("player %d experience %d", index + 1, pcGetStat(PC_STAT_EXPERIENCE));
+    }
+
+    // Four different outline colors for each viewer.
+    for (int viewer = 0; viewer < coop_player_count(); viewer++) {
+        coop_set_viewer(coop_player(viewer));
+        int colors[COOP_MAX_PLAYERS];
+        for (int index = 0; index < coop_player_count(); index++) {
+            colors[index] = coop_viewer_outline_color(index);
+            for (int other = 0; other < index; other++) {
+                if (colors[other] == colors[index]) {
+                    autotest_fail("viewer %d sees players %d and %d in the same color", viewer + 1, other + 1, index + 1);
+                }
+            }
+        }
+        if (viewer != 0 && coop_outline_player(coop_player(0)->obj) != 0) {
+            autotest_fail("viewer %d sees no outline on player 1", viewer + 1);
+        }
+        if (coop_outline_player(coop_player(viewer)->obj) != -1) {
+            autotest_fail("viewer %d sees their own outline", viewer + 1);
+        }
+    }
+    coop_set_viewer(nullptr);
+
+    // F9 goes round all four.
+    for (int step = 1; step <= 4; step++) {
+        coop_handle_switch_key();
+        if (coop_controlled_player() != coop_player(step % 4)) {
+            autotest_fail("F9 step %d controls the wrong player", step);
+        }
+    }
+
+    // Travel: everyone comes along.
+    char mapName[] = "kladwtwn.map";
+    MapTransition transition;
+    memset(&transition, 0, sizeof(transition));
+    transition.map = wmMapMatchNameToIdx(mapName);
+    transition.tile = -1;
+    mapSetTransition(&transition);
+    mapHandleTransition();
+    report("after travel");
+    if (coop_player_count() != 4) {
+        autotest_fail("players lost on the way: %d", coop_player_count());
+        return -1;
+    }
+    for (int index = 1; index < 4; index++) {
+        Object* obj = coop_player(index)->obj;
+        if (obj->tile == -1 || obj->elevation != gDude->elevation || objectGetDistanceBetween(obj, gDude) > 8) {
+            autotest_fail("player %d is not with player 1", index + 1);
+        }
+    }
+
+    // A fight: every player gets a turn.
+    coop_autotest_clear_critters();
+    Object* enemy = coop_autotest_spawn_enemy(gDude);
+    if (enemy == nullptr) {
+        return -1;
+    }
+
+    // Harder: damage to enemies / 2.5 with four players; players and
+    // companions take it in full.
+    coop_set_harder(true);
+    int enemyDamage = coop_harder_damage(enemy, 10);
+    int playerDamage = coop_harder_damage(coop_player(2)->obj, 10);
+    coop_set_harder(false);
+    int enemyDamageOff = coop_harder_damage(enemy, 10);
+    autotest_log("harder: 10 damage to the enemy -> %d (off: %d), to player 3 -> %d", enemyDamage, enemyDamageOff, playerDamage);
+    if (enemyDamage != 4 || enemyDamageOff != 10 || playerDamage != 10) {
+        autotest_fail("harder scales damage wrongly");
+    }
+    coop_autotest_enemy = enemy;
+    coop_autotest_turns_total = 0;
+    memset(coop_autotest_turns, 0, sizeof(coop_autotest_turns));
+    coop_set_turn_hook(coop_autotest_four_turn);
+    CombatStartData attack;
+    memset(&attack, 0, sizeof(attack));
+    attack.attacker = gDude;
+    attack.defender = enemy;
+    _combat(&attack);
+    coop_set_turn_hook(nullptr);
+    autotest_log("fight: turns %d %d %d %d, enemy dead %d", coop_autotest_turns[0], coop_autotest_turns[1],
+        coop_autotest_turns[2], coop_autotest_turns[3], critterIsDead(enemy) ? 1 : 0);
+    for (int index = 0; index < 4; index++) {
+        if (coop_autotest_turns[index] == 0) {
+            autotest_fail("player %d never had a turn", index + 1);
+        }
+    }
+    if (!critterIsDead(enemy)) {
+        autotest_fail("the enemy survived");
+    }
+
+    // Save and load.
+    int hp4 = critterGetHitPoints(coop_player(3)->obj);
+    lsgSetQuickSlot(COOP_AUTOTEST_SLOT);
+    if (lsgSaveGame(LOAD_SAVE_MODE_QUICK) != 1 || (lsgSetQuickSlot(COOP_AUTOTEST_SLOT), false) || lsgLoadGame(LOAD_SAVE_MODE_QUICK) != 1) {
+        autotest_fail("save and load failed");
+        return -1;
+    }
+    report("after load");
+    if (coop_player_count() != 4) {
+        autotest_fail("%d players after load", coop_player_count());
+        return -1;
+    }
+    if (critterGetHitPoints(coop_player(3)->obj) != hp4 || coop_player(3)->obj->pid != COOP_PLAYER_PID(3)) {
+        autotest_fail("player 4 changed through save and load");
+    }
+
+    // Player 4's character joins another game as player 2.
+    std::vector<unsigned char> data;
+    if (!coop_export_player(3, &data)) {
+        autotest_fail("export of player 4 failed");
+        return -1;
+    }
+    std::string name4 = coop_player(3)->name;
+    coop_reset();
+    std::string error;
+    PlayerState* back = coop_import_player(data, &error);
+    if (back == nullptr) {
+        autotest_fail("import failed: %s", error.c_str());
+        return -1;
+    }
+    if (back != coop_player(1) || back->obj->pid != COOP_PLAYER2_PID || name4 != back->name) {
+        autotest_fail("player 4's copy is not player 2 now");
+    }
+    report("player 4 as player 2");
+
+    tileWindowRefresh();
+    takeScreenshot();
+    return 0;
+}
+
+static int coop_autotest_net_four_human_turns[COOP_MAX_PLAYERS];
+
+// Player 1 punches once everyone else had a turn; the others' turns come
+// from their clients (which end them with Space).
+static bool coop_autotest_net_four_turn(Object* player)
+{
+    PlayerState* state = coop_player_of(player);
+    int index = state != nullptr ? (int)(state - coop_player(0)) : -1;
+    if (index > 0) {
+        coop_autotest_net_four_human_turns[index]++;
+        autotest_log("player %d's turn", index + 1);
+        return false;
+    }
+
+    coop_autotest_count_turn(player);
+    for (int other = 1; other < coop_player_count(); other++) {
+        if (coop_autotest_net_four_human_turns[other] == 0) {
+            return true;
+        }
+    }
+    return coop_autotest_attack_turn(player);
+}
+
+// Four players over the network (tools/nettest.sh with EXTRA_CLIENTS=2):
+// three clients join with their own character (COOP_AUTOTEST_CHARACTER_FILE
+// on the clients), each gets their own view, and in a fight each plays
+// their own turns.
+static int coop_autotest_net_four_host(AutotestNewGameProc* newGame)
+{
+    if (coop_net_mode() != COOP_NET_HOST) {
+        autotest_fail("needs [coop]mode=host");
+        return -1;
+    }
+
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    coop_host_init();
+    if (!coop_host_active() || !coop_autotest_relay_host_setup()) {
+        autotest_fail("cannot host");
+        return -1;
+    }
+
+    unsigned int start = getTicks();
+    while (coop_player_count() < COOP_MAX_PLAYERS && getTicksSince(start) < 120000) {
+        coop_autotest_session_frames(250, false, false);
+    }
+    autotest_log("%d players after %u ms, %d clients", coop_player_count(), getTicksSince(start), coop_net_clients_connected());
+    if (coop_player_count() != COOP_MAX_PLAYERS || coop_net_clients_connected() != COOP_MAX_PLAYERS - 1) {
+        autotest_fail("not everyone joined");
+        coop_host_exit();
+        return -1;
+    }
+    for (int index = 0; index < coop_player_count(); index++) {
+        PlayerState* player = coop_player(index);
+        autotest_log("player %d: %s pid %x tile %d", index + 1, critterGetName(player->obj), player->obj->pid, player->obj->tile);
+    }
+
+    // Free roam for a while: each client sees their own view.
+    coop_autotest_session_frames(5000, false, false);
+
+    Object* enemy = coop_autotest_spawn_enemy(coop_player(0)->obj);
+    if (enemy == nullptr) {
+        coop_host_exit();
+        return -1;
+    }
+    coop_autotest_enemy = enemy;
+    coop_autotest_turns_total = 0;
+    memset(coop_autotest_turns, 0, sizeof(coop_autotest_turns));
+    memset(coop_autotest_net_four_human_turns, 0, sizeof(coop_autotest_net_four_human_turns));
+    coop_set_turn_hook(coop_autotest_net_four_turn);
+
+    CombatStartData attack;
+    memset(&attack, 0, sizeof(attack));
+    attack.attacker = coop_player(0)->obj;
+    attack.defender = enemy;
+    _combat(&attack);
+    coop_set_turn_hook(nullptr);
+
+    autotest_log("combat over: enemy dead %d, turns of players 2-4: %d %d %d", critterIsDead(enemy) ? 1 : 0,
+        coop_autotest_net_four_human_turns[1], coop_autotest_net_four_human_turns[2], coop_autotest_net_four_human_turns[3]);
+    for (int index = 1; index < COOP_MAX_PLAYERS; index++) {
+        if (coop_autotest_net_four_human_turns[index] == 0) {
+            autotest_fail("player %d never had a turn", index + 1);
+        }
+    }
+    if (!critterIsDead(enemy) && !coop_any_player_has(DAM_DEAD)) {
+        autotest_fail("combat ended without a result");
+    }
+
+    // Save and load with everyone connected: the players come back from
+    // the save, each still played by their own client.
+    std::string names[COOP_MAX_PLAYERS];
+    for (int index = 0; index < coop_player_count(); index++) {
+        names[index] = coop_player(index)->name;
+    }
+    lsgSetQuickSlot(COOP_AUTOTEST_SLOT);
+    if (lsgSaveGame(LOAD_SAVE_MODE_QUICK) != 1) {
+        autotest_fail("save failed");
+    }
+    lsgSetQuickSlot(COOP_AUTOTEST_SLOT);
+    if (lsgLoadGame(LOAD_SAVE_MODE_QUICK) != 1) {
+        autotest_fail("load failed");
+    }
+    coop_autotest_session_frames(4000, false, false);
+    autotest_log("after load: %d players, %d clients", coop_player_count(), coop_net_clients_connected());
+    if (coop_player_count() != COOP_MAX_PLAYERS || coop_net_clients_connected() != COOP_MAX_PLAYERS - 1) {
+        autotest_fail("players or clients lost through save and load");
+    }
+    for (int index = 0; index < coop_player_count(); index++) {
+        PlayerState* player = coop_player(index);
+        if (names[index] != player->name || (player->obj->flags & OBJECT_HIDDEN) != 0 || player->obj->tile == -1) {
+            autotest_fail("player %d changed or is hidden after load", index + 1);
+        }
+    }
+
+    coop_autotest_session_frames(1000, false, false);
+    coop_host_exit();
+    return 0;
+}
+
+static int coop_autotest_net_four_width = 0;
+static int coop_autotest_net_four_height = 0;
+
+static void coop_autotest_net_four_seen()
+{
+    coop_net_client_frame_size(&coop_autotest_net_four_width, &coop_autotest_net_four_height);
+}
+
+static int coop_autotest_net_four_client(AutotestNewGameProc* newGame)
+{
+    if (coop_net_mode() != COOP_NET_CLIENT) {
+        autotest_fail("needs [coop]mode=client");
+        return -1;
+    }
+
+    coop_autotest_relay_client_setup();
+
+    if (const char* path = getenv("COOP_AUTOTEST_CHARACTER_FILE")) {
+        std::vector<unsigned char> data;
+        FILE* stream = fopen(path, "rb");
+        if (stream != nullptr) {
+            unsigned char buffer[4096];
+            size_t read;
+            while ((read = fread(buffer, 1, sizeof(buffer), stream)) > 0) {
+                data.insert(data.end(), buffer, buffer + read);
+            }
+            fclose(stream);
+        }
+        coop_net_set_bring_character(data);
+    }
+
+    inject_wait(600);
+    inject_call(coop_autotest_screenshot);
+    inject_call(coop_autotest_net_four_seen);
+    inject_call(coop_autotest_press_space_forever);
+    int rc = coop_net_client_run();
+    autotest_log("client finished with %d, frames %dx%d", rc, coop_autotest_net_four_width, coop_autotest_net_four_height);
+    if (coop_autotest_net_four_width == 0) {
+        autotest_fail("no frames came");
     }
     return 0;
 }

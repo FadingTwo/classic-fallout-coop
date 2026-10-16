@@ -27,12 +27,18 @@ namespace fallout {
 // active (and `gDude` their critter) for the code inside it.
 
 // The co-op version (shared with Classic Fallout Co-op for Fallout 1).
-#define COOP_VERSION "1.12"
+#define COOP_VERSION "1.13"
 
-#define COOP_MAX_PLAYERS 2
+#define COOP_MAX_PLAYERS 4
 
 // Player 2's critter proto (not a proto file; see protoGetProto()).
 #define COOP_PLAYER2_PID 0x01003FFF
+
+// Player n's (index 1 = player 2, up to COOP_MAX_PLAYERS - 1) proto id:
+// counting down from player 2's.
+#define COOP_PLAYER_PID(index) (COOP_PLAYER2_PID - ((index) - 1))
+#define COOP_IS_PLAYER_PID(pid) ((pid) <= COOP_PLAYER2_PID && (pid) > COOP_PLAYER2_PID - (COOP_MAX_PLAYERS - 1))
+#define COOP_PLAYER_INDEX_OF_PID(pid) (COOP_PLAYER2_PID - (pid) + 1)
 
 // Drug addiction global variables, per player.
 #define COOP_ADDICTION_COUNT 8
@@ -43,6 +49,11 @@ namespace fallout {
 #define COOP_CONFIG_SERVER_KEY "server"
 #define COOP_CONFIG_KNOCKOUT_KEY "knockout"
 #define COOP_CONFIG_TALK_KEY "talk"
+// How many players a hosted game takes (2 to COOP_MAX_PLAYERS).
+#define COOP_CONFIG_PLAYERS_KEY "players"
+// Harder: enemies hold out longer the more players there are (the host's
+// setting counts).
+#define COOP_CONFIG_HARDER_KEY "harder"
 #define COOP_CONFIG_COLORBLIND_KEY "colorblind"
 #define COOP_CONFIG_OUTLINE1_KEY "outline_player1"
 #define COOP_CONFIG_OUTLINE2_KEY "outline_player2"
@@ -128,6 +139,10 @@ inline PlayerState* coop_active_player()
 int coop_player_count();
 PlayerState* coop_player(int index);
 
+// Each player's look from their gender and the story (tribal, or the
+// vault suit after its movie), when not wearing armor.
+void coop_update_looks();
+
 // The player state owned by `obj`, or NULL if `obj` is not a player
 // character. In single player this is exactly `obj == gDude`.
 PlayerState* coop_player_of(Object* obj);
@@ -154,6 +169,10 @@ void coop_reset();
 // Lets player 2 join through the character creation screen, run in player
 // 2's scope. NULL if cancelled.
 PlayerState* coop_create_player2();
+// One more player on this PC (up to COOP_MAX_PLAYERS), through character
+// creation (Shift+F9).
+PlayerState* coop_create_player();
+void coop_handle_add_player_key();
 
 // F9 on one PC: the first press lets player 2 join (character creation),
 // later presses switch local control between the players.
@@ -183,6 +202,14 @@ void coop_note_turn_length(Object* player, unsigned int ms);
 unsigned int coop_longest_turn(int index);
 
 // Handles pending requests (barter); called by the main game loop.
+// Trading without a conversation (player 2 with [coop]talk off): whether
+// `critter` is a merchant, and starting the trade: the merchant's
+// conversation, which gameDialogEnter() (coop_take_barter_only()) turns
+// into the barter screen alone.
+bool coop_can_barter_with(Object* critter);
+void coop_request_barter(PlayerState* player, Object* merchant);
+bool coop_take_barter_only(Object* speaker);
+
 void coop_process_requests();
 
 // [coop]knockout=1: a player who would die is knocked out instead while
@@ -201,6 +228,13 @@ bool coop_knockout_setting();
 void coop_set_knockout(bool on);
 bool coop_talk_setting();
 void coop_set_talk(bool on);
+
+// Harder ([coop]harder): damage to anyone not on the players' side is
+// divided by (players + 1) / 2, as if enemies had 1.5 times the hit points
+// with two players, 2 times with three and 2.5 times with four.
+bool coop_harder_setting();
+void coop_set_harder(bool on);
+int coop_harder_damage(Object* critter, int damage);
 
 // The player a starting conversation belongs to: player 1, unless another
 // player started it (set around gameDialogEnter()).
@@ -232,6 +266,10 @@ int coop_outline_player(Object* obj);
 // (Fallout 2: not yet; no copies are made.)
 bool coop_export_player2(std::vector<unsigned char>* out);
 PlayerState* coop_import_player2(const std::vector<unsigned char>& data, std::string* error);
+// The same for any player but player 1 (`index` 1 and up), and into the
+// next free player's slot.
+bool coop_export_player(int index, std::vector<unsigned char>* out);
+PlayerState* coop_import_player(const std::vector<unsigned char>& data, std::string* error);
 void coop_request_character_copy();
 bool coop_take_character_copy_request();
 

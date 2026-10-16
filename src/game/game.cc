@@ -887,6 +887,9 @@ int game_handle_input(int eventCode, bool isInCombatMode)
     case KEY_F9:
         coop_handle_switch_key();
         break;
+    case KEY_SHIFT_F9:
+        coop_handle_add_player_key();
+        break;
     case KEY_CTRL_V:
         if (1) {
             gsound_play_sfx_file("ib1p1xx1");

@@ -31,7 +31,9 @@
 #include "object.h"
 #include "party_member.h"
 #include "perk.h"
+#include "map.h"
 #include "proto.h"
+#include "reaction.h"
 #include "random.h"
 #include "scripts.h"
 #include "sfall_config.h"
@@ -627,6 +629,11 @@ static void gameDialogRedButtonsInit();
 static void gameDialogRedButtonsExit();
 
 static bool gGameDialogFix;
+
+// CE: co-op: this conversation only trades (coop_request_barter()): it goes
+// straight to the barter screen and ends with it.
+static bool gGameDialogBarterOnly = false;
+static bool gGameDialogBarterOnlyStarted = false;
 static bool gNumberOptions;
 
 // gdialog_init
@@ -677,6 +684,9 @@ void gameDialogEnter(Object* speaker, int a2)
     // action made a script start it, unless another player started it by
     // talking.
     ActivePlayerScope scope(coop_dialog_player());
+
+    gGameDialogBarterOnly = coop_take_barter_only(speaker);
+    gGameDialogBarterOnlyStarted = false;
 
     if (speaker == nullptr) {
         debugPrint("\nError: gdialogEnter: target was NULL!");
@@ -1043,6 +1053,13 @@ void gameDialogSetBackground(int a1)
 // 0x445448
 void gameDialogRenderSupplementaryMessage(char* msg)
 {
+    // CE: co-op: trading without a conversation (gameDialogBarter()) has no
+    // reply window; use the message monitor.
+    if (gGameDialogReplyWindow == -1) {
+        displayMonitorAddMessage(msg);
+        return;
+    }
+
     if (_gd_replyWin == -1) {
         debugPrint("\nError: Reply window doesn't exist!");
         return;
@@ -1897,6 +1914,15 @@ int _gdProcess()
             break;
         }
 
+        // CE: co-op: a trade only: the barter screen right away.
+        if (gGameDialogBarterOnly && !gGameDialogBarterOnlyStarted) {
+            gGameDialogBarterOnlyStarted = true;
+            gameDialogBarterButtonUpMouseUp(-1, -1);
+            if (_dialogue_switch_mode != 2) {
+                break;
+            }
+        }
+
         if (keyCode == KEY_CTRL_B && !_mouse_click_in(135, 225, 514, 283)) {
             if (gameMouseGetCursor() != MOUSE_CURSOR_ARROW) {
                 gameMouseSetCursor(MOUSE_CURSOR_ARROW);
@@ -1917,6 +1943,11 @@ int _gdProcess()
                 if (v5 == 4) {
                     _dialogue_switch_mode = 1;
                     _dialogue_state = 1;
+                }
+
+                // CE: co-op: a trade only ends with the barter screen.
+                if (gGameDialogBarterOnly) {
+                    break;
                 }
                 continue;
             } else if (_dialogue_switch_mode == 9) {

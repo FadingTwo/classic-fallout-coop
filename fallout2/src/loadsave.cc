@@ -1779,7 +1779,8 @@ static int lsgLoadGameInSlot(int slot)
 
     snprintf(_str, sizeof(_str), "%s\\", "MAPS");
     MapDirErase(_str, "BAK");
-    _proto_dude_update_gender();
+    // CE: co-op: every player's look.
+    coop_update_looks();
 
     // Game Loaded.
     gLoadSaveMessageListItem.num = 141;

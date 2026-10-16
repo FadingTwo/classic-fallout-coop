@@ -28,6 +28,18 @@ else()
     add_executable(${EXECUTABLE_NAME} WIN32 MACOSX_BUNDLE)
 endif()
 
+# CE co-op: sanitizer builds for testing.
+option(ASAN "Enable address sanitizer" OFF)
+option(UBSAN "Enable undefined behaviour sanitizer" OFF)
+if(ASAN)
+    target_compile_options(${EXECUTABLE_NAME} PUBLIC "-fsanitize=address;-fsanitize-recover=address")
+    target_link_options(${EXECUTABLE_NAME} PUBLIC "-fsanitize=address;-fsanitize-recover=address")
+endif()
+if(UBSAN)
+    target_compile_options(${EXECUTABLE_NAME} PUBLIC "-fsanitize=undefined")
+    target_link_options(${EXECUTABLE_NAME} PUBLIC "-fsanitize=undefined")
+endif()
+
 target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/actions.cc"
     "src/actions.h"

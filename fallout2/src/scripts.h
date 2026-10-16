@@ -185,6 +185,15 @@ int scriptsRequestElevator(Object* a1, int a2);
 int scriptsRequestExplosion(int tile, int elevation, int minDamage, int maxDamage);
 void scriptsRequestDialog(Object* a1);
 void scriptsRequestDialogBy(Object* speaker, Object* obj);
+
+// CE: co-op: the talking head and background `obj`'s dialog uses (from its
+// script's start_gdialog with constant arguments), for trading without a
+// conversation.
+bool scriptsFindDialogHead(Object* obj, int* headPtr, int* backgroundPtr);
+
+// CE: co-op: whether `obj`'s dialog can open the barter screen (its
+// script has gdialog_mod_barter): a merchant, in Fallout 2.
+bool scriptsCanBarter(Object* obj);
 int scriptsRequestGiving(Object* a1, Object* a2);
 void scriptsRequestEndgame();
 int scriptsRequestLooting(Object* a1, Object* a2);

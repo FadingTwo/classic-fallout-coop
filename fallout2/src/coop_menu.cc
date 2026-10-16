@@ -68,6 +68,16 @@ static int coop_menu_choose_game()
     return -1;
 }
 
+// How many play in a game this player hosts: 2, 3, 4, 2... Saved.
+static void coop_menu_toggle_players()
+{
+    int count = coop_net_max_clients_value() + 1;
+    count = count >= COOP_MAX_PLAYERS ? 2 : count + 1;
+    coop_net_set_max_clients(count - 1);
+    config_set_value(&game_config, COOP_CONFIG_KEY, COOP_CONFIG_PLAYERS_KEY, count);
+    gconfig_save();
+}
+
 static int coop_menu_host()
 {
     int game = coop_menu_choose_game();
@@ -81,9 +91,29 @@ static int coop_menu_host()
     bool listOnline = false;
     bool online = false;
     if (!coop_menu_server().empty()) {
-        const char* labels[] = { "LAN ONLY", "LIST ONLINE", "PRIVATE CODE", "BACK" };
-        const int keys[] = { KEY_LOWERCASE_L, KEY_LOWERCASE_O, KEY_LOWERCASE_P, KEY_LOWERCASE_B };
-        int choice = main_menu_choose(labels, keys, 4);
+        int choice;
+        for (;;) {
+            char players[32];
+            snprintf(players, sizeof(players), "PLAYERS: %d", coop_net_max_clients_value() + 1);
+            char harder[32];
+            snprintf(harder, sizeof(harder), "HARDER: %s", coop_harder_setting() ? "ON" : "OFF");
+            const char* labels[] = { "LAN ONLY", "LIST ONLINE", "PRIVATE CODE", players, harder, "BACK" };
+            const int keys[] = { KEY_LOWERCASE_L, KEY_LOWERCASE_O, KEY_LOWERCASE_P, KEY_LOWERCASE_N, KEY_LOWERCASE_H, KEY_LOWERCASE_B };
+            choice = main_menu_choose(labels, keys, 6);
+            if (choice == 3) {
+                coop_menu_toggle_players();
+            } else if (choice == 4) {
+                coop_set_harder(!coop_harder_setting());
+                config_set_value(&game_config, COOP_CONFIG_KEY, COOP_CONFIG_HARDER_KEY, coop_harder_setting() ? 1 : 0);
+                gconfig_save();
+                if (coop_harder_setting()) {
+                    const char* lines[] = { "Enemies hold out longer the", "more of you play: 1.5 times", "with two players, twice with", "three, 2.5 times with four.", "Your setting counts." };
+                    coop_menu_message("HARDER", lines, 5);
+                }
+            } else {
+                break;
+            }
+        }
         if (choice < 0 || choice > 2) {
             return -1;
         }
@@ -129,11 +159,10 @@ static int coop_menu_host()
     if (online && coop_net_relay_code()[0] != '\0') {
         char code[64];
         snprintf(code, sizeof(code), "Game code: %s", coop_net_relay_code());
-        // Versions before 1.5 can't join with a code.
-        const char* version = "Player 2 needs mod 1.5 or newer.";
+        const char* version = "Everyone needs the same mod version.";
         const char* lines[] = {
             code,
-            "Player 2: MULTIPLAYER, JOIN GAME,",
+            "The others: MULTIPLAYER, JOIN GAME,",
             listOnline ? "then this game in the list," : "then ENTER ADDRESS and the code.",
             listOnline ? "or ENTER ADDRESS and the code." : "No open ports needed.",
             version,
@@ -161,7 +190,7 @@ static int coop_menu_host()
     snprintf(port, sizeof(port), "Port %d (TCP) must be open.", coop_net_port());
 
     const char* lines[] = {
-        "Player 2: MULTIPLAYER, JOIN GAME,",
+        "The others: MULTIPLAYER, JOIN GAME,",
         listOnline ? "then this game in the list" : "then this game (same network)",
         "or ENTER ADDRESS and:",
         addresses,
@@ -373,8 +402,9 @@ static int coop_menu_one_pc()
         "In the game, press F9 to let",
         "player 2 join, and again to",
         "switch between the players.",
+        "Shift+F9: one more player.",
     };
-    coop_menu_message("ONE PC", lines, 3);
+    coop_menu_message("ONE PC", lines, 4);
 
     return game;
 }
@@ -842,8 +872,8 @@ static int coop_menu_more()
             coop_set_talk(!coop_talk_setting());
             config_set_value(&game_config, COOP_CONFIG_KEY, COOP_CONFIG_TALK_KEY, coop_talk_setting() ? 1 : 0);
             gconfig_save();
-            const char* both[] = { "Both players start", "conversations, each as their", "own character. Player 1's", "setting counts." };
-            const char* one[] = { "Only player 1 talks to people.", "Player 2 trades directly", "with merchants. Player 1's", "setting counts." };
+            const char* both[] = { "Every player starts", "conversations, each as their", "own character. Player 1's", "setting counts." };
+            const char* one[] = { "Only player 1 talks to people.", "The others trade directly", "with merchants. Player 1's", "setting counts." };
             coop_menu_message("TALK", coop_talk_setting() ? both : one, 4);
         } else {
             return -1;

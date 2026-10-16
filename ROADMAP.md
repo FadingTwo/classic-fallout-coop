@@ -19,15 +19,14 @@ Co-op for Fallout 2, built on
 in the same package: the setup screen finds Fallout 1 and Fallout 2 and
 lets you pick. Most of Fallout 1 co-op carried over (network, server,
 menus, controller, conversations, giving items, knockout, bringing your
-own character); still to come is direct trading with TALK set to player 1.
-Please report what breaks.
+own character, trading). Please report what breaks.
 
-## 3. Up to four players, and a harder mode (later)
+## 3. Up to four players, and a harder mode (new)
 
-Room for four players in Fallout 1 and Fallout 2, each with their own view
-like player 2 today, and an optional harder setting where enemies get
-tougher with more players. It comes after Fallout 2, so it is built once
-for both games.
+Room for four players in Fallout 1 and Fallout 2, each with their own
+view, and an optional harder setting (HARDER when hosting) where enemies
+hold out longer the more players there are. New in 1.13: please report
+what breaks.
 
 ## 4. Big Fallout 2 mods (later)
 

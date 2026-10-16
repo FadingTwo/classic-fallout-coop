@@ -40,6 +40,10 @@ int _obj_offset(Object* obj, int x, int y, Rect* rect);
 int _obj_move(Object* a1, int a2, int a3, int elevation, Rect* a5);
 int objectSetLocation(Object* obj, int tile, int elevation, Rect* rect);
 int _obj_reset_roof();
+
+// CE: co-op: roofs and the see-through egg as `obj` (a player) sees them,
+// before their view is drawn.
+void obj_follow_viewer(Object* obj);
 int objectSetFid(Object* obj, int fid, Rect* rect);
 int objectSetFrame(Object* obj, int frame, Rect* rect);
 int objectSetNextFrame(Object* obj, Rect* rect);

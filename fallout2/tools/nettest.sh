@@ -10,7 +10,9 @@
 # with another binary (e.g. a Windows build under Wine), HOST_WAIT sets the
 # seconds to wait for the host (default 4), HOST_EXTRA adds host settings
 # (e.g. "[coop]turn_time=3"), CLIENT_EXTRA client settings, HOST_RES and
-# CLIENT_RES screen sizes (e.g. 1024x768).
+# CLIENT_RES screen sizes (e.g. 1024x768). EXTRA_CLIENTS=n starts n more
+# clients (players 3 and up, in <out dir>/client2...) with the same script
+# (EXTRA_CLIENT_BIN: their binary, default CLIENT_BIN).
 
 set -uo pipefail
 
@@ -31,9 +33,21 @@ host_pid=$!
 # The host computes its data checksum before it listens.
 sleep "${HOST_WAIT:-4}"
 
+extra_pids=()
+for n in $(seq 2 $((${EXTRA_CLIENTS:-0} + 1))); do
+    AUTOTEST_RES=${CLIENT_RES:-} AUTOTEST_SCRIPT=$client_script "$here/regress.sh" run "${EXTRA_CLIENT_BIN:-${CLIENT_BIN:-$bin}}" "$out/client$n" \
+        "[coop]enabled=1" "[coop]mode=client" "[coop]host=127.0.0.1" "[coop]port=$port" ${CLIENT_EXTRA:-} >"$out.client$n.txt" 2>&1 &
+    extra_pids+=($!)
+    sleep "${CLIENT_STAGGER:-3}"
+done
+
 AUTOTEST_RES=${CLIENT_RES:-} AUTOTEST_TAMPER=$tamper AUTOTEST_SCRIPT=$client_script "$here/regress.sh" run "${CLIENT_BIN:-$bin}" "$out/client" \
     "[coop]enabled=1" "[coop]mode=client" "[coop]host=127.0.0.1" "[coop]port=$port" ${CLIENT_EXTRA:-}
 client_rc=$?
+
+for pid in "${extra_pids[@]}"; do
+    wait "$pid" || client_rc=1
+done
 
 wait $host_pid
 host_rc=$?

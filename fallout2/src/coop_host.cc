@@ -48,11 +48,10 @@ typedef struct CoopView {
 static void coop_host_poll();
 static void coop_host_present();
 static void coop_host_feed_input();
-static void coop_host_swap_view(CoopView* view, Object* current, Object* incoming);
-static void coop_host_player2_turn();
+static void coop_host_player_turn(int slot);
 static void coop_host_update_status();
-static void coop_host_player2_joins();
-static void coop_host_send_character_copy();
+static void coop_host_player_joins(int slot);
+static void coop_host_send_character_copy(int slot, bool requested);
 static void coop_host_marker_place(int index);
 static void coop_host_marker_draw();
 static void coop_host_marker_restore();
@@ -62,15 +61,23 @@ static bool coop_host_on = false;
 // Inside the main loop's own get_input() call.
 static bool coop_host_main_input = false;
 
-// Inside player 2's part of the frame.
-static bool coop_host_in_player2_turn = false;
+// Inside player `slot` + 1's part of the frame (0: none).
+static int coop_host_turn_slot = 0;
+
+// For the debug log: time spent drawing the others' views and sending them.
+static unsigned int coop_host_draw_ms = 0;
+static unsigned int coop_host_send_ms = 0;
+
+// That player opened a menu (an input loop runs inside their part).
+static bool coop_host_turn_menu = false;
 
 // Set by coop_host_frame() for the main loop's following renderPresent():
 // that one shows player 1's own view and is not streamed.
 static bool coop_host_free_roam_present = false;
 
-// Player 2's view while player 1's is current, and vice versa.
-static CoopView coop_host_other_view;
+// Each other player's view while player 1's is current (and player 1's in
+// that player's slot during their part of the frame).
+static CoopView coop_host_views[COOP_MAX_PLAYERS];
 
 void coop_host_init()
 {
@@ -121,9 +128,16 @@ void coop_host_end_main_input()
     coop_host_main_input = false;
 }
 
-static bool coop_host_player2_has_focus()
+// The client whose player has the focus (a menu or combat turn), or 0 for
+// player 1.
+static int coop_host_focus_slot()
 {
-    return coop_player_count() > 1 && coop_active_player() == coop_player(1);
+    for (int index = 1; index < coop_player_count(); index++) {
+        if (coop_active_player() == coop_player(index)) {
+            return index;
+        }
+    }
+    return 0;
 }
 
 // For LAN searches and the server browser.
@@ -133,7 +147,8 @@ static void coop_host_pump_lobby()
     if (coop_player_count() > 0 && coop_player(0)->obj != NULL) {
         name = critter_name(coop_player(0)->obj);
     }
-    coop_lobby_host_pump(name, coop_net_client_connected() ? 2 : 1);
+    int clients = coop_net_clients_connected();
+    coop_lobby_host_pump(name, clients >= coop_net_max_clients_value() ? COOP_LOBBY_FULL : 1 + clients);
 }
 
 // Every frame of every input loop.
@@ -149,16 +164,25 @@ static void coop_host_poll()
         return;
     }
 
-    // A menu or combat turn: the active player has the focus.
-    static bool player2HadFocus = false;
-    bool player2Focus = coop_host_player2_has_focus();
-    if (player2Focus != player2HadFocus) {
-        debug_printf("\nCOOP HOST: focus: player %d\n", player2Focus ? 2 : 1);
-        player2HadFocus = player2Focus;
+    // Polled inside a player's part of the frame: they opened a menu.
+    if (coop_host_turn_slot != 0) {
+        coop_host_turn_menu = true;
     }
 
-    if (player2Focus && !coop_net_client_connected()) {
-        // Player 2 left in the middle of a menu or turn: close it (Escape)
+    // A menu or combat turn: the active player has the focus.
+    static int hadFocus = 0;
+    int focus = coop_host_focus_slot();
+    if (focus != hadFocus) {
+        debug_printf("\nCOOP HOST: focus: player %d\n", focus + 1);
+        hadFocus = focus;
+    }
+
+    int selected = coop_net_selected();
+    if (focus != 0) {
+        coop_net_select(focus);
+    }
+    if (focus != 0 && !coop_net_client_connected()) {
+        // The player left in the middle of a menu or turn: close it (Escape)
         // and end the turn (Space), so the game does not wait forever.
         static unsigned int lastNudge = 0;
         inject_set_exclusive(true);
@@ -169,25 +193,32 @@ static void coop_host_poll()
             }
             lastNudge = get_time();
         }
-    } else if (player2Focus) {
+    } else if (focus != 0) {
         inject_set_exclusive(true);
         coop_host_feed_input();
     } else {
         inject_set_exclusive(false);
+    }
 
-        // Player 2 watches; their clicks do nothing meanwhile. Keep where
-        // their mouse is, though, and let them chat.
+    // The others watch; their clicks do nothing meanwhile. Keep where their
+    // mouse is, though, and let them chat.
+    for (int slot = 1; slot < coop_player_count() && slot < COOP_MAX_PLAYERS; slot++) {
+        if (slot == focus) {
+            continue;
+        }
+        coop_net_select(slot);
         CoopNetInput input;
         while (coop_net_next_input(&input)) {
             if (input.kind == COOP_NET_INPUT_MOUSE) {
-                coop_host_other_view.mouse.x = input.x;
-                coop_host_other_view.mouse.y = input.y;
+                coop_host_views[slot].mouse.x = input.x;
+                coop_host_views[slot].mouse.y = input.y;
             } else if (input.kind == COOP_NET_INPUT_KEY && input.value > 0) {
-                ActivePlayerScope scope(coop_player(1));
+                ActivePlayerScope scope(coop_player(slot));
                 coop_host_chat_key(input.value);
             }
         }
     }
+    coop_net_select(selected);
 
     coop_host_update_status();
 }
@@ -231,7 +262,7 @@ static std::string coop_host_chat_line(int index)
 
 bool coop_host_chat_key(int keyCode)
 {
-    if (!coop_net_client_connected() || coop_player_count() < 2) {
+    if (coop_net_clients_connected() == 0 || coop_player_count() < 2) {
         for (int index = 0; index < COOP_MAX_PLAYERS; index++) {
             coop_host_chat_typing[index] = false;
         }
@@ -277,24 +308,36 @@ bool coop_host_chat_key(int keyCode)
 
 static void coop_host_update_status()
 {
-    if (!coop_net_client_connected()) {
-        return;
-    }
+    // Free roam (a player's part of the frame): everyone has their own
+    // view. Otherwise (a menu, a combat turn) the one who has the focus.
+    int busy = coop_host_turn_slot != 0 && !coop_host_turn_menu ? -1 : coop_host_focus_slot();
+    int selected = coop_net_selected();
+    for (int slot = 1; slot < COOP_MAX_PLAYERS; slot++) {
+        coop_net_select(slot);
+        if (!coop_net_client_connected()) {
+            continue;
+        }
 
-    // Player 2's own view and focus need no explanation; otherwise player 2
-    // is looking at player 1's screen.
-    const char* status = "";
-    std::string chat;
-    if (coop_player_count() > 1 && coop_host_chat_typing[1]) {
-        chat = coop_host_chat_line(1);
-        status = chat.c_str();
-    } else if (coop_player_count() < 2) {
-        status = "Waiting for player 1 to start or load a game.";
-    } else if (!coop_host_in_player2_turn && !coop_host_player2_has_focus()) {
-        status = isInCombat() ? "Player 1's turn." : "Player 1 is busy - please wait.";
-    }
+        // The player's own view and focus need no explanation; otherwise
+        // they are looking at another player's screen.
+        const char* status = "";
+        char text[80];
+        std::string chat;
+        if (slot < coop_player_count() && coop_host_chat_typing[slot]) {
+            chat = coop_host_chat_line(slot);
+            status = chat.c_str();
+        } else if (coop_player_count() < 2) {
+            status = "Waiting for player 1 to start or load a game.";
+        } else if (slot > coop_player_count()) {
+            status = "Waiting for the player before you to join.";
+        } else if (busy >= 0 && busy != slot) {
+            snprintf(text, sizeof(text), isInCombat() ? "Player %d's turn." : "Player %d is busy - please wait.", busy + 1);
+            status = text;
+        }
 
-    coop_net_send_status(status);
+        coop_net_send_status(status);
+    }
+    coop_net_select(selected);
 }
 
 // Banner on the host's screen while player 2 has the focus, so player 1
@@ -405,12 +448,12 @@ static void coop_host_marker_place(int index)
 {
     int x;
     int y;
-    if (index == 0 || coop_host_in_player2_turn) {
+    if (index == 0 || coop_host_turn_slot == index) {
         mouse_get_position(&x, &y);
     } else {
-        // Player 2 watching player 1's screen.
-        x = coop_host_other_view.mouse.x;
-        y = coop_host_other_view.mouse.y;
+        // A player watching player 1's screen.
+        x = coop_host_views[index].mouse.x;
+        y = coop_host_views[index].mouse.y;
     }
 
     int tile = tile_num(x, y, map_elevation, false);
@@ -477,17 +520,26 @@ static void coop_host_present()
 
     // Shared frames at most ~30 per second: map loading presents after
     // every few KB read, and encoding each would slow loading down a lot.
+    // (To every player.)
     static unsigned int lastShared = 0;
     if (!freeRoam && elapsed_time(lastShared) >= 33) {
-        coop_net_send_current_screen();
+        int selected = coop_net_selected();
+        for (int slot = 1; slot < COOP_MAX_PLAYERS; slot++) {
+            coop_net_select(slot);
+            coop_net_send_current_screen();
+        }
+        coop_net_select(selected);
         lastShared = get_time();
     }
 
-    if (coop_host_chat_typing[0] && coop_net_client_connected()) {
+    int focus = coop_host_focus_slot();
+    if (coop_host_chat_typing[0] && coop_net_clients_connected() != 0) {
         coop_host_draw_banner(coop_host_chat_line(0).c_str());
         coop_host_banner_shown = true;
-    } else if (!freeRoam && coop_host_player2_has_focus()) {
-        coop_host_draw_banner(isInCombat() ? "Player 2's turn." : "Player 2 is busy - please wait.");
+    } else if (!freeRoam && focus != 0) {
+        char text[80];
+        snprintf(text, sizeof(text), isInCombat() ? "Player %d's turn." : "Player %d is busy - please wait.", focus + 1);
+        coop_host_draw_banner(text);
         coop_host_banner_shown = true;
     } else if (coop_host_banner_shown) {
         // Back to what is really there.
@@ -497,25 +549,25 @@ static void coop_host_present()
     }
 }
 
-// Exchanges the current view (of `current`, a player critter) with `view`
-// (of `incoming`).
-static void coop_host_swap_view(CoopView* view, Object* currentObj, Object* incoming)
+// The current view (of `currentObj`, a player critter) into `view`.
+static void coop_host_view_save(CoopView* view, Object* currentObj)
 {
-    mouse_hide();
+    view->initialized = true;
+    view->cameraTile = tile_center_tile;
+    view->followedTile = currentObj->tile;
+    mouse_get_context(&(view->mouse));
+    view->cursor = gmouse_get_cursor();
+    view->mode = gmouse_3d_get_mode();
+}
 
-    CoopView current;
-    current.initialized = true;
-    current.cameraTile = tile_center_tile;
-    current.followedTile = currentObj->tile;
-    mouse_get_context(&(current.mouse));
-    current.cursor = gmouse_get_cursor();
-    current.mode = gmouse_3d_get_mode();
-
+// Makes `view` (of `incoming`) the current one.
+static void coop_host_view_load(CoopView* view, Object* incoming, const CoopView* current)
+{
     if (!view->initialized) {
         view->initialized = true;
         view->cameraTile = incoming->tile;
         view->followedTile = incoming->tile;
-        view->mouse = current.mouse;
+        view->mouse = current->mouse;
         view->mouse.buttons = 0;
         view->mouse.rawButtons = 0;
         view->mouse.lastButtons = 0;
@@ -540,34 +592,32 @@ static void coop_host_swap_view(CoopView* view, Object* currentObj, Object* inco
     // top left with the hex cursor). Put the position back as it was saved.
     mouse_set_context(&(view->mouse));
 
-    *view = current;
-
-    mouse_show();
+    // Roofs open over the incoming player when they are inside.
+    obj_follow_viewer(incoming);
 }
 
-// Player 2's part of a free roam frame: their input, then their view.
-static void coop_host_player2_turn()
+// Player `slot` + 1's part of a free roam frame: their input, then their
+// view (the client selected; their view current, see coop_host_frame()).
+static void coop_host_player_turn(int slot)
 {
-    PlayerState* player1 = coop_player(0);
-    PlayerState* player2 = coop_player(1);
+    PlayerState* player2 = coop_player(slot);
 
-    coop_host_in_player2_turn = true;
+    coop_host_turn_slot = slot;
+    coop_host_turn_menu = false;
 
     {
         ActivePlayerScope scope(player2);
         coop_set_viewer(player2);
-        coop_host_swap_view(&coop_host_other_view, player1->obj, player2->obj);
-
-        // Player 2's HUD, also behind any screen their input opens.
-        intface_update_items(false);
-        intface_redraw();
 
         inject_set_exclusive(true);
         coop_host_feed_input();
 
-        // The map still shows player 1's view; a screen the input opens over
-        // part of it (the skilldex) must have player 2's behind it.
+        // The map still shows the previous view; a screen the input opens
+        // over part of it (the skilldex) must have this player's map and
+        // HUD behind it.
         if (inject_pending()) {
+            intface_update_items(false);
+            intface_redraw();
             tile_refresh_display();
         }
 
@@ -581,74 +631,73 @@ static void coop_host_player2_turn()
         // Hover: 3D cursor for player 2's mouse.
         gmouse_bk_process();
 
+        unsigned int drawStart = get_time();
         tile_refresh_display();
         intface_update_items(false);
         intface_redraw();
+        coop_host_draw_ms += elapsed_time(drawStart);
         coop_host_update_status();
         coop_host_marker_draw();
+        unsigned int sendStart = get_time();
         coop_net_send_current_screen();
+        coop_host_send_ms += elapsed_time(sendStart);
         coop_host_marker_restore();
     }
 
     coop_set_viewer(NULL);
 
-    // Player 1's view again.
-    coop_host_swap_view(&coop_host_other_view, player2->obj, player1->obj);
-
-    coop_host_in_player2_turn = false;
+    coop_host_turn_slot = 0;
+    coop_host_turn_menu = false;
     inject_set_exclusive(false);
-
-    gmouse_bk_process();
-    intface_update_items(false);
-    tile_refresh_display();
-    intface_redraw();
 }
 
-// Player 2 joins a game without a player 2: with the character they
-// brought (1.9), or else character creation, driven by the client.
-static void coop_host_player2_joins()
+// Player `slot` + 1 joins (the next player of the game): with the
+// character they brought (1.9), or else character creation, driven by the
+// client (selected).
+static void coop_host_player_joins(int slot)
 {
-    static unsigned int joinsSeen = 0;
-    static unsigned int joinedAt = 0;
-    if (coop_net_client_joins() != joinsSeen) {
-        joinsSeen = coop_net_client_joins();
-        joinedAt = get_time();
+    static unsigned int joinsSeen[COOP_MAX_PLAYERS];
+    static unsigned int joinedAt[COOP_MAX_PLAYERS];
+    if (coop_net_client_joins() != joinsSeen[slot]) {
+        joinsSeen[slot] = coop_net_client_joins();
+        joinedAt[slot] = get_time();
     }
 
     if (coop_net_client_brings_character()) {
         std::vector<unsigned char> data;
         if (coop_net_take_client_character(&data)) {
             std::string error;
-            if (coop_import_player2(data, &error) != NULL) {
+            if (coop_import_player(data, &error) != NULL) {
                 coop_request_character_copy();
                 return;
             }
-            debug_printf("\nCOOP HOST: player 2's character could not be used: %s\n", error.c_str());
-            std::string message = "Player 2's character could not be used (" + error + "); they make a new one.";
-            display_print((char*)message.c_str());
-        } else if (elapsed_time(joinedAt) < 10000) {
+            debug_printf("\nCOOP HOST: player %d's character could not be used: %s\n", slot + 1, error.c_str());
+            char message[200];
+            snprintf(message, sizeof(message), "Player %d's character could not be used (%s); they make a new one.", slot + 1, error.c_str());
+            display_print(message);
+        } else if (elapsed_time(joinedAt[slot]) < 10000) {
             // It is on the way (it follows the hello).
             return;
         }
     }
 
-    if (coop_create_player2() != NULL) {
+    if (coop_create_player() != NULL) {
         coop_request_character_copy();
     }
 }
 
-// Now and then, and after saving, player 2 gets a copy of their character
-// to keep (old clients ignore it).
-static void coop_host_send_character_copy()
+// Now and then, and after saving, each player gets a copy of their
+// character to keep (old clients ignore it).
+static void coop_host_send_character_copy(int slot, bool requested)
 {
-    static unsigned int lastCopy = 0;
-    if (!coop_take_character_copy_request() && elapsed_time(lastCopy) < 120000) {
+    static unsigned int lastCopy[COOP_MAX_PLAYERS];
+    if (!requested && elapsed_time(lastCopy[slot]) < 120000) {
         return;
     }
-    lastCopy = get_time();
+    lastCopy[slot] = get_time();
 
     std::vector<unsigned char> data;
-    if (coop_export_player2(&data)) {
+    if (coop_export_player(slot, &data)) {
         coop_net_send_character(data);
     }
 }
@@ -662,14 +711,11 @@ void coop_host_frame()
     coop_net_host_pump();
 
     // The online game code in the message window when the game starts and
-    // whenever player 2 leaves, so player 1 can pass it on.
+    // whenever someone leaves (while there is room), so player 1 can pass it
+    // on.
     static bool codeShown = false;
-    bool connected = coop_net_client_connected();
-    if (!connected) {
-        // Whatever player 2 was typing went with them.
-        coop_host_chat_typing[1] = false;
-    }
-    if (connected) {
+    bool full = coop_net_clients_connected() >= coop_net_max_clients_value();
+    if (full) {
         codeShown = false;
     } else if (!codeShown && coop_net_relay_code()[0] != '\0') {
         std::string message = std::string("Online game code: ") + coop_net_relay_code();
@@ -677,36 +723,99 @@ void coop_host_frame()
         codeShown = true;
     }
 
-    // Player 2 away (no client): their character is hidden, so nothing can
-    // kill them (which would end player 1's game) and nobody trips over
-    // them; back next to player 1 when the client returns. Not in the
-    // middle of a fight: their turns just pass until it ends.
-    if (coop_player_count() > 1 && !isInCombat()) {
-        Object* player2 = coop_player(1)->obj;
-        bool away = !coop_net_client_connected();
-        bool hidden = (player2->flags & OBJECT_HIDDEN) != 0;
-        if (away && !hidden && !critter_is_dead(player2)) {
-            Rect rect;
-            obj_turn_off(player2, &rect);
-            tile_refresh_rect(&rect, player2->elevation);
-            debug_printf("\nCOOP HOST: player 2 away (hidden)\n");
-        } else if (!away && hidden) {
-            Object* player1 = coop_player(0)->obj;
-            Rect rect;
-            obj_turn_on(player2, &rect);
-            obj_attempt_placement(player2, player1->tile, player1->elevation, 2);
-            tile_refresh_display();
-            debug_printf("\nCOOP HOST: player 2 back\n");
+    unsigned int frameStart = get_time();
+    bool copyRequested = coop_take_character_copy_request();
+    int turns[COOP_MAX_PLAYERS];
+    int turnCount = 0;
+    int selected = coop_net_selected();
+    for (int slot = 1; slot < COOP_MAX_PLAYERS; slot++) {
+        coop_net_select(slot);
+        bool connected = coop_net_client_connected();
+        if (!connected) {
+            // Whatever they were typing went with them.
+            coop_host_chat_typing[slot] = false;
+        }
+
+        // A player away (no client): their character is hidden, so nothing
+        // can kill them (which would end the game) and nobody trips over
+        // them; back next to player 1 when the client returns. Not in the
+        // middle of a fight: their turns just pass until it ends.
+        if (slot < coop_player_count() && !isInCombat()) {
+            Object* player = coop_player(slot)->obj;
+            bool hidden = (player->flags & OBJECT_HIDDEN) != 0;
+            if (!connected && !hidden && !critter_is_dead(player)) {
+                Rect rect;
+                obj_turn_off(player, &rect);
+                tile_refresh_rect(&rect, player->elevation);
+                debug_printf("\nCOOP HOST: player %d away (hidden)\n", slot + 1);
+            } else if (connected && hidden) {
+                Object* player1 = coop_player(0)->obj;
+                Rect rect;
+                obj_turn_on(player, &rect);
+                obj_attempt_placement(player, player1->tile, player1->elevation, 2);
+                tile_refresh_display();
+                debug_printf("\nCOOP HOST: player %d back\n", slot + 1);
+            }
+        }
+
+        if (connected && !isInCombat()) {
+            if (coop_player_count() == slot) {
+                coop_host_player_joins(slot);
+            } else if (slot < coop_player_count()) {
+                turns[turnCount++] = slot;
+            }
         }
     }
 
-    if (coop_net_client_connected() && !isInCombat()) {
-        if (coop_player_count() == 1) {
-            coop_host_player2_joins();
-        } else {
-            coop_host_player2_turn();
-            coop_host_send_character_copy();
+    // The players' parts, one view after the other, and player 1's view
+    // back once at the end.
+    if (turnCount > 0) {
+        Object* player1 = coop_player(0)->obj;
+        CoopView player1View;
+        mouse_hide();
+        coop_host_view_save(&player1View, player1);
+        const CoopView* previous = &player1View;
+        for (int index = 0; index < turnCount && index < coop_player_count(); index++) {
+            int slot = turns[index];
+            if (slot >= coop_player_count()) {
+                continue;
+            }
+            Object* player = coop_player(slot)->obj;
+            coop_host_view_load(&(coop_host_views[slot]), player, previous);
+            mouse_show();
+            coop_net_select(slot);
+            coop_host_player_turn(slot);
+            coop_host_send_character_copy(slot, copyRequested);
+            mouse_hide();
+            coop_host_view_save(&(coop_host_views[slot]), player);
+            previous = &(coop_host_views[slot]);
         }
+        coop_host_view_load(&player1View, player1, previous);
+        mouse_show();
+
+        gmouse_bk_process();
+        intface_update_items(false);
+        tile_refresh_display();
+        intface_redraw();
+    }
+    coop_net_select(selected);
+
+    // How fast the host keeps up, for the debug log.
+    static unsigned int statsSince = 0;
+    static unsigned int statsFrames = 0;
+    static unsigned int statsBusy = 0;
+    statsBusy += elapsed_time(frameStart);
+    statsFrames++;
+    if (elapsed_time(statsSince) >= 10000) {
+        if (coop_net_clients_connected() > 0) {
+            debug_printf("\nCOOP HOST: %u frames in %u ms, %u ms of them for the other players' parts (drawing %u, sending %u)\n",
+                statsFrames, elapsed_time(statsSince), statsBusy, coop_host_draw_ms, coop_host_send_ms);
+        }
+        statsSince = get_time();
+        statsFrames = 0;
+        statsBusy = 0;
+        coop_host_draw_ms = 0;
+        coop_host_send_ms = 0;
     }
 
     coop_host_free_roam_present = true;

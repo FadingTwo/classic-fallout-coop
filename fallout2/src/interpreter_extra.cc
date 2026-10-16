@@ -3264,7 +3264,8 @@ static void opMetarule(Program* program)
         result = 0;
         break;
     case METARULE_PARTY_COUNT:
-        result = _getPartyMemberCount();
+        // CE: co-op: without the other players.
+        result = partyMemberCountForScripts();
         break;
     case METARULE_AREA_KNOWN:
         result = wmAreaVisitedState(param.integerValue);
@@ -4672,7 +4673,10 @@ static void opMoveObjectInventoryToObject(Program* program)
 
     itemMoveAll(object1, object2);
 
-    if (object1 == gDude) {
+    // CE: co-op: any player.
+    if (coop_player_of(object1) != nullptr) {
+        ActivePlayerScope scope(coop_player_of(object1));
+
         if (oldArmor != nullptr) {
             _adjust_ac(gDude, oldArmor, nullptr);
         }

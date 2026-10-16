@@ -16,10 +16,10 @@
 
 namespace fallout {
 
-#define COOP_MAX_PLAYERS 2
+#define COOP_MAX_PLAYERS 4
 
 // Co-op version, for the update check and bug reports.
-#define COOP_VERSION "1.12"
+#define COOP_VERSION "1.13"
 
 // fallout.cfg [coop] server=http://host[:port] - where UPDATE looks for
 // new versions (<server>/fallout-coop/latest.txt) and REPORT BUG sends
@@ -36,6 +36,12 @@ namespace fallout {
 // id, which is 18000 + index).
 #define COOP_PLAYER2_PID 0x01003FFF
 
+// Player n's (index 1 = player 2, up to COOP_MAX_PLAYERS - 1) proto id:
+// counting down from player 2's.
+#define COOP_PLAYER_PID(index) (COOP_PLAYER2_PID - ((index) - 1))
+#define COOP_IS_PLAYER_PID(pid) ((pid) <= COOP_PLAYER2_PID && (pid) > COOP_PLAYER2_PID - (COOP_MAX_PLAYERS - 1))
+#define COOP_PLAYER_INDEX_OF_PID(pid) (COOP_PLAYER2_PID - (pid) + 1)
+
 // Drug addictions live in global variables that scripts read and change
 // (GVAR_NUKA_COLA_ADDICT .. GVAR_ALCOHOL_ADDICT). They are per player: the
 // active player's values are in the globals, the others' in PlayerState.
@@ -51,6 +57,11 @@ namespace fallout {
 #define COOP_CONFIG_TURN_TIME_KEY "turn_time"
 #define COOP_CONFIG_KNOCKOUT_KEY "knockout"
 #define COOP_CONFIG_TALK_KEY "talk"
+// How many players a hosted game takes (2 to COOP_MAX_PLAYERS).
+#define COOP_CONFIG_PLAYERS_KEY "players"
+// Harder: enemies hold out longer the more players there are (the host's
+// setting counts).
+#define COOP_CONFIG_HARDER_KEY "harder"
 
 // Everything that makes a player character "theirs". Before co-op this lived
 // in per-module globals implicitly owned by `obj_dude`; those modules now
@@ -167,6 +178,10 @@ void coop_reset();
 // choice, run in player 2's scope (so a remote player 2 drives them).
 // Returns NULL if cancelled.
 PlayerState* coop_create_player2();
+// One more player on this PC (up to COOP_MAX_PLAYERS), through character
+// creation (Shift+F9).
+PlayerState* coop_create_player();
+void coop_handle_add_player_key();
 
 // Debug key (F9) for local testing: the first press lets player 2 join
 // through the character creation screen, later presses switch local
@@ -180,6 +195,10 @@ void coop_handle_switch_key();
 // game's). coop_character_info reads the name and level from a copy.
 bool coop_export_player2(std::vector<unsigned char>* out);
 PlayerState* coop_import_player2(const std::vector<unsigned char>& data, std::string* error);
+// The same for any player but player 1 (`index` 1 and up), and into the
+// next free player's slot.
+bool coop_export_player(int index, std::vector<unsigned char>* out);
+PlayerState* coop_import_player(const std::vector<unsigned char>& data, std::string* error);
 bool coop_character_info(const std::vector<unsigned char>& data, std::string* name, int* level);
 
 // Asks for a fresh copy to be sent to player 2 (after a save); taken by the
@@ -216,7 +235,7 @@ int coop_outline_type(Object* obj);
 const char* coop_outline_color_name(int color);
 void coop_outline_colors_from_config(int colors[2]);
 void coop_set_outline_colors(int playerIndex, const int colors[2]);
-// The palette color the viewer draws `player`'s (0 or 1) outline with.
+// The palette color the viewer draws `player`'s (index) outline with.
 int coop_viewer_outline_color(int player);
 
 // The player whose view is being drawn: the controlled player, except
@@ -261,6 +280,13 @@ void coop_knockout_healed(Object* critter);
 // merchants. Player 1's setting counts.
 bool coop_talk_setting();
 void coop_set_talk(bool on);
+
+// Harder ([coop]harder): damage to anyone not on the players' side is
+// divided by (players + 1) / 2, as if enemies had 1.5 times the hit points
+// with two players, 2 times with three and 2.5 times with four.
+bool coop_harder_setting();
+void coop_set_harder(bool on);
+int coop_harder_damage(Object* critter, int damage);
 
 // The player a starting conversation belongs to: player 1, unless another
 // player started it (set around gdialog_enter()).

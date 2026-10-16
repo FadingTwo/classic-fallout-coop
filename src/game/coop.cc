@@ -28,6 +28,7 @@
 #include "game/party.h"
 #include "game/perk.h"
 #include "game/protinst.h"
+#include "game/anim.h"
 #include "game/queue.h"
 #include "game/proto.h"
 #include "game/skill.h"
@@ -101,6 +102,7 @@ static bool coop_selftest_on = false;
 
 static unsigned int coop_turn_time_ms = 0;
 static bool coop_knockout_on = false;
+static bool coop_harder_on = false;
 static bool coop_talk_on = true;
 static PlayerState* coop_dialog_talker = NULL;
 static int coop_outline_for[COOP_MAX_PLAYERS][2];
@@ -132,6 +134,11 @@ void coop_init()
         && value != 0;
     coop_talk_on = !config_get_value(&game_config, COOP_CONFIG_KEY, COOP_CONFIG_TALK_KEY, &value)
         || value != 0;
+    coop_harder_on = config_get_value(&game_config, COOP_CONFIG_KEY, COOP_CONFIG_HARDER_KEY, &value)
+        && value != 0;
+    coop_net_set_max_clients(config_get_value(&game_config, COOP_CONFIG_KEY, COOP_CONFIG_PLAYERS_KEY, &value)
+            ? value - 1
+            : COOP_MAX_PLAYERS - 1);
 
     int outlines[2];
     coop_outline_colors_from_config(outlines);
@@ -235,8 +242,8 @@ PlayerState* coop_player_by_pid(int pid)
         return &(coop_players[0]);
     }
 
-    if (pid == COOP_PLAYER2_PID && coop_players_count > 1) {
-        return &(coop_players[1]);
+    if (COOP_IS_PLAYER_PID(pid) && COOP_PLAYER_INDEX_OF_PID(pid) < coop_players_count) {
+        return &(coop_players[COOP_PLAYER_INDEX_OF_PID(pid)]);
     }
 
     return NULL;
@@ -288,10 +295,11 @@ PlayerState* coop_add_player(const char* premadePath)
     coop_sync_base();
     Object* leader = coop_players[0].obj;
 
-    proto_player2_reset();
+    int index = coop_players_count;
+    proto_player_reset(index);
 
     Object* obj;
-    if (obj_new(&obj, art_id(OBJ_TYPE_CRITTER, art_vault_person_nums[GENDER_MALE], 0, 0, 0), COOP_PLAYER2_PID) == -1) {
+    if (obj_new(&obj, art_id(OBJ_TYPE_CRITTER, art_vault_person_nums[GENDER_MALE], 0, 0, 0), COOP_PLAYER_PID(index)) == -1) {
         return NULL;
     }
 
@@ -323,18 +331,44 @@ PlayerState* coop_add_player(const char* premadePath)
     return player;
 }
 
+// Takes a player's critter out of the game: their animations and queued
+// events first (a reset ends animations after this, which would touch the
+// critter after it is gone).
+static void coop_erase_player_object(Object* obj)
+{
+    register_clear(obj);
+    queue_remove(obj);
+    partyMemberRemove(obj);
+    obj_erase_object(obj, NULL);
+}
+
 static void coop_remove_extra_players()
 {
     for (int index = 1; index < coop_players_count; index++) {
         Object* obj = coop_players[index].obj;
         if (obj != NULL) {
-            partyMemberRemove(obj);
-            obj_erase_object(obj, NULL);
+            coop_erase_player_object(obj);
         }
         memset(&(coop_players[index]), 0, sizeof(coop_players[index]));
     }
 
     coop_players_count = 1;
+}
+
+// Removes the player who joined last (not player 1).
+static void coop_remove_last_player()
+{
+    if (coop_players_count <= 1) {
+        return;
+    }
+
+    int index = coop_players_count - 1;
+    Object* obj = coop_players[index].obj;
+    if (obj != NULL) {
+        coop_erase_player_object(obj);
+    }
+    memset(&(coop_players[index]), 0, sizeof(coop_players[index]));
+    coop_players_count--;
 }
 
 void coop_reset()
@@ -366,7 +400,15 @@ static void coop_display_message(const char* format, ...)
 
 PlayerState* coop_create_player2()
 {
-    if (coop_players_count != 1 || isInCombat()) {
+    if (coop_players_count != 1) {
+        return NULL;
+    }
+    return coop_create_player();
+}
+
+PlayerState* coop_create_player()
+{
+    if (coop_players_count >= COOP_MAX_PLAYERS || isInCombat()) {
         return NULL;
     }
 
@@ -393,7 +435,7 @@ PlayerState* coop_create_player2()
     }
 
     if (!created) {
-        coop_remove_extra_players();
+        coop_remove_last_player();
         tile_refresh_display();
         return NULL;
     }
@@ -425,10 +467,32 @@ void coop_handle_switch_key()
         return;
     }
 
-    PlayerState* next = coop_controlled_player() == &(coop_players[0]) ? &(coop_players[1]) : &(coop_players[0]);
+    // The next player in turn.
+    int current = (int)(coop_controlled_player() - coop_players);
+    PlayerState* next = &(coop_players[(current + 1) % coop_players_count]);
     if (coop_set_controlled(next)) {
+        obj_follow_viewer(next->obj);
         coop_display_message("Now controlling %s.", next->name);
     }
+}
+
+void coop_handle_add_player_key()
+{
+    if (!coop_enabled || coop_net_mode() != COOP_NET_NONE) {
+        return;
+    }
+
+    if (coop_players_count >= COOP_MAX_PLAYERS) {
+        coop_display_message("No room for more players (at most %d).", COOP_MAX_PLAYERS);
+        return;
+    }
+
+    if (isInCombat()) {
+        coop_display_message("Players can join after the fight.");
+        return;
+    }
+
+    coop_create_player();
 }
 
 int coop_scope_depth()
@@ -586,6 +650,33 @@ bool coop_game_lost()
     }
 
     return true;
+}
+
+bool coop_harder_setting()
+{
+    return coop_harder_on;
+}
+
+void coop_set_harder(bool on)
+{
+    coop_harder_on = on;
+}
+
+int coop_harder_damage(Object* critter, int damage)
+{
+    if (!coop_enabled || !coop_harder_on || coop_players_count < 2 || damage <= 0 || critter == NULL) {
+        return damage;
+    }
+
+    Object* leader = coop_players[0].obj;
+    if (leader == NULL || coop_player_of(critter) != NULL || critter->data.critter.combat.team == leader->data.critter.combat.team) {
+        return damage;
+    }
+
+    // damage * 2 / (players + 1), rounded, at least 1.
+    int divisor = coop_players_count + 1;
+    int scaled = (damage * 2 + divisor / 2) / divisor;
+    return scaled > 0 ? scaled : 1;
 }
 
 bool coop_talk_setting()
@@ -872,7 +963,24 @@ int coop_viewer_outline_color(int player)
     if (index < 0 || index >= COOP_MAX_PLAYERS) {
         index = 0;
     }
-    return colorTable[coop_outline_rgb[coop_outline_for[index][player != 0 ? 1 : 0]]];
+
+    const int* chosen = coop_outline_for[index];
+    int color = chosen[player != 0 ? 1 : 0];
+    // Players 3 and 4: the first colors the viewer doesn't use for players 1
+    // and 2, in the list's order.
+    if (player >= 2) {
+        int skip = player - 2;
+        for (int candidate = 0; candidate < COOP_OUTLINE_COLORS; candidate++) {
+            if (candidate == chosen[0] || candidate == chosen[1]) {
+                continue;
+            }
+            if (skip-- == 0) {
+                color = candidate;
+                break;
+            }
+        }
+    }
+    return colorTable[coop_outline_rgb[color]];
 }
 
 bool coop_any_player_has_perk(int perk)
@@ -965,7 +1073,7 @@ int coop_load(DB_FILE* stream)
             return -1;
         }
 
-        if (pid != COOP_PLAYER2_PID) {
+        if (pid != COOP_PLAYER_PID(coop_players_count)) {
             debug_printf("\nCOOP: unexpected player pid %x in save\n", pid);
             return -1;
         }
@@ -976,7 +1084,7 @@ int coop_load(DB_FILE* stream)
             return -1;
         }
 
-        proto_player2_reset();
+        proto_player_reset(coop_players_count);
 
         Proto* proto;
         proto_ptr(pid, &proto);
@@ -1036,13 +1144,18 @@ bool coop_take_character_copy_request()
 
 bool coop_export_player2(std::vector<unsigned char>* out)
 {
+    return coop_export_player(1, out);
+}
+
+bool coop_export_player(int index, std::vector<unsigned char>* out)
+{
     out->clear();
-    if (coop_players_count < 2 || coop_players[1].obj == NULL) {
+    if (index < 1 || index >= coop_players_count || coop_players[index].obj == NULL) {
         return false;
     }
 
     coop_sync_base();
-    PlayerState* player = &(coop_players[1]);
+    PlayerState* player = &(coop_players[index]);
     Object* obj = player->obj;
 
     DB_FILE* stream = db_fopen(COOP_CHARACTER_TEMP, "wb");
@@ -1118,16 +1231,27 @@ static void coop_character_new_ids(Object* obj)
 
 PlayerState* coop_import_player2(const std::vector<unsigned char>& data, std::string* error)
 {
+    if (coop_players_count != 1) {
+        *error = "player 2 can't join now";
+        return NULL;
+    }
+    return coop_import_player(data, error);
+}
+
+PlayerState* coop_import_player(const std::vector<unsigned char>& data, std::string* error)
+{
     std::string name;
     int level;
     if (!coop_character_info(data, &name, &level)) {
         *error = "not a character file";
         return NULL;
     }
-    if (coop_players_count != 1 || obj_dude == NULL || coop_scope_stack_depth != 0 || isInCombat()) {
-        *error = "player 2 can't join now";
+    if (coop_players_count >= COOP_MAX_PLAYERS || obj_dude == NULL || coop_scope_stack_depth != 0 || isInCombat()) {
+        *error = "no one can join now";
         return NULL;
     }
+    // The next player's slot, whichever player the character was.
+    int index = coop_players_count;
 
     DB_FILE* stream = db_fopen(COOP_CHARACTER_TEMP, "wb");
     if (stream == NULL || db_fwrite(data.data(), 1, data.size(), stream) != data.size()) {
@@ -1160,11 +1284,11 @@ PlayerState* coop_import_player2(const std::vector<unsigned char>& data, std::st
         && db_fread(fileName, DUDE_NAME_MAX_LENGTH, 1, stream) == 1
         && db_freadInt(stream, &fileLevel) != -1
         && coop_read_player(stream, &state, &pid, &protoData, &protoFid) != -1
-        && pid == COOP_PLAYER2_PID
+        && COOP_IS_PLAYER_PID(pid)
         && obj_load_obj(stream, &obj, map_elevation, NULL) == 0;
     db_fclose(stream);
 
-    if (!ok || obj == NULL || obj->pid != COOP_PLAYER2_PID) {
+    if (!ok || obj == NULL || obj->pid != pid) {
         *error = "the character file is damaged";
         return NULL;
     }
@@ -1172,7 +1296,9 @@ PlayerState* coop_import_player2(const std::vector<unsigned char>& data, std::st
     coop_sync_base();
     Object* leader = coop_players[0].obj;
 
-    proto_player2_reset();
+    pid = COOP_PLAYER_PID(index);
+    obj->pid = pid;
+    proto_player_reset(index);
     Proto* proto;
     proto_ptr(pid, &proto);
     proto->fid = protoFid;
@@ -1201,7 +1327,7 @@ PlayerState* coop_import_player2(const std::vector<unsigned char>& data, std::st
     obj_attempt_placement(obj, leader->tile, leader->elevation, 2);
     obj_set_rotation(obj, leader->rotation, NULL);
     if (partyMemberAdd(obj) == -1) {
-        debug_printf("\nCOOP: could not add player 2 to the party\n");
+        debug_printf("\nCOOP: could not add player %d to the party\n", index + 1);
     }
 
     {
@@ -1211,7 +1337,7 @@ PlayerState* coop_import_player2(const std::vector<unsigned char>& data, std::st
 
     tile_refresh_display();
     coop_display_message("%s joins the game with their own character (level %d).", player->name, level);
-    debug_printf("\nCOOP: player 2 '%s' (level %d) imported from their character file\n", player->name, level);
+    debug_printf("\nCOOP: player %d '%s' (level %d) imported from their character file\n", index + 1, player->name, level);
     return player;
 }
 

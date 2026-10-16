@@ -11,6 +11,7 @@
 #include "character_editor.h"
 #include "color.h"
 #include "combat.h"
+#include "coop.h"
 #include "critter.h"
 #include "cycle.h"
 #include "debug.h"
@@ -996,7 +997,8 @@ err:
 
     _partyMemberRecoverLoad();
     interfaceBarShow();
-    _proto_dude_update_gender();
+    // CE: co-op: every player's look (tribal, or the vault suit later).
+    coop_update_looks();
     _map_place_dude_and_mouse();
     fileSetReadProgressHandler(nullptr, 0);
     isoEnable();

@@ -388,6 +388,8 @@ static void mainLoop()
 
         scriptsHandleRequests();
 
+        coop_process_requests();
+
         mapHandleTransition();
 
         if (_main_game_paused != 0) {

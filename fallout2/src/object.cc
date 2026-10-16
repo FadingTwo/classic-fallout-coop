@@ -185,6 +185,8 @@ static int _obj_last_roof_y = -1;
 // 0x519778
 static int _obj_last_elev = -1;
 
+static void obj_update_roof(int tile, int elevation, Rect* rect);
+
 // 0x51977C
 static bool _obj_last_is_empty = true;
 
@@ -1439,36 +1441,7 @@ int objectSetLocation(Object* obj, int tile, int elevation, Rect* rect)
         // NOTE: Uninline.
         obj_set_seen(tile);
 
-        int roofX = tile % 200 / 2;
-        int roofY = tile / 200 / 2;
-        if (roofX != _obj_last_roof_x || roofY != _obj_last_roof_y || elevation != _obj_last_elev) {
-            int currentSquare = _square[elevation]->field_0[roofX + 100 * roofY];
-            int currentSquareFid = buildFid(OBJ_TYPE_TILE, (currentSquare >> 16) & 0xFFF, 0, 0, 0);
-            // CE: Add additional checks for -1 to prevent array lookup at index -101.
-            int previousSquare = _obj_last_roof_x != -1 && _obj_last_roof_y != -1
-                ? _square[elevation]->field_0[_obj_last_roof_x + 100 * _obj_last_roof_y]
-                : 0;
-            bool isEmpty = buildFid(OBJ_TYPE_TILE, 1, 0, 0, 0) == currentSquareFid;
-
-            if (isEmpty != _obj_last_is_empty || (((currentSquare >> 16) & 0xF000) >> 12) != (((previousSquare >> 16) & 0xF000) >> 12)) {
-                if (!_obj_last_is_empty) {
-                    tile_fill_roof(_obj_last_roof_x, _obj_last_roof_y, elevation, true);
-                }
-
-                if (!isEmpty) {
-                    tile_fill_roof(roofX, roofY, elevation, false);
-                }
-
-                if (rect != nullptr) {
-                    rectUnion(rect, &_scr_size, rect);
-                }
-            }
-
-            _obj_last_roof_x = roofX;
-            _obj_last_roof_y = roofY;
-            _obj_last_elev = elevation;
-            _obj_last_is_empty = isEmpty;
-        }
+        obj_update_roof(tile, elevation, rect);
 
         if (rect != nullptr) {
             Rect r;
@@ -1492,9 +1465,62 @@ int objectSetLocation(Object* obj, int tile, int elevation, Rect* rect)
         if (elevation != _obj_last_elev && PID_TYPE(obj->pid) == OBJ_TYPE_CRITTER) {
             _combat_delete_critter(obj);
         }
+
+        // CE: co-op: roofs open over another player in control (on one PC).
+        if (coop_player_of(obj) != nullptr && coop_player_of(obj) == coop_controlled_player()) {
+            obj_follow_viewer(obj);
+        }
     }
 
     return 0;
+}
+
+// Hides the roof over `tile` (inside a building) and shows the one hidden
+// before, as the player moves. (CE: uncollapsed from objectSetLocation().)
+static void obj_update_roof(int tile, int elevation, Rect* rect)
+{
+    int roofX = tile % 200 / 2;
+    int roofY = tile / 200 / 2;
+    if (roofX != _obj_last_roof_x || roofY != _obj_last_roof_y || elevation != _obj_last_elev) {
+        int currentSquare = _square[elevation]->field_0[roofX + 100 * roofY];
+        int currentSquareFid = buildFid(OBJ_TYPE_TILE, (currentSquare >> 16) & 0xFFF, 0, 0, 0);
+        // CE: Add additional checks for -1 to prevent array lookup at index -101.
+        int previousSquare = _obj_last_roof_x != -1 && _obj_last_roof_y != -1
+            ? _square[elevation]->field_0[_obj_last_roof_x + 100 * _obj_last_roof_y]
+            : 0;
+        bool isEmpty = buildFid(OBJ_TYPE_TILE, 1, 0, 0, 0) == currentSquareFid;
+
+        if (isEmpty != _obj_last_is_empty || (((currentSquare >> 16) & 0xF000) >> 12) != (((previousSquare >> 16) & 0xF000) >> 12)) {
+            if (!_obj_last_is_empty) {
+                tile_fill_roof(_obj_last_roof_x, _obj_last_roof_y, elevation, true);
+            }
+
+            if (!isEmpty) {
+                tile_fill_roof(roofX, roofY, elevation, false);
+            }
+
+            if (rect != nullptr) {
+                rectUnion(rect, &_scr_size, rect);
+            }
+        }
+
+        _obj_last_roof_x = roofX;
+        _obj_last_roof_y = roofY;
+        _obj_last_elev = elevation;
+        _obj_last_is_empty = isEmpty;
+    }
+}
+
+// CE: co-op: roofs and the see-through egg around `obj`, the player whose
+// view is drawn next (on the same elevation as the map shown).
+void obj_follow_viewer(Object* obj)
+{
+    if (obj == nullptr || obj->tile == -1 || obj->elevation != gElevation || obj->elevation != _obj_last_elev) {
+        return;
+    }
+
+    obj_update_roof(obj->tile, obj->elevation, nullptr);
+    objectSetLocation(gEgg, obj->tile, obj->elevation, nullptr);
 }
 
 // 0x48A9A0
@@ -4632,10 +4658,11 @@ static int objectOutlineType(Object* obj)
         return obj->outline & OUTLINE_TYPE_MASK;
     }
 
-    switch (coop_outline_player(obj)) {
-    case 0:
+    int player = coop_outline_player(obj);
+    if (player == 0) {
         return OUTLINE_TYPE_COOP_PLAYER1;
-    case 1:
+    }
+    if (player > 0) {
         return OUTLINE_TYPE_COOP_PLAYER2;
     }
 
@@ -4772,8 +4799,9 @@ static void objectDrawOutline(Object* object, Rect* rect)
             v44 = 0;
             break;
         case OUTLINE_TYPE_COOP_PLAYER2:
-            // CE: co-op: yellow unless the viewer picked another color.
-            color = coop_viewer_outline_color(1);
+            // CE: co-op: yellow unless the viewer picked another color;
+            // players 3 and 4 in colors the viewer doesn't use.
+            color = coop_viewer_outline_color(coop_outline_player(object) > 0 ? coop_outline_player(object) : 1);
             v53 = 0;
             v44 = 0;
             break;

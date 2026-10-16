@@ -5,6 +5,8 @@
 #include <string.h>
 #include <time.h>
 
+#include <vector>
+
 #include "actions.h"
 #include "animation.h"
 #include "art.h"
@@ -1271,6 +1273,84 @@ void scriptsRequestDialogBy(Object* speaker, Object* obj)
 {
     scriptsRequestDialog(obj);
     gScriptsRequestedDialogSpeaker = speaker;
+}
+
+// CE: co-op: the bytecode of `obj`'s script.
+static bool scriptsReadBytecode(Object* obj, std::vector<unsigned char>& data)
+{
+    Script* script;
+    if (obj == nullptr || obj->sid == -1 || scriptGetScript(obj->sid, &script) == -1) {
+        return false;
+    }
+
+    char name[16];
+    if (scriptsGetFileName(script->index & 0xFFFFFF, name, sizeof(name)) == -1) {
+        return false;
+    }
+
+    char path[COMPAT_MAX_PATH];
+    snprintf(path, sizeof(path), "%s%s%s", _cd_path_base, gScriptsBasePath, name);
+
+    File* stream = fileOpen(path, "rb");
+    if (stream == nullptr) {
+        return false;
+    }
+
+    int length = fileGetSize(stream);
+    data.resize(length > 0 ? length : 0);
+    bool read = length > 0 && fileRead(data.data(), 1, length, stream) == (size_t)length;
+    fileClose(stream);
+    return read;
+}
+
+// CE: co-op: looks for `push int head, push int background, start_gdialog`
+// in the bytecode of `obj`'s script.
+bool scriptsFindDialogHead(Object* obj, int* headPtr, int* backgroundPtr)
+{
+    std::vector<unsigned char> data;
+    if (!scriptsReadBytecode(obj, data)) {
+        return false;
+    }
+
+    auto readInt = [&](size_t pos) {
+        return (int)(((unsigned)data[pos] << 24) | ((unsigned)data[pos + 1] << 16) | ((unsigned)data[pos + 2] << 8) | data[pos + 3]);
+    };
+
+    for (size_t pos = 12; pos + 2 <= data.size(); pos++) {
+        if (data[pos] != 0x80 || data[pos + 1] != 0xDE) {
+            continue;
+        }
+        if (data[pos - 12] != 0xC0 || data[pos - 11] != 0x01 || data[pos - 6] != 0xC0 || data[pos - 5] != 0x01) {
+            continue;
+        }
+        int head = readInt(pos - 10);
+        int background = readInt(pos - 4);
+        if (head >= 0 && head < 1000 && background >= 0 && background < 1000) {
+            *headPtr = head;
+            *backgroundPtr = background;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// CE: co-op: looks for `push int modifier, gdialog_mod_barter` in the
+// bytecode of `obj`'s script.
+bool scriptsCanBarter(Object* obj)
+{
+    std::vector<unsigned char> data;
+    if (!scriptsReadBytecode(obj, data)) {
+        return false;
+    }
+
+    for (size_t pos = 6; pos + 2 <= data.size(); pos++) {
+        if (data[pos] == 0x81 && data[pos + 1] == 0x29 && data[pos - 6] == 0xC0 && data[pos - 5] == 0x01) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 // CE: co-op: see SCRIPT_REQUEST_GIVING.

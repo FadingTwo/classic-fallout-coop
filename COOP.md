@@ -1,8 +1,29 @@
-# Co-op (two players)
+# Co-op (two to four players)
 
-Two players play one Fallout game together. Player 1 hosts and runs the
-whole game; player 2 has their own character (stats, skills, perks, traits,
-level, inventory, caps, kill counts) and plays along on the same map.
+Two to four players play one Fallout game together. Player 1 hosts and
+runs the whole game; the others (players 2 to 4) each have their own
+character (stats, skills, perks, traits, level, inventory, caps, kill
+counts) and play along on the same map. Below "player 2" stands for any of
+them.
+
+## Three or four players
+
+- The host picks how many can join with PLAYERS when hosting (2, 3 or 4;
+  `players` in `fallout.cfg`, default 4). A game that is full is told so
+  and drops out of the server browser.
+- Players join one after the other: player 3 after player 2 and so on.
+  Someone who leaves and comes back takes the first free place (their
+  character waits for them).
+- Each player has their own view. Players 3 and 4 are outlined in colors
+  the viewer doesn't use for players 1 and 2 (white and orange by
+  default).
+- On one PC, F9 goes round the players and Shift+F9 adds one more.
+- HARDER (when hosting, or `harder=1`) makes enemies hold out longer the
+  more of you play: as if they had 1.5 times their hit points with two
+  players, twice with three and 2.5 times with four. Player 1's setting
+  counts.
+- The host draws every player's view, so four players need a bit more of
+  the host's computer.
 
 Co-op is off unless `fallout.cfg` has a `[coop]` section with
 `enabled=1`. Without it the game behaves exactly like Fallout CE (this is
@@ -13,13 +34,14 @@ verified byte for byte against upstream, see "Tests").
 The package has Fallout 2 co-op too (`fallout2-ce`, built on Fallout 2
 Community Edition). With Fallout 2 installed, the setup screen asks which
 game to play (Enter picks the one played last); Fallout 2's settings are
-in `fallout2.cfg`. It plays like Fallout 1 co-op, with these differences
-for now:
+in `fallout2.cfg`. It plays like Fallout 1 co-op, with these differences:
 
-- Player 2 trades through conversations, like player 1 (with TALK set to
-  PLAYER 1 player 2 cannot trade).
-- No look to pick for player 2: they look like the Chosen One does at that
-  point of the story.
+- With TALK set to PLAYER 1, player 2 still trades: walking up to a
+  merchant opens their barter screen, with the wares they sell (their
+  conversation runs, but player 2 only sees the trade).
+- No look to pick for player 2: they look like the Chosen One of their
+  own gender does at that point of the story (tribal, later the vault
+  suit), or like their armor.
 - Your companions (Sulik, Vic...) follow player 1's orders as usual.
 
 Both players need Fallout 2 in the same version and language, like
@@ -51,9 +73,9 @@ BUG).
 - Only player 1 travels (world map, exit grids), rests and saves. Player
   2 follows map and elevation changes automatically.
 - In combat each player plays their own turn. `turn_time` limits a turn.
-- If either player dies, the game is lost. With KNOCKOUT on (MORE menu,
+- If a player dies, the game is lost. With KNOCKOUT on (MORE menu,
   or `knockout=1`; player 1's setting counts) a player who would die is
-  knocked out instead while the other is still up: they can't be hurt
+  knocked out instead while another is still up: they can't be hurt
   while out and wake up by themselves or when healed (Stimpak, First
   Aid, Doctor). The last player standing dies as usual.
 - Press T to chat (over the network). Enter sends, Esc cancels.
@@ -105,15 +127,17 @@ both players share it, like they share the mouse.
      LAN ONLY (same network), LIST ONLINE (in everyone's server browser)
      or PRIVATE CODE (only with the game code). Online games go through
      the co-op server's relay, so nobody opens ports; they get a code like
-     KQX472. Player 2 can join any time; they create their character when
-     they join (or continue the one in the save).
+     KQX472. PLAYERS sets how many can join (2-4) and HARDER makes enemies
+     tougher the more of you play. The others can join any time; they
+     create their character when they join (or continue the one in the
+     save).
    - **JOIN GAME** (player 2): the server browser lists open games on
      your network (found with a UDP search on the game port) and listed
      online; pick one, or ENTER ADDRESS and type an address or a game
      code. Your screen then shows the game from player 1's computer; F10
      leaves.
-   - **MORE**: ONE PC (both players on one computer; press F9 in the
-     game), OUTLINES (the players' outline colors on your screen),
+   - **MORE**: ONE PC (all players on one computer; press F9 in the
+     game to switch, Shift+F9 to add a player), OUTLINES (the players' outline colors on your screen),
      RESOLUTION (the screen size, used from the next start) and KNOCKOUT
      (knocked out instead of game over, see above).
    - **UPDATE**: looks for a newer version on the co-op server and, if
@@ -147,7 +171,8 @@ mode=client
 host=192.168.1.10
 ```
 
-One PC: just `enabled=1`, then F9 in a game.
+One PC: just `enabled=1`, then F9 in a game (Shift+F9 for a third or
+fourth player).
 
 ## Co-op server (updates, bug reports, server browser, relay)
 
@@ -202,7 +227,9 @@ options and UPDATE need one.
 | `server` | Co-op server for UPDATE, REPORT BUG and the server browser, `http://host:port`. |
 | `relay` | Relay for online games: `http://host/fallout-coop/relay` or `host:port`. Default: the server's host, port 80. |
 | `knockout` | `1`: a player who would die is knocked out instead while the other is up (MORE, KNOCKOUT). |
-| `talk` | `0`: only player 1 talks to people (MORE, TALK). Default `1`: both do. |
+| `talk` | `0`: only player 1 talks to people (MORE, TALK). Default `1`: every player does. |
+| `players` | Host: how many can play, `2` to `4` (PLAYERS when hosting). Default `4`. |
+| `harder` | Host: `1` makes enemies hold out longer the more players there are (HARDER when hosting). |
 | `selftest` | Developer: `1` enables the F8 self-test of player switching. |
 
 ## Saves

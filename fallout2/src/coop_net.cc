@@ -206,17 +206,87 @@ static uint64_t coop_net_checksum_value = 0;
 
 // Host state.
 static CoopSocket coop_listen_socket = COOP_INVALID_SOCKET;
-static CoopConnection coop_client;
-static bool coop_client_ready = false;
 
-// How many times a client has joined (tests: a client that left and came
-// back between two looks still counts as having left).
-static unsigned int coop_net_joins = 0;
+// Host state of each client (player 2 and up: `coop_peers[n]` is player
+// n + 1's), and the one the host functions below act on (coop_net_select).
+typedef struct CoopPeer {
+    CoopConnection client;
+    bool ready = false;
+    // How many times a client has joined (tests: a client that left and
+    // came back between two looks still counts as having left).
+    unsigned int joins = 0;
+    // The player's own character, brought by the client.
+    bool bringsCharacter = false;
+    std::vector<unsigned char> character;
+    // Flow control (see COOP_NET_FRAMES_IN_FLIGHT).
+    bool acks = false;
+    bool unpacks = false;
+    unsigned int framesSent = 0;
+    unsigned int framesAcked = 0;
+    std::deque<unsigned int> frameSentAt;
+    unsigned long long statsDelayTotal = 0;
+    unsigned int statsDelayCount = 0;
+    unsigned int statsDelayMax = 0;
+    // The client's screen size (since 1.5.7; 0 = unknown): frames bigger
+    // than it are scaled down before sending (it would only scale them down
+    // anyway), and its mouse positions back up.
+    int screenWidth = 0;
+    int screenHeight = 0;
+    int sentScaledFromWidth = 0;
+    int sentScaledFromHeight = 0;
+    std::vector<unsigned char> scaledFrame;
+    unsigned int since = 0;
+    std::deque<CoopNetInput> input;
+    // Traffic statistics for the debug log.
+    unsigned long long statsBytes = 0;
+    unsigned long long statsRawBytes = 0;
+    unsigned int statsFrames = 0;
+    unsigned int statsSince = 0;
+    // Last frame sent, to send only what changed.
+    std::vector<unsigned char> sentFrame;
+    unsigned char sentPalette[768];
+    int sentWidth = 0;
+    int sentHeight = 0;
+    std::string sentStatus;
+} CoopPeer;
 
-// Player 2's own character: brought by the client (host side), or to bring
-// (client side).
-static bool coop_client_brings_character = false;
-static std::vector<unsigned char> coop_client_character;
+static CoopPeer coop_peers[COOP_MAX_PLAYERS];
+static CoopPeer* coop_peer = &(coop_peers[1]);
+
+// How many clients may join (players 2 and up).
+static int coop_net_max_clients = COOP_MAX_PLAYERS - 1;
+
+#define coop_client (coop_peer->client)
+#define coop_client_ready (coop_peer->ready)
+#define coop_net_joins (coop_peer->joins)
+#define coop_client_brings_character (coop_peer->bringsCharacter)
+#define coop_client_character (coop_peer->character)
+#define coop_client_acks (coop_peer->acks)
+#define coop_client_unpacks (coop_peer->unpacks)
+#define coop_frames_sent (coop_peer->framesSent)
+#define coop_frames_acked (coop_peer->framesAcked)
+#define coop_frame_sent_at (coop_peer->frameSentAt)
+#define coop_stats_delay_total (coop_peer->statsDelayTotal)
+#define coop_stats_delay_count (coop_peer->statsDelayCount)
+#define coop_stats_delay_max (coop_peer->statsDelayMax)
+#define coop_client_screen_width (coop_peer->screenWidth)
+#define coop_client_screen_height (coop_peer->screenHeight)
+#define coop_sent_scaled_from_width (coop_peer->sentScaledFromWidth)
+#define coop_sent_scaled_from_height (coop_peer->sentScaledFromHeight)
+#define coop_scaled_frame (coop_peer->scaledFrame)
+#define coop_client_since (coop_peer->since)
+#define coop_client_input (coop_peer->input)
+#define coop_stats_bytes (coop_peer->statsBytes)
+#define coop_stats_raw_bytes (coop_peer->statsRawBytes)
+#define coop_stats_frames (coop_peer->statsFrames)
+#define coop_stats_since (coop_peer->statsSince)
+#define coop_sent_frame (coop_peer->sentFrame)
+#define coop_sent_palette (coop_peer->sentPalette)
+#define coop_sent_width (coop_peer->sentWidth)
+#define coop_sent_height (coop_peer->sentHeight)
+#define coop_sent_status (coop_peer->sentStatus)
+
+// The character to bring (client side; the host's are in CoopPeer).
 static std::vector<unsigned char> coop_bring_character;
 
 // Testing: a client that doesn't acknowledge frames, like those before 1.5.7.
@@ -230,38 +300,6 @@ static bool coop_net_no_flow = getenv("COOP_NET_NO_FLOW") != NULL;
 // on the way, so a slow line can't pile up seconds of delay in the buffers
 // between (the system's, the relay's).
 #define COOP_NET_FRAMES_IN_FLIGHT 2
-static bool coop_client_acks = false;
-static bool coop_client_unpacks = false;
-static unsigned int coop_frames_sent = 0;
-static unsigned int coop_frames_acked = 0;
-static std::deque<unsigned int> coop_frame_sent_at;
-static unsigned long long coop_stats_delay_total = 0;
-static unsigned int coop_stats_delay_count = 0;
-static unsigned int coop_stats_delay_max = 0;
-
-// Player 2's screen size (since 1.5.7; 0 = unknown): frames bigger than
-// it are scaled down before sending (player 2 would only scale them down
-// anyway), and their mouse positions back up.
-static int coop_client_screen_width = 0;
-static int coop_client_screen_height = 0;
-static int coop_sent_scaled_from_width = 0;
-static int coop_sent_scaled_from_height = 0;
-static std::vector<unsigned char> coop_scaled_frame;
-static unsigned int coop_client_since = 0;
-static std::deque<CoopNetInput> coop_client_input;
-
-// Traffic statistics for the debug log.
-static unsigned long long coop_stats_bytes = 0;
-static unsigned long long coop_stats_raw_bytes = 0;
-static unsigned int coop_stats_frames = 0;
-static unsigned int coop_stats_since = 0;
-
-// Last frame sent, to send only what changed.
-static std::vector<unsigned char> coop_sent_frame;
-static unsigned char coop_sent_palette[768];
-static int coop_sent_width = 0;
-static int coop_sent_height = 0;
-static std::string coop_sent_status;
 
 // Background music playing, for clients joining later.
 static bool coop_music_playing = false;
@@ -300,11 +338,17 @@ void coop_net_init()
 
 void coop_net_exit()
 {
-    if (coop_client.socket != COOP_INVALID_SOCKET) {
-        coop_connection_send(&coop_client, COOP_NET_MSG_BYE, std::vector<unsigned char>());
-        coop_connection_flush(&coop_client);
-        coop_connection_close(&coop_client);
+    CoopPeer* selected = coop_peer;
+    for (int slot = 1; slot < COOP_MAX_PLAYERS; slot++) {
+        coop_peer = &(coop_peers[slot]);
+        if (coop_client.socket != COOP_INVALID_SOCKET) {
+            coop_connection_send(&coop_client, COOP_NET_MSG_BYE, std::vector<unsigned char>());
+            coop_connection_flush(&coop_client);
+            coop_connection_close(&coop_client);
+        }
+        coop_client_ready = false;
     }
+    coop_peer = selected;
 
     if (coop_listen_socket != COOP_INVALID_SOCKET) {
         coop_close_socket(coop_listen_socket);
@@ -638,6 +682,48 @@ static bool coop_connection_next(CoopConnection* connection, CoopMessage* messag
 // -----------------------------------------------------------------------------
 // Host
 
+void coop_net_select(int slot)
+{
+    if (slot >= 1 && slot < COOP_MAX_PLAYERS) {
+        coop_peer = &(coop_peers[slot]);
+    }
+}
+
+int coop_net_selected()
+{
+    return (int)(coop_peer - coop_peers);
+}
+
+void coop_net_set_max_clients(int count)
+{
+    coop_net_max_clients = std::max(1, std::min(count, COOP_MAX_PLAYERS - 1));
+}
+
+int coop_net_max_clients_value()
+{
+    return coop_net_max_clients;
+}
+
+int coop_net_clients_connected()
+{
+    int count = 0;
+    for (int slot = 1; slot < COOP_MAX_PLAYERS; slot++) {
+        count += coop_peers[slot].ready ? 1 : 0;
+    }
+    return count;
+}
+
+// The first slot without a client (that may take one), or 0.
+static int coop_host_free_slot()
+{
+    for (int slot = 1; slot <= coop_net_max_clients; slot++) {
+        if (coop_peers[slot].client.socket == COOP_INVALID_SOCKET) {
+            return slot;
+        }
+    }
+    return 0;
+}
+
 // Sends the screen as it is, cursor included (the client shows no cursor
 // of its own: the host draws player 2's, with its real shape).
 void coop_net_send_current_screen()
@@ -734,7 +820,7 @@ static std::deque<CoopRefused> coop_refused;
 
 static void coop_host_refuse_extra_clients()
 {
-    for (int count = 0; count < 4 && coop_client.socket != COOP_INVALID_SOCKET; count++) {
+    for (int count = 0; count < 4 && coop_host_free_slot() == 0; count++) {
         CoopSocket socket = coop_host_accept();
         if (socket == COOP_INVALID_SOCKET) {
             break;
@@ -773,46 +859,60 @@ void coop_net_host_pump()
 
     coop_relay_host_pump();
 
-    if (coop_client.socket != COOP_INVALID_SOCKET || !coop_refused.empty()) {
+    if (coop_host_free_slot() == 0 || !coop_refused.empty()) {
         coop_host_refuse_extra_clients();
     }
 
-    if (coop_client.socket == COOP_INVALID_SOCKET) {
+    CoopPeer* selected = coop_peer;
+
+    // New clients take the first free slot (player 2's first).
+    for (int slot = coop_host_free_slot(); slot != 0; slot = coop_host_free_slot()) {
         CoopSocket socket = coop_host_accept();
         if (socket == COOP_INVALID_SOCKET) {
-            return;
+            break;
         }
 
         int noDelay = 1;
         setsockopt(socket, IPPROTO_TCP, TCP_NODELAY, (const char*)&noDelay, sizeof(noDelay));
         coop_socket_set_non_blocking(socket);
 
+        coop_peer = &(coop_peers[slot]);
+        coop_client = CoopConnection();
         coop_client.socket = socket;
         coop_client_ready = false;
         coop_client_since = get_time();
-        debug_printf("\nCOOP NET: client connecting\n");
+        debug_printf("\nCOOP NET: client connecting (player %d)\n", slot + 1);
     }
 
-    coop_connection_receive(&coop_client);
+    for (int slot = 1; slot < COOP_MAX_PLAYERS; slot++) {
+        coop_peer = &(coop_peers[slot]);
+        if (coop_client.socket == COOP_INVALID_SOCKET) {
+            continue;
+        }
 
-    CoopMessage message;
-    while (coop_connection_next(&coop_client, &message)) {
-        coop_host_handle(message);
+        coop_connection_receive(&coop_client);
+
+        CoopMessage message;
+        while (coop_connection_next(&coop_client, &message)) {
+            coop_host_handle(message);
+        }
+
+        coop_connection_flush(&coop_client);
+
+        if (!coop_client_ready && coop_client.socket != COOP_INVALID_SOCKET && elapsed_time(coop_client_since) > COOP_NET_HANDSHAKE_TIMEOUT) {
+            debug_printf("\nCOOP NET: handshake timed out\n");
+            coop_client.failed = true;
+        }
+
+        if (coop_client.failed) {
+            debug_printf("\nCOOP NET: client disconnected (player %d)\n", slot + 1);
+            coop_connection_close(&coop_client);
+            coop_client_ready = false;
+            coop_client_input.clear();
+        }
     }
 
-    coop_connection_flush(&coop_client);
-
-    if (!coop_client_ready && coop_client.socket != COOP_INVALID_SOCKET && elapsed_time(coop_client_since) > COOP_NET_HANDSHAKE_TIMEOUT) {
-        debug_printf("\nCOOP NET: handshake timed out\n");
-        coop_client.failed = true;
-    }
-
-    if (coop_client.failed) {
-        debug_printf("\nCOOP NET: client disconnected\n");
-        coop_connection_close(&coop_client);
-        coop_client_ready = false;
-        coop_client_input.clear();
-    }
+    coop_peer = selected;
 }
 
 static void coop_host_welcome(bool accepted, const char* reason)
@@ -862,8 +962,8 @@ static void coop_host_handle(const CoopMessage& message)
                 coop_client_screen_height = reader.u16();
                 debug_printf("COOP: player 2's screen is %dx%d\n", coop_client_screen_width, coop_client_screen_height);
             }
-            coop_set_outline_colors(1, outlines);
-            debug_printf("COOP: player 2 outlines: %s, %s\n", coop_outline_color_name(outlines[0]), coop_outline_color_name(outlines[1]));
+            coop_set_outline_colors(coop_net_selected(), outlines);
+            debug_printf("COOP: player %d outlines: %s, %s\n", coop_net_selected() + 1, coop_outline_color_name(outlines[0]), coop_outline_color_name(outlines[1]));
 
             if (!reader.ok() || magic != COOP_NET_MAGIC) {
                 coop_host_welcome(false, "Not a Classic Fallout Co-op client.");
@@ -1303,9 +1403,15 @@ void coop_net_send_sound(int event, const char* name, int a, int b, int c)
         coop_music_playing = false;
     }
 
-    if (coop_client_ready && coop_client.out.size() < COOP_NET_MAX_BACKLOG) {
-        coop_net_write_sound(event, name, a, b, c);
+    // Every player hears it.
+    CoopPeer* selected = coop_peer;
+    for (int slot = 1; slot < COOP_MAX_PLAYERS; slot++) {
+        coop_peer = &(coop_peers[slot]);
+        if (coop_client_ready && coop_client.out.size() < COOP_NET_MAX_BACKLOG) {
+            coop_net_write_sound(event, name, a, b, c);
+        }
     }
+    coop_peer = selected;
 }
 
 void coop_net_set_client_exit_hook(void (*proc)())
@@ -1752,6 +1858,10 @@ static bool coop_client_connect(CoopConnection* connection, std::string* error)
         *error = "Networking unavailable.";
         return false;
     }
+
+    // Before connecting: reading the game data takes a while on a slow
+    // machine, and the host only waits so long for the hello.
+    coop_net_data_checksum();
 
     CoopSocket socket;
     if (!coop_relay_join_code.empty()) {

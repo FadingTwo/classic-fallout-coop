@@ -2777,7 +2777,8 @@ int wmMapMaxCount()
 // 0x4BF974
 int wmMapIdxToName(int mapIdx, char* dest, size_t size)
 {
-    if (mapIdx == -1 || mapIdx > wmMaxMapNum) {
+    // CE: `>=`: index wmMaxMapNum is one past the list.
+    if (mapIdx < 0 || mapIdx >= wmMaxMapNum) {
         dest[0] = '\0';
         return -1;
     }

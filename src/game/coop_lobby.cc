@@ -327,7 +327,7 @@ static void lobby_find_lan(std::vector<CoopLobbyGame>& games, const std::string&
                 known = true;
             }
         }
-        if (!known && atoi(fields[4].c_str()) < 2) {
+        if (!known && atoi(fields[4].c_str()) < COOP_LOBBY_FULL) {
             games.push_back(game);
         }
     }
@@ -374,7 +374,7 @@ static void lobby_find_public(std::vector<CoopLobbyGame>& games, const std::stri
         }
         fields.push_back(line.substr(fieldStart));
 
-        if (atoi(fields[2].c_str()) >= 2) {
+        if (atoi(fields[2].c_str()) >= COOP_LOBBY_FULL) {
             continue;
         }
         if (fields[3] != COOP_VERSION || fields[4] != checksum) {

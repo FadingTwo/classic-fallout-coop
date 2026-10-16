@@ -9,6 +9,10 @@ namespace fallout {
 // Finding games: hosts answer searches on the LAN (UDP on the game's port)
 // and can list themselves on the co-op server; JOIN GAME shows both.
 
+// The player count a full game announces (games with room announce how
+// many play).
+#define COOP_LOBBY_FULL 9
+
 typedef struct CoopLobbyGame {
     std::string address;
     int port;

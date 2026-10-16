@@ -935,6 +935,21 @@ int _getPartyMemberCount()
     return count;
 }
 
+// CE: co-op: the party's size as scripts see it (they compare it with
+// Charisma to let companions join): the other players are in the party
+// but take no companion's place.
+int partyMemberCountForScripts()
+{
+    int count = _getPartyMemberCount();
+    for (int index = 1; index < coop_player_count(); index++) {
+        Object* player = coop_player(index)->obj;
+        if (player != nullptr && !critterIsDead(player) && (player->flags & OBJECT_HIDDEN) == 0) {
+            count--;
+        }
+    }
+    return count;
+}
+
 // 0x495070
 static int _partyMemberNewObjID()
 {
