@@ -1,6 +1,8 @@
 #ifndef GAME_MOUSE_H
 #define GAME_MOUSE_H
 
+#include <vector>
+
 #include "obj_types.h"
 
 namespace fallout {
@@ -95,6 +97,36 @@ void gameMouseResetBouncingCursorFid();
 void gameMouseObjectsShow();
 void gameMouseObjectsHide();
 bool gameMouseObjectsIsVisible();
+
+// CE: co-op: inside a redraw of the map for the 3D cursor alone (it moved
+// or changed its look; nothing else on the map changed).
+bool gameMouseRefreshingCursor();
+
+// CE: co-op: what one player's 3D cursor shows when it rests over
+// something (the red X, the action's icon, the chance to hit) and how long
+// their mouse has rested. The host switches between the players' views;
+// with one state for all, each view's mouse "moved" every frame and nobody
+// saw it.
+typedef struct GameMouseHoverState {
+    bool saved = false;
+    bool hoverTest = false;
+    unsigned int lastMoveTime = 0;
+    int lastMouseX = -1;
+    int lastMouseY = -1;
+    Object* pointedObject = nullptr;
+    int bouncingFid = -1;
+    int hexFid = -1;
+    std::vector<unsigned char> pickFrame;
+    int pickOffsetX = 0;
+    int pickOffsetY = 0;
+    int pickHotX = 0;
+    int pickHotY = 0;
+    std::vector<unsigned char> hitFrame;
+    std::vector<unsigned char> hexFrame;
+} GameMouseHoverState;
+
+void gameMouseSaveHover(GameMouseHoverState* state);
+void gameMouseLoadHover(const GameMouseHoverState* state);
 int gameMouseRenderPrimaryAction(int x, int y, int menuItem, int width, int height);
 int _gmouse_3d_pick_frame_hot(int* a1, int* a2);
 int gameMouseRenderActionMenuItems(int x, int y, const int* menuItems, int menuItemsCount, int width, int height);

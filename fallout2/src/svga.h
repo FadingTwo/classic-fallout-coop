@@ -49,6 +49,10 @@ void renderPresent();
 // CE: see renderPresent().
 extern void (*svga_present_hook)();
 
+// CE: co-op: while set, what is drawn reaches the screen surface only, not
+// what is shown (the host draws another player's picture to send it).
+extern bool svga_screen_only;
+
 } // namespace fallout
 
 #endif /* FALLOUT_SVGA_H_ */

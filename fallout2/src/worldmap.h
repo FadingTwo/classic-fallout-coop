@@ -260,6 +260,7 @@ int wmSubTileMarkRadiusVisited(int x, int y, int radius);
 int wmSubTileGetVisitedState(int x, int y, int* statePtr);
 int wmGetAreaIdxName(int areaIdx, char* name);
 bool wmAreaIsKnown(int areaIdx);
+bool wmPartyWindowPosition(int* x, int* y);
 int wmAreaVisitedState(int areaIdx);
 bool wmMapIsKnown(int mapIdx);
 int wmAreaMarkVisited(int areaIdx);

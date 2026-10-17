@@ -5578,6 +5578,20 @@ int wmGetAreaIdxName(int areaIdx, char* name)
 // Returns true if world area is known.
 //
 // 0x4C453C
+// CE: co-op tests: where the party is in the world map's window (to click
+// on it, which goes in where they are); false when the world map isn't
+// open.
+bool wmPartyWindowPosition(int* x, int* y)
+{
+    if (wmBkWin == -1) {
+        return false;
+    }
+
+    *x = wmGenData.worldPosX - wmWorldOffsetX + WM_VIEW_X;
+    *y = wmGenData.worldPosY - wmWorldOffsetY + WM_VIEW_Y;
+    return true;
+}
+
 bool wmAreaIsKnown(int areaIdx)
 {
     if (!cityIsValid(areaIdx)) {

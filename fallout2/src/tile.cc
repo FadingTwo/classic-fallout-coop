@@ -89,6 +89,8 @@ static TileWindowRefreshElevationProc* gTileWindowRefreshElevationProc = tileRef
 // 0x51D968
 static bool gTileEnabled = true;
 
+TileWindowRefreshObserver* gTileWindowRefreshObserver = nullptr;
+
 // 0x51D96C
 const int _off_tile[6] = {
     16,
@@ -520,6 +522,9 @@ void tileWindowRefreshRect(Rect* rect, int elevation)
 {
     if (gTileEnabled) {
         if (elevation == gElevation) {
+            if (gTileWindowRefreshObserver != nullptr) {
+                gTileWindowRefreshObserver(rect, elevation, false);
+            }
             gTileWindowRefreshElevationProc(rect, elevation);
         }
     }
@@ -529,6 +534,9 @@ void tileWindowRefreshRect(Rect* rect, int elevation)
 void tileWindowRefresh()
 {
     if (gTileEnabled) {
+        if (gTileWindowRefreshObserver != nullptr) {
+            gTileWindowRefreshObserver(&gTileWindowRect, gElevation, true);
+        }
         gTileWindowRefreshElevationProc(&gTileWindowRect, gElevation);
     }
 }

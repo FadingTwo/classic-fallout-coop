@@ -131,6 +131,7 @@ static int coop_autotest_poison(AutotestNewGameProc* newGame);
 static int coop_autotest_lobby_find(AutotestNewGameProc* newGame);
 static int coop_autotest_explode_exit(AutotestNewGameProc* newGame);
 static int coop_autotest_net_death_host(AutotestNewGameProc* newGame);
+static int coop_autotest_net_worldmap_host(AutotestNewGameProc* newGame);
 static int coop_autotest_net_ending_host(AutotestNewGameProc* newGame);
 static int coop_autotest_menu_join(AutotestNewGameProc* newGame);
 static int coop_autotest_menu_server(AutotestNewGameProc* newGame);
@@ -183,6 +184,7 @@ void coop_autotest_register()
     autotest_add_script("lobby_find", coop_autotest_lobby_find);
     autotest_add_script("explode_exit", coop_autotest_explode_exit);
     autotest_add_script("net_death_host", coop_autotest_net_death_host);
+    autotest_add_script("net_worldmap_host", coop_autotest_net_worldmap_host);
     autotest_add_script("net_ending_host", coop_autotest_net_ending_host);
     autotest_add_script("menu_join", coop_autotest_menu_join);
     autotest_add_script("menu_server", coop_autotest_menu_server);
@@ -1416,7 +1418,10 @@ static void coop_autotest_check_far_cameras(const char* mapName)
             autotest_log("%s: player %d's camera follows them %d hexes from player 1", mapName, index + 1, tile_dist(obj_dude->tile, distant));
         }
 
+        // Placing doesn't redraw (the host's views keep what they showed
+        // where nothing redrew).
         obj_attempt_placement(player, obj_dude->tile, obj_dude->elevation, 2);
+        tile_refresh_display();
     }
 }
 
@@ -1451,7 +1456,6 @@ static int coop_autotest_net_play_host(AutotestNewGameProc* newGame)
     unsigned int settledSince = 0;
     int farTile = -1;
     int farFrames = 0;
-    unsigned int farSince = 0;
     unsigned int farParts = 0;
     bool cameraChecked = false;
     const int chatKeys[] = { KEY_LOWERCASE_T, 'W', 'a', 'r', ' ', 'n', 'e', 'v', 'e', 'r', ' ', 'c', 'h', 'a', 'n', 'g', 'e', 's', KEY_RETURN };
@@ -1513,10 +1517,9 @@ static int coop_autotest_net_play_host(AutotestNewGameProc* newGame)
                         tile_refresh_rect(&rect, p2->elevation);
                         autotest_log("camera check: player 2 put at tile %d, %d hexes from player 1", farTile, tile_dist(obj_dude->tile, farTile));
                         farParts = coop_host_view_parts(1);
-                        farSince = getTicks();
                     }
                 }
-            } else if (farTile != -1 && !cameraChecked && (++farFrames >= 30 || (farFrames >= 3 && getTicksSince(farSince) >= 1000)) && coop_host_view_parts(1) >= farParts + 2) {
+            } else if (farTile != -1 && !cameraChecked && ++farFrames >= 3 && coop_host_view_parts(1) >= farParts + 2) {
                 cameraChecked = true;
                 int center = coop_host_view_center(1);
                 if (center != farTile) {
@@ -1541,6 +1544,13 @@ static int coop_autotest_net_play_host(AutotestNewGameProc* newGame)
     } else {
         autotest_log("player 2 ended at tile %d (distance %d from start)", coop_player(1)->obj->tile,
             tile_dist(startTile, coop_player(1)->obj->tile));
+    }
+
+    // Their mouse rested on the map (while they chatted): their 3D cursor
+    // showed what's under it, as player 1's does.
+    autotest_log("player 2's cursor showed what's under it in %u of %u parts", coop_host_view_hover_parts(1), coop_host_view_parts(1));
+    if (startTile != -1 && coop_host_view_hover_parts(1) == 0) {
+        autotest_fail("player 2's cursor never showed what's under it");
     }
 
     dump_screen();
@@ -1604,12 +1614,14 @@ static int coop_autotest_net_play_client(AutotestNewGameProc* newGame)
     inject_wait(30);
     inject_call(coop_autotest_screenshot); // sent
 
-    // Player 2's inventory: open, look, close.
+    // Player 2's inventory: open, look, close. Then a while before leaving:
+    // the host checks player 2's camera once they stand still (a slow host
+    // was still at it).
     inject_key(KEY_LOWERCASE_I);
     inject_wait(120);
     inject_call(coop_autotest_screenshot);
     inject_key(KEY_ESCAPE);
-    inject_wait(120);
+    inject_wait(360);
     inject_call(coop_net_client_request_exit);
 
     coop_net_set_client_exit_hook(coop_autotest_net_client_exit);
@@ -2654,6 +2666,9 @@ static int coop_autotest_net_tour_host(AutotestNewGameProc* newGame)
             }
             objectSetLocation(gDude, gDude->tile, elevation, nullptr);
             mapSetElevation(elevation);
+            // As the game does after a floor change: the party (the other
+            // players) was placed again, which doesn't redraw.
+            tile_refresh_display();
             unsigned int elevationStart = getTicks();
             while (getTicksSince(elevationStart) < 4000 && coop_net_client_connected()) {
                 coop_autotest_heal_players();
@@ -4756,6 +4771,200 @@ static int coop_autotest_combat_far(AutotestNewGameProc* newGame)
     if (coop_autotest_turns[1] == 0) {
         autotest_fail("player 2, far away, never had a turn");
     }
+    return 0;
+}
+
+// The world map test's steps, run from the world map's input loop (see
+// coop_autotest_net_worldmap_host()).
+static bool coop_autotest_wm_open = false;
+static int coop_autotest_wm_step = 0;
+static int coop_autotest_wm_time = 0;
+static int coop_autotest_wm_still = 0;
+
+static void coop_autotest_wm_drive()
+{
+    if (!coop_autotest_wm_open) {
+        return;
+    }
+
+    // Travelling makes time pass; standing on the world map doesn't.
+    int now = gameTimeGetTime();
+    coop_autotest_wm_still = now != coop_autotest_wm_time ? 0 : coop_autotest_wm_still + 1;
+    coop_autotest_wm_time = now;
+
+    switch (coop_autotest_wm_step) {
+    case 0:
+        // Somewhere south-east of the party (in the map's window;
+        // COOP_AUTOTEST_WM_TRIP=x,y pixels, default 120,80: far enough
+        // for a random encounter on the way, most likely).
+        autotest_log("world map: travelling away from the town");
+        if (true) {
+            int tripX = 120;
+            int tripY = 80;
+            if (const char* trip = getenv("COOP_AUTOTEST_WM_TRIP")) {
+                sscanf(trip, "%d,%d", &tripX, &tripY);
+            }
+            coop_autotest_click_centered(22 + 225 + tripX, 21 + 221 + tripY);
+        }
+        coop_autotest_wm_step++;
+        break;
+    case 1:
+        // There (time stands still): back with the first town button.
+        if (coop_autotest_wm_still >= 20) {
+            autotest_log("world map: back to the first town on the list");
+            inject_key(KEY_CTRL_F1);
+            coop_autotest_wm_step++;
+            coop_autotest_wm_still = 0;
+        }
+        break;
+    case 2:
+        // There: the view on the party (Home)...
+        if (coop_autotest_wm_still >= 20) {
+            inject_key(KEY_HOME);
+            coop_autotest_wm_step++;
+            coop_autotest_wm_still = 0;
+        }
+        break;
+    case 3:
+        // ... and a click on it: into the town (its town map, or straight
+        // to its first map).
+        if (coop_autotest_wm_still >= 5) {
+            int x;
+            int y;
+            if (wmPartyWindowPosition(&x, &y)) {
+                autotest_log("world map: into the town (the party at %d,%d)", x, y);
+                coop_autotest_click_centered(x, y);
+            }
+            coop_autotest_wm_step++;
+            coop_autotest_wm_still = 0;
+        }
+        break;
+    default:
+        // The town map: its entrances in turn (1, 2, ...: unknown ones do
+        // nothing) until one takes us in.
+        if (coop_autotest_wm_step < 4 + 7 && coop_autotest_wm_still >= 20) {
+            int entrance = coop_autotest_wm_step - 4;
+            autotest_log("world map: the town map's entrance %d", entrance + 1);
+            inject_key(KEY_1 + entrance);
+            coop_autotest_wm_step++;
+            coop_autotest_wm_still = 0;
+        }
+        break;
+    }
+
+    if (coop_autotest_wm_step >= 4 + 7) {
+        return;
+    }
+
+    inject_wait(5);
+    inject_call(coop_autotest_wm_drive);
+}
+
+// The world map with players online: player 1 travels away from the town
+// and back and goes in (or meets something on the way: a random encounter
+// ends the trip), the others watching; everyone must arrive together with
+// time passed. COOP_AUTOTEST_PLAYERS=n for more players. Paired with
+// net_tour_client.
+static int coop_autotest_net_worldmap_host(AutotestNewGameProc* newGame)
+{
+    if (coop_net_mode() != COOP_NET_HOST) {
+        autotest_fail("needs [coop]mode=host");
+        return -1;
+    }
+
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    int players = getenv("COOP_AUTOTEST_PLAYERS") != nullptr ? atoi(getenv("COOP_AUTOTEST_PLAYERS")) : 2;
+    for (int index = 1; index < players && index < COOP_MAX_PLAYERS; index++) {
+        if (coop_add_player(index == 1 ? "premade\\stealth.gcd" : "premade\\diplomat.gcd") == nullptr) {
+            autotest_fail("could not add player %d", index + 1);
+            return -1;
+        }
+    }
+    tile_refresh_display();
+
+    coop_host_init();
+    if (!coop_host_active()) {
+        autotest_fail("cannot host");
+        return -1;
+    }
+    if (!coop_autotest_relay_host_setup()) {
+        return -1;
+    }
+
+    unsigned int start = getTicks();
+    while (getTicksSince(start) < COOP_AUTOTEST_JOIN_WAIT && coop_net_clients_connected() < players - 1) {
+        coop_autotest_host_frame();
+    }
+    if (coop_net_clients_connected() < players - 1) {
+        autotest_fail("only %d clients joined", coop_net_clients_connected());
+        return -1;
+    }
+
+    // A few seconds of the game first.
+    start = getTicks();
+    while (getTicksSince(start) < 3000) {
+        coop_autotest_host_frame();
+    }
+
+    char mapName[16];
+    strcpy(mapName, gMapHeader.name);
+    int timeBefore = gameTimeGetTime();
+    autotest_log("on %s, day %d", mapName, timeBefore / 864000);
+
+    // To the world map (-2: straight there, no town map first).
+    coop_autotest_wm_open = true;
+    coop_autotest_wm_step = 0;
+    coop_autotest_wm_time = timeBefore;
+    coop_autotest_wm_still = 0;
+    inject_wait(30);
+    inject_call(coop_autotest_wm_drive);
+    MapTransition transition;
+    memset(&transition, 0, sizeof(transition));
+    transition.map = -2;
+    transition.tile = -1;
+    mapSetTransition(&transition);
+    start = getTicks();
+    mapHandleTransition();
+    coop_autotest_wm_open = false;
+
+    int hours = (gameTimeGetTime() - timeBefore) / 36000;
+    autotest_log("after the world map (%u s): on %s (step %d), %d hours later", getTicksSince(start) / 1000, gMapHeader.name, coop_autotest_wm_step, hours);
+    if (gameTimeGetTime() == timeBefore) {
+        autotest_fail("no time passed on the world map");
+    }
+    if (coop_autotest_wm_step < 1) {
+        autotest_fail("the world map never got its first click");
+    }
+    if (coop_net_clients_connected() < players - 1) {
+        autotest_fail("a player left during the world map");
+    }
+
+    // Everyone there, next to player 1.
+    for (int index = 1; index < coop_player_count(); index++) {
+        Object* p1obj = coop_player(0)->obj;
+        Object* obj = coop_player(index)->obj;
+        autotest_log("player %d at tile %d elev %d, %d hexes from player 1", index + 1, obj->tile, obj->elevation, objectGetDistanceBetween(p1obj, obj));
+        if (obj->elevation != p1obj->elevation || obj->tile == -1 || objectGetDistanceBetween(p1obj, obj) > 6) {
+            autotest_fail("player %d didn't arrive with player 1", index + 1);
+        }
+    }
+
+    // Then the game goes on there (a random encounter's fight too: player
+    // 1 fights it out, the others' turns end by the turn timer).
+    coop_set_turn_hook(coop_autotest_rough_turn);
+    tickersAdd(coop_autotest_answer_dialogs);
+    start = getTicks();
+    while (getTicksSince(start) < 5000 && coop_net_clients_connected() >= players - 1) {
+        coop_autotest_host_frame();
+    }
+    if (coop_net_clients_connected() < players - 1) {
+        autotest_fail("a player left after the world map");
+    }
+    takeScreenshot();
+    coop_host_exit();
     return 0;
 }
 

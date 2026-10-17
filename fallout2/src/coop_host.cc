@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "art.h"
 #include "combat.h"
 #include "coop.h"
 #include "coop_compat.h"
@@ -43,11 +44,16 @@ typedef struct CoopView {
     MouseContext mouse;
     int cursor;
     int mode;
+    // The 3D cursor shows (the mouse is on the map).
+    bool cursorOn;
+    // What it shows when the mouse rests over something.
+    GameMouseHoverState hover;
 } CoopView;
 
 static void coop_host_poll();
 static void coop_host_present();
-static void coop_host_feed_input();
+static void coop_host_set_frame_shift(int slot);
+static bool coop_host_feed_input(int slot);
 static void coop_host_player_turn(int slot);
 static void coop_host_update_status();
 static void coop_host_player_joins(int slot);
@@ -67,6 +73,11 @@ static int coop_host_turn_slot = 0;
 // For the debug log: time spent drawing the others' views and sending them.
 static unsigned int coop_host_draw_ms = 0;
 static unsigned int coop_host_send_ms = 0;
+// ... and in their input (with a redraw before it, for a screen it opens),
+// switching between the views, and player 1's view drawn again after them.
+static unsigned int coop_host_input_ms = 0;
+static unsigned int coop_host_switch_ms = 0;
+static unsigned int coop_host_restore_ms = 0;
 // Views not drawn because their client wasn't taking frames.
 static unsigned int coop_host_views_skipped = 0;
 
@@ -81,10 +92,419 @@ static bool coop_host_free_roam_present = false;
 // that player's slot during their part of the frame).
 static CoopView coop_host_views[COOP_MAX_PLAYERS];
 
+// Player 1's view back after the others' parts without a full redraw:
+// their map window as it was, when those parts changed nothing on the map
+// but the 3D cursor (most frames: what walks around does so in the main
+// loop, drawn in player 1's view there), then their cursor put back where
+// their mouse is (redrawing where it was and where it goes, as single
+// player does). A full redraw otherwise. COOP_HOST_RESTORE=0 turns it off;
+// COOP_HOST_RESTORE_CHECK=1 redraws the whole map after each restore and
+// compares (for tests).
+static int coop_host_restore_mode = -1;
+static bool coop_host_restore_check_on = false;
+static std::vector<unsigned char> coop_host_restore_saved;
+// The others' parts redrew some of the map for a change to it.
+static bool coop_host_restore_changed = false;
+// Inside a view's own full redraw (not a change to the map).
+static bool coop_host_own_draw = false;
+// For the debug log: player 1's view restored or redrawn, and (checking)
+// restores that differed from a full redraw.
+static unsigned int coop_host_restores = 0;
+static unsigned int coop_host_redraws = 0;
+static unsigned int coop_host_restore_mismatches = 0;
+static unsigned int coop_host_restore_mismatches_logged = 0;
+static unsigned int coop_host_changes_logged = 0;
+// ... in the whole session.
+static unsigned int coop_host_restores_total = 0;
+static unsigned int coop_host_redraws_total = 0;
+static unsigned int coop_host_restore_mismatches_total = 0;
+static int coop_host_restore_mismatch_most = 0;
+
+static int coop_host_restore_setting()
+{
+    if (coop_host_restore_mode == -1) {
+        const char* setting = getenv("COOP_HOST_RESTORE");
+        coop_host_restore_mode = setting != nullptr ? atoi(setting) : 1;
+        coop_host_restore_check_on = getenv("COOP_HOST_RESTORE_CHECK") != nullptr;
+    }
+    return coop_host_restore_mode;
+}
+
+// Inside the other players' parts of the frame.
+static bool coop_host_in_parts = false;
+
+// A changed part of the map window (in screen coordinates of the camera at
+// the time) and where a reference tile was on screen then: screen
+// positions move by the same offset for every tile between two cameras.
+typedef struct CoopChange {
+    Rect rect;
+    int referenceX;
+    int referenceY;
+} CoopChange;
+
+#define COOP_HOST_REFERENCE_TILE 20100
+
+// More changes than this since a player's last picture: a full redraw.
+#define COOP_HOST_PICTURE_MAX_CHANGES 48
+
+// Each other player's map window as last drawn for them. Their next one is
+// that, moved as far as their camera moved, with what came into view and
+// what changed on the map since redrawn (as single player scrolls and
+// redraws what changes), and a full redraw after a change of map or floor,
+// a roof opening or closing over them, or too many changes.
+// COOP_HOST_VIEW_CHANGES=0 turns it off; COOP_HOST_VIEW_CHECK=1 redraws the
+// whole map after each such picture and compares (for tests).
+typedef struct CoopPicture {
+    std::vector<unsigned char> pixels;
+    bool valid;
+    unsigned char* buffer;
+    int width;
+    int height;
+    int map;
+    int elevation;
+    // The reference tile's screen position then.
+    int referenceX;
+    int referenceY;
+    // Their character's tile and roof square (-1: none) then.
+    int tile;
+    int roof;
+    // The egg (see-through walls around them) and their 3D cursor then.
+    Rect egg;
+    Rect cursor[2];
+    int cursorCount;
+    // What changed on the map since.
+    std::vector<CoopChange> changes;
+    bool changedAll;
+} CoopPicture;
+
+static CoopPicture coop_host_pictures[COOP_MAX_PLAYERS];
+static int coop_host_view_changes_mode = -1;
+static bool coop_host_view_check_on = false;
+static std::vector<unsigned char> coop_host_view_check;
+// For the debug log: the others' pictures drawn whole or from the last one,
+// and (checking) how many of the latter differed from a full redraw.
+static unsigned int coop_host_pictures_whole = 0;
+static unsigned int coop_host_pictures_changed = 0;
+static unsigned int coop_host_picture_mismatches = 0;
+static unsigned int coop_host_picture_mismatches_logged = 0;
+static unsigned int coop_host_pictures_whole_total = 0;
+static unsigned int coop_host_pictures_changed_total = 0;
+static unsigned int coop_host_picture_mismatches_total = 0;
+static int coop_host_picture_mismatch_most = 0;
+
+static void coop_host_note_refresh(Rect* rect, int elevation, bool whole)
+{
+    if (coop_host_own_draw || gameMouseRefreshingCursor()) {
+        return;
+    }
+
+    // Player 1's view needs a full redraw after the parts.
+    if (coop_host_in_parts) {
+        if (coop_host_restore_check_on && !coop_host_restore_changed && coop_host_changes_logged < 20) {
+            coop_host_changes_logged++;
+            debug_printf("\nCOOP HOST: player %d's part redrew %d,%d-%d,%d%s\n", coop_host_turn_slot + 1,
+                rect->left, rect->top, rect->right, rect->bottom, whole ? " (all of the map)" : "");
+        }
+        coop_host_restore_changed = true;
+    }
+
+    // The others' pictures.
+    bool referenced = false;
+    int referenceX = 0;
+    int referenceY = 0;
+    for (int slot = 1; slot < COOP_MAX_PLAYERS; slot++) {
+        CoopPicture* picture = &(coop_host_pictures[slot]);
+        if (!picture->valid || picture->changedAll) {
+            continue;
+        }
+
+        if (whole || picture->changes.size() >= COOP_HOST_PICTURE_MAX_CHANGES) {
+            picture->changedAll = true;
+            continue;
+        }
+
+        if (!referenced) {
+            tile_coord(COOP_HOST_REFERENCE_TILE, &referenceX, &referenceY, elevation);
+            referenced = true;
+        }
+
+        // A pixel more each way: another player's outline (only the other
+        // players see it) goes a pixel beyond the redraw for them.
+        CoopChange change;
+        change.rect.left = rect->left - 1;
+        change.rect.top = rect->top - 1;
+        change.rect.right = rect->right + 1;
+        change.rect.bottom = rect->bottom + 1;
+        change.referenceX = referenceX;
+        change.referenceY = referenceY;
+        picture->changes.push_back(change);
+    }
+}
+
+static bool coop_host_view_changes_on()
+{
+    if (coop_host_view_changes_mode == -1) {
+        const char* setting = getenv("COOP_HOST_VIEW_CHANGES");
+        coop_host_view_changes_mode = setting != nullptr ? atoi(setting) : 1;
+        coop_host_view_check_on = getenv("COOP_HOST_VIEW_CHECK") != nullptr;
+    }
+    return coop_host_view_changes_mode != 0;
+}
+
+// The roof square over `obj` (-1: none), as obj_update_roof() sees it.
+static int coop_host_roof_square(Object* obj)
+{
+    if (obj->tile < 0 || obj->elevation < 0 || obj->elevation >= ELEVATION_COUNT || _square[obj->elevation] == nullptr) {
+        return -1;
+    }
+
+    int roofX = obj->tile % 200 / 2;
+    int roofY = obj->tile / 200 / 2;
+    int roof = _square[obj->elevation]->field_0[roofX + 100 * roofY];
+    if (buildFid(OBJ_TYPE_TILE, (roof >> 16) & 0xFFF, 0, 0, 0) == buildFid(OBJ_TYPE_TILE, 1, 0, 0, 0)) {
+        return -1;
+    }
+    return roofX + 100 * roofY;
+}
+
+// Adds `rect` (clipped to the map window) to `rects`; false when there are
+// too many.
+static bool coop_host_add_rect(std::vector<Rect>& rects, Rect rect, int width, int height, int* area)
+{
+    rect.left = std::max(rect.left, 0);
+    rect.top = std::max(rect.top, 0);
+    rect.right = std::min(rect.right, width - 1);
+    rect.bottom = std::min(rect.bottom, height - 1);
+    if (rect.left > rect.right || rect.top > rect.bottom) {
+        return true;
+    }
+
+    rects.push_back(rect);
+    *area += (rect.right - rect.left + 1) * (rect.bottom - rect.top + 1);
+    return rects.size() <= COOP_HOST_PICTURE_MAX_CHANGES + 8;
+}
+
+// Player `slot` + 1's map window drawn from their last picture (their view
+// current): false (nothing drawn) when it needs a full redraw.
+static bool coop_host_draw_picture(int slot, Object* player)
+{
+    CoopPicture* picture = &(coop_host_pictures[slot]);
+    unsigned char* buffer = windowGetBuffer(gIsoWindow);
+    if (!coop_host_view_changes_on() || !picture->valid || picture->changedAll || buffer == nullptr) {
+        return false;
+    }
+
+    int width = windowGetWidth(gIsoWindow);
+    int height = windowGetHeight(gIsoWindow);
+    if (buffer != picture->buffer || width != picture->width || height != picture->height
+        || mapGetCurrentMap() != picture->map || map_elevation != picture->elevation
+        || coop_host_roof_square(player) != picture->roof) {
+        return false;
+    }
+
+    // How far the picture moves with the camera.
+    int referenceX;
+    int referenceY;
+    tile_coord(COOP_HOST_REFERENCE_TILE, &referenceX, &referenceY, map_elevation);
+    int dx = referenceX - picture->referenceX;
+    int dy = referenceY - picture->referenceY;
+    if (abs(dx) >= width / 2 || abs(dy) >= height / 2) {
+        return false;
+    }
+
+    // What to redraw: what comes into view, what changed, their cursor and
+    // egg where they were (moved with the picture) and where they are.
+    std::vector<Rect> rects;
+    int area = 0;
+    bool fits = true;
+    if (dx > 0) {
+        fits = fits && coop_host_add_rect(rects, { 0, 0, dx - 1, height - 1 }, width, height, &area);
+    } else if (dx < 0) {
+        fits = fits && coop_host_add_rect(rects, { width + dx, 0, width - 1, height - 1 }, width, height, &area);
+    }
+    if (dy > 0) {
+        fits = fits && coop_host_add_rect(rects, { 0, 0, width - 1, dy - 1 }, width, height, &area);
+    } else if (dy < 0) {
+        fits = fits && coop_host_add_rect(rects, { 0, height + dy, width - 1, height - 1 }, width, height, &area);
+    }
+    for (const CoopChange& change : picture->changes) {
+        Rect rect = change.rect;
+        int moveX = referenceX - change.referenceX;
+        int moveY = referenceY - change.referenceY;
+        rect.left += moveX;
+        rect.right += moveX;
+        rect.top += moveY;
+        rect.bottom += moveY;
+        fits = fits && coop_host_add_rect(rects, rect, width, height, &area);
+    }
+    for (int index = 0; index < picture->cursorCount; index++) {
+        Rect rect = picture->cursor[index];
+        rect.left += dx;
+        rect.right += dx;
+        rect.top += dy;
+        rect.bottom += dy;
+        fits = fits && coop_host_add_rect(rects, rect, width, height, &area);
+    }
+    if (gameMouseObjectsIsVisible()) {
+        Rect rect;
+        objectGetRect(gGameMouseBouncingCursor, &rect);
+        fits = fits && coop_host_add_rect(rects, rect, width, height, &area);
+        objectGetRect(gGameMouseHexCursor, &rect);
+        fits = fits && coop_host_add_rect(rects, rect, width, height, &area);
+    }
+    if (player->tile != picture->tile) {
+        Rect rect = picture->egg;
+        rect.left += dx;
+        rect.right += dx;
+        rect.top += dy;
+        rect.bottom += dy;
+        fits = fits && coop_host_add_rect(rects, rect, width, height, &area);
+        objectGetRect(gEgg, &rect);
+        fits = fits && coop_host_add_rect(rects, rect, width, height, &area);
+    }
+    // Most of the window: a full redraw is as quick.
+    if (!fits || area > width * height * 3 / 4) {
+        return false;
+    }
+
+    // The last picture, moved.
+    int copyWidth = width - abs(dx);
+    int copyHeight = height - abs(dy);
+    for (int row = 0; row < copyHeight; row++) {
+        int toY = dy > 0 ? row + dy : row;
+        int fromY = dy > 0 ? row : row - dy;
+        int toX = dx > 0 ? dx : 0;
+        int fromX = dx > 0 ? 0 : -dx;
+        memcpy(buffer + (size_t)toY * width + toX, picture->pixels.data() + (size_t)fromY * width + fromX, copyWidth);
+    }
+
+    for (Rect& rect : rects) {
+        tile_refresh_rect(&rect, map_elevation);
+    }
+    win_draw(gIsoWindow);
+    return true;
+}
+
+// Testing: redraws the whole map window and compares it with what it held
+// (`what`, for the log); how many pixels differed.
+static int coop_host_compare_full_redraw(const char* what, unsigned int* logged)
+{
+    unsigned char* buffer = windowGetBuffer(gIsoWindow);
+    if (buffer == nullptr) {
+        return 0;
+    }
+
+    int width = windowGetWidth(gIsoWindow);
+    size_t size = (size_t)width * windowGetHeight(gIsoWindow);
+    coop_host_view_check.assign(buffer, buffer + size);
+    bool ownDraw = coop_host_own_draw;
+    coop_host_own_draw = true;
+    tile_refresh_display();
+    coop_host_own_draw = ownDraw;
+    if (memcmp(coop_host_view_check.data(), buffer, size) == 0) {
+        return 0;
+    }
+
+    int left = width;
+    int top = -1;
+    int right = -1;
+    int bottom = -1;
+    int pixels = 0;
+    for (size_t index = 0; index < size; index++) {
+        if (coop_host_view_check[index] != buffer[index]) {
+            int x = (int)(index % width);
+            int y = (int)(index / width);
+            left = std::min(left, x);
+            right = std::max(right, x);
+            if (top == -1) {
+                top = y;
+            }
+            bottom = y;
+            pixels++;
+        }
+    }
+    // The first few, and the first few big ones (a missed change rather
+    // than the engine drawing a part a pixel differently than a whole).
+    static unsigned int bigLogged = 0;
+    if (pixels > 50 ? bigLogged++ < 20 : (*logged)++ < 20) {
+        debug_printf("\nCOOP HOST: %s differs from a full redraw in %d pixels in %d,%d-%d,%d\n", what, pixels, left, top, right, bottom);
+    }
+
+    // The first few big ones as pictures: coop-redraw-N-a.bmp as it was,
+    // -b.bmp redrawn.
+    static int dumps = 0;
+    if (pixels > 1000 && dumps < 4 && gSdlSurface != nullptr && gSdlSurface->format->palette != nullptr) {
+        dumps++;
+        int height = (int)(size / width);
+        for (int which = 0; which < 2; which++) {
+            unsigned char* pixelsToSave = which == 0 ? coop_host_view_check.data() : buffer;
+            SDL_Surface* surface = SDL_CreateRGBSurfaceWithFormatFrom(pixelsToSave, width, height, 8, width, SDL_PIXELFORMAT_INDEX8);
+            if (surface != nullptr) {
+                SDL_SetSurfacePalette(surface, gSdlSurface->format->palette);
+                char name[64];
+                snprintf(name, sizeof(name), "coop-redraw-%d-%c.bmp", dumps, which == 0 ? 'a' : 'b');
+                SDL_SaveBMP(surface, name);
+                SDL_FreeSurface(surface);
+                debug_printf("COOP HOST:   saved as %s\n", name);
+            }
+        }
+    }
+    return pixels;
+}
+
+// Testing: player `slot` + 1's picture from their last one against a full
+// redraw.
+static void coop_host_check_picture(int slot)
+{
+    char what[64];
+    snprintf(what, sizeof(what), "player %d's picture from the last one", slot + 1);
+    int pixels = coop_host_compare_full_redraw(what, &coop_host_picture_mismatches_logged);
+    if (pixels != 0) {
+        coop_host_picture_mismatches++;
+        coop_host_picture_mismatches_total++;
+        coop_host_picture_mismatch_most = std::max(coop_host_picture_mismatch_most, pixels);
+    }
+}
+
+// Player `slot` + 1's map window as it is now (their view current), for
+// their next picture.
+static void coop_host_keep_picture(int slot, Object* player)
+{
+    CoopPicture* picture = &(coop_host_pictures[slot]);
+    unsigned char* buffer = windowGetBuffer(gIsoWindow);
+    if (!coop_host_view_changes_on() || buffer == nullptr) {
+        picture->valid = false;
+        return;
+    }
+
+    picture->width = windowGetWidth(gIsoWindow);
+    picture->height = windowGetHeight(gIsoWindow);
+    picture->buffer = buffer;
+    picture->pixels.assign(buffer, buffer + (size_t)picture->width * picture->height);
+    picture->map = mapGetCurrentMap();
+    picture->elevation = map_elevation;
+    tile_coord(COOP_HOST_REFERENCE_TILE, &(picture->referenceX), &(picture->referenceY), map_elevation);
+    picture->tile = player->tile;
+    picture->roof = coop_host_roof_square(player);
+    objectGetRect(gEgg, &(picture->egg));
+    picture->cursorCount = 0;
+    if (gameMouseObjectsIsVisible()) {
+        objectGetRect(gGameMouseBouncingCursor, &(picture->cursor[0]));
+        objectGetRect(gGameMouseHexCursor, &(picture->cursor[1]));
+        picture->cursorCount = 2;
+    }
+    picture->changes.clear();
+    picture->changedAll = false;
+    picture->valid = true;
+}
+
 // Testing: the camera's tile in each player's last part of a frame, and
 // how many parts they had.
 static int coop_host_view_centers[COOP_MAX_PLAYERS];
 static unsigned int coop_host_view_part_count[COOP_MAX_PLAYERS];
+// ... and how many of those parts ended with their cursor showing what's
+// under it.
+static unsigned int coop_host_view_hover_count[COOP_MAX_PLAYERS];
 
 void coop_host_init()
 {
@@ -95,10 +515,15 @@ void coop_host_init()
     if (!coop_net_host_start()) {
         return;
     }
+    coop_net_cpu_mark();
 
     input_poll_hook = coop_host_poll;
     svga_present_hook = coop_host_present;
     gsound_event_hook = coop_net_send_sound;
+    gTileWindowRefreshObserver = coop_host_note_refresh;
+    for (int slot = 0; slot < COOP_MAX_PLAYERS; slot++) {
+        coop_host_pictures[slot].valid = false;
+    }
     coop_host_on = true;
 
     // Found by LAN searches; the menu may restart this with a public listing.
@@ -111,6 +536,28 @@ void coop_host_exit()
         return;
     }
 
+    coop_net_cpu_report("host");
+    if (coop_host_restores_total + coop_host_redraws_total > 0) {
+        debug_printf("\nCOOP HOST: player 1's view restored %u times, redrawn %u times", coop_host_restores_total, coop_host_redraws_total);
+        if (coop_host_restore_check_on) {
+            debug_printf("; %u restores differed from a full redraw (%d pixels at most)", coop_host_restore_mismatches_total, coop_host_restore_mismatch_most);
+        }
+        debug_printf("\n");
+    }
+    if (coop_host_pictures_whole_total + coop_host_pictures_changed_total > 0) {
+        debug_printf("\nCOOP HOST: the other players' pictures drawn whole %u times, from the last one %u times", coop_host_pictures_whole_total, coop_host_pictures_changed_total);
+        if (coop_host_view_check_on) {
+            debug_printf("; %u of these differed from a full redraw (%d pixels at most)", coop_host_picture_mismatches_total, coop_host_picture_mismatch_most);
+        }
+        debug_printf("\n");
+    }
+    gTileWindowRefreshObserver = nullptr;
+    for (int slot = 0; slot < COOP_MAX_PLAYERS; slot++) {
+        coop_host_pictures[slot].valid = false;
+        coop_host_pictures[slot].pixels.clear();
+        coop_host_pictures[slot].pixels.shrink_to_fit();
+        coop_host_pictures[slot].changes.clear();
+    }
     coop_lobby_host_stop();
     input_poll_hook = NULL;
     svga_present_hook = NULL;
@@ -118,6 +565,11 @@ void coop_host_exit()
     inject_set_exclusive(false);
     coop_net_exit();
     coop_host_on = false;
+}
+
+bool coop_host_in_other_part()
+{
+    return coop_host_on && coop_host_turn_slot != 0;
 }
 
 bool coop_host_active()
@@ -202,7 +654,7 @@ static void coop_host_poll()
         }
     } else if (focus != 0) {
         inject_set_exclusive(true);
-        coop_host_feed_input();
+        coop_host_feed_input(focus);
     } else {
         inject_set_exclusive(false);
     }
@@ -231,19 +683,31 @@ static void coop_host_poll()
 }
 
 // Moves the client's input into the injection queue.
-static void coop_host_feed_input()
+// Each player's mouse buttons as last fed.
+static int coop_host_fed_buttons[COOP_MAX_PLAYERS];
+
+// Feeds player `slot` + 1's input; whether any of it can do something (a
+// key, a mouse button pressed or let go) rather than only move the mouse.
+static bool coop_host_feed_input(int slot)
 {
+    bool acts = false;
     CoopNetInput input;
     while (coop_net_next_input(&input)) {
         if (input.kind == COOP_NET_INPUT_MOUSE) {
+            if (input.value != coop_host_fed_buttons[slot]) {
+                acts = true;
+                coop_host_fed_buttons[slot] = input.value;
+            }
             inject_mouse(input.x, input.y, input.value);
         } else if (input.kind == COOP_NET_INPUT_KEY) {
+            acts = true;
             // Quitting is player 1's (the client uses these keys to leave).
             if (input.value != KEY_F10 && input.value != KEY_CTRL_Q && input.value != KEY_CTRL_X) {
                 inject_key(input.value);
             }
         }
     }
+    return acts;
 }
 
 // What each player is typing while chatting.
@@ -501,6 +965,30 @@ static void coop_host_draw_banner(const char* text)
     SDL_FreeSurface(banner);
 }
 
+// The camera of each player's last picture of their own view (-1: none
+// yet, or a shared picture since).
+static int coop_host_sent_center[COOP_MAX_PLAYERS] = { -1, -1, -1, -1 };
+static int coop_host_sent_elevation[COOP_MAX_PLAYERS];
+
+// Player `slot` + 1's view is about to be sent: how far the map moved
+// since their last picture (coop_net_set_frame_shift), from the camera's
+// two centers on the screen.
+static void coop_host_set_frame_shift(int slot)
+{
+    int last = coop_host_sent_center[slot];
+    if (last != -1 && last != tile_center_tile && coop_host_sent_elevation[slot] == map_elevation) {
+        int lastX;
+        int lastY;
+        int x;
+        int y;
+        if (tile_coord(last, &lastX, &lastY, map_elevation) == 0 && tile_coord(tile_center_tile, &x, &y, map_elevation) == 0) {
+            coop_net_set_frame_shift(lastX - x, lastY - y, 0, 0, screenGetWidth(), screenGetVisibleHeight());
+        }
+    }
+    coop_host_sent_center[slot] = tile_center_tile;
+    coop_host_sent_elevation[slot] = map_elevation;
+}
+
 // Shares the screen while a menu or combat runs; player 1's free roam
 // frames are not shared (player 2 gets their own view).
 static void coop_host_present()
@@ -534,6 +1022,8 @@ static void coop_host_present()
         for (int slot = 1; slot < COOP_MAX_PLAYERS; slot++) {
             coop_net_select(slot);
             coop_net_send_current_screen();
+            // Not a view of theirs: the next one moves nothing.
+            coop_host_sent_center[slot] = -1;
         }
         coop_net_select(selected);
         lastShared = get_time();
@@ -565,6 +1055,8 @@ static void coop_host_view_save(CoopView* view, Object* currentObj)
     mouse_get_context(&(view->mouse));
     view->cursor = gmouse_get_cursor();
     view->mode = gmouse_3d_get_mode();
+    view->cursorOn = gameMouseObjectsIsVisible();
+    gameMouseSaveHover(&(view->hover));
 }
 
 // Makes `view` (of `incoming`) the current one.
@@ -580,6 +1072,7 @@ static void coop_host_view_load(CoopView* view, Object* incoming, const CoopView
         view->mouse.lastButtons = 0;
         view->cursor = MOUSE_CURSOR_NONE;
         view->mode = GAME_MOUSE_MODE_MOVE;
+        view->cursorOn = true;
     }
 
     // The camera follows its player when they move, like player 1's does.
@@ -606,6 +1099,20 @@ static void coop_host_view_load(CoopView* view, Object* incoming, const CoopView
     // top left with the hex cursor). Put the position back as it was saved.
     mouse_set_context(&(view->mouse));
 
+    // The 3D cursor shows while this player's mouse is on the map: with
+    // theirs over the interface bar it showed where the other player
+    // pointed.
+    if (view->cursorOn != gameMouseObjectsIsVisible()) {
+        if (view->cursorOn) {
+            gameMouseObjectsShow();
+        } else {
+            gameMouseObjectsHide();
+        }
+    }
+
+    // What this player's cursor showed, and how long their mouse rested.
+    gameMouseLoadHover(&(view->hover));
+
     // Roofs open over the incoming player when they are inside.
     obj_follow_viewer(incoming);
 }
@@ -626,15 +1133,22 @@ static void coop_host_player_turn(int slot)
         coop_set_viewer(player2);
 
         inject_set_exclusive(true);
-        coop_host_feed_input();
+        unsigned int inputStart = get_time();
+        bool acts = coop_host_feed_input(slot);
 
         // The map still shows the previous view; a screen the input opens
         // over part of it (the skilldex) must have this player's map and
-        // HUD behind it.
-        if (inject_pending()) {
+        // HUD behind it. (Not for a mouse that only moved: it opens nothing,
+        // and this full redraw came on top of the one for their picture
+        // nearly every frame.)
+        if (acts && inject_pending()) {
+            coop_host_own_draw = true;
+            svga_screen_only = true;
             intface_update_items(false);
             intface_redraw();
             tile_refresh_display();
+            svga_screen_only = false;
+            coop_host_own_draw = false;
         }
 
         while (inject_pending() && coop_player_count() > 1) {
@@ -646,6 +1160,7 @@ static void coop_host_player_turn(int slot)
 
         // Hover: 3D cursor for player 2's mouse.
         gmouse_bk_process();
+        coop_host_input_ms += elapsed_time(inputStart);
 
         coop_host_update_status();
 
@@ -655,12 +1170,30 @@ static void coop_host_player_turn(int slot)
         // the frame anyway).
         if (coop_net_can_send_frame()) {
             unsigned int drawStart = get_time();
-            tile_refresh_display();
+            // Not shown on this screen: player 1's view comes back after
+            // the parts.
+            svga_screen_only = true;
+            coop_host_own_draw = true;
+            if (coop_host_draw_picture(slot, player2->obj)) {
+                coop_host_pictures_changed++;
+                coop_host_pictures_changed_total++;
+                if (coop_host_view_check_on) {
+                    coop_host_check_picture(slot);
+                }
+            } else {
+                tile_refresh_display();
+                coop_host_pictures_whole++;
+                coop_host_pictures_whole_total++;
+            }
+            coop_host_keep_picture(slot, player2->obj);
+            coop_host_own_draw = false;
             intface_update_items(false);
             intface_redraw();
+            svga_screen_only = false;
             coop_host_draw_ms += elapsed_time(drawStart);
             coop_host_marker_draw();
             unsigned int sendStart = get_time();
+            coop_host_set_frame_shift(slot);
             coop_net_send_current_screen();
             coop_host_send_ms += elapsed_time(sendStart);
             coop_host_marker_restore();
@@ -730,6 +1263,11 @@ static void coop_host_send_character_copy(int slot, bool requested)
 int coop_host_view_center(int slot)
 {
     return slot >= 0 && slot < COOP_MAX_PLAYERS ? coop_host_view_centers[slot] : -1;
+}
+
+unsigned int coop_host_view_hover_parts(int slot)
+{
+    return slot >= 0 && slot < COOP_MAX_PLAYERS ? coop_host_view_hover_count[slot] : 0;
 }
 
 unsigned int coop_host_view_parts(int slot)
@@ -816,6 +1354,19 @@ void coop_host_frame()
     if (turnCount > 0) {
         Object* player1 = coop_player(0)->obj;
         CoopView player1View;
+
+        // Player 1's map window as it is, and whether the parts change it.
+        unsigned char* mapBuffer = windowGetBuffer(gIsoWindow);
+        size_t mapSize = mapBuffer != nullptr ? (size_t)windowGetWidth(gIsoWindow) * windowGetHeight(gIsoWindow) : 0;
+        int mapIndex = mapGetCurrentMap();
+        int mapElevation = map_elevation;
+        bool restore = coop_host_restore_setting() != 0 && mapBuffer != nullptr;
+        if (restore) {
+            coop_host_restore_saved.assign(mapBuffer, mapBuffer + mapSize);
+        }
+        coop_host_restore_changed = false;
+        coop_host_in_parts = true;
+
         mouse_hide();
         coop_host_view_save(&player1View, player1);
         const CoopView* previous = &player1View;
@@ -825,22 +1376,61 @@ void coop_host_frame()
                 continue;
             }
             Object* player = coop_player(slot)->obj;
+            unsigned int switchStart = get_time();
             coop_host_view_load(&(coop_host_views[slot]), player, previous);
+            coop_host_switch_ms += elapsed_time(switchStart);
             mouse_show();
             coop_net_select(slot);
             coop_host_player_turn(slot);
             coop_host_send_character_copy(slot, copyRequested);
             mouse_hide();
             coop_host_view_save(&(coop_host_views[slot]), player);
+            if (coop_host_views[slot].hover.hoverTest) {
+                coop_host_view_hover_count[slot]++;
+            }
             previous = &(coop_host_views[slot]);
         }
+        unsigned int restoreStart = get_time();
         coop_host_view_load(&player1View, player1, previous);
+        coop_host_in_parts = false;
         mouse_show();
 
-        gmouse_bk_process();
-        intface_update_items(false);
-        tile_refresh_display();
-        intface_redraw();
+        restore = restore
+            && !coop_host_restore_changed
+            && windowGetBuffer(gIsoWindow) == mapBuffer
+            && (size_t)windowGetWidth(gIsoWindow) * windowGetHeight(gIsoWindow) == mapSize
+            && mapGetCurrentMap() == mapIndex
+            && map_elevation == mapElevation;
+        if (restore) {
+            // As it was; the cursor back where player 1's mouse is.
+            memcpy(mapBuffer, coop_host_restore_saved.data(), mapSize);
+            win_draw(gIsoWindow);
+            gmouse_bk_process();
+            intface_update_items(false);
+            intface_redraw();
+            coop_host_restores++;
+            coop_host_restores_total++;
+        } else {
+            gmouse_bk_process();
+            intface_update_items(false);
+            coop_host_own_draw = true;
+            tile_refresh_display();
+            coop_host_own_draw = false;
+            intface_redraw();
+            coop_host_redraws++;
+            coop_host_redraws_total++;
+        }
+        coop_host_restore_ms += elapsed_time(restoreStart);
+
+        if (restore && coop_host_restore_check_on) {
+            // The same as a full redraw?
+            int pixels = coop_host_compare_full_redraw("restored view", &coop_host_restore_mismatches_logged);
+            if (pixels != 0) {
+                coop_host_restore_mismatches++;
+                coop_host_restore_mismatches_total++;
+                coop_host_restore_mismatch_most = std::max(coop_host_restore_mismatch_most, pixels);
+            }
+        }
     }
     coop_net_select(selected);
 
@@ -852,14 +1442,31 @@ void coop_host_frame()
     statsFrames++;
     if (elapsed_time(statsSince) >= 10000) {
         if (coop_net_clients_connected() > 0) {
-            debug_printf("\nCOOP HOST: %u frames in %u ms, %u ms of them for the other players' parts (drawing %u, sending %u; %u views not needed)\n",
-                statsFrames, elapsed_time(statsSince), statsBusy, coop_host_draw_ms, coop_host_send_ms, coop_host_views_skipped);
+            debug_printf("\nCOOP HOST: %u frames in %u ms, %u ms of them for the other players' parts (drawing %u, sending %u, input %u, switching %u, player 1's view again %u: restored %u times, redrawn %u times; %u views not needed)\n",
+                statsFrames, elapsed_time(statsSince), statsBusy, coop_host_draw_ms, coop_host_send_ms, coop_host_input_ms, coop_host_switch_ms, coop_host_restore_ms,
+                coop_host_restores, coop_host_redraws, coop_host_views_skipped);
+            debug_printf("COOP HOST: the other players' pictures drawn whole %u times, from the last one %u times\n", coop_host_pictures_whole, coop_host_pictures_changed);
+            if (coop_host_restore_check_on) {
+                debug_printf("COOP HOST: %u restored views differed from a full redraw\n", coop_host_restore_mismatches);
+            }
+            if (coop_host_view_check_on) {
+                debug_printf("COOP HOST: %u pictures from the last one differed from a full redraw\n", coop_host_picture_mismatches);
+            }
         }
         statsSince = get_time();
         statsFrames = 0;
         statsBusy = 0;
         coop_host_draw_ms = 0;
         coop_host_send_ms = 0;
+        coop_host_input_ms = 0;
+        coop_host_switch_ms = 0;
+        coop_host_restore_ms = 0;
+        coop_host_restores = 0;
+        coop_host_redraws = 0;
+        coop_host_restore_mismatches = 0;
+        coop_host_pictures_whole = 0;
+        coop_host_pictures_changed = 0;
+        coop_host_picture_mismatches = 0;
         coop_host_views_skipped = 0;
     }
 

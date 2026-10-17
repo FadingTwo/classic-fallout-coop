@@ -25,6 +25,17 @@ void tile_disable_refresh();
 void tile_enable_refresh();
 void tile_refresh_rect(Rect* rect, int elevation);
 void tile_refresh_display();
+
+// CE: co-op: told of each part of the map window redrawn (in screen
+// coordinates of the camera at the time), `whole` when all of it.
+typedef void(TileRefreshObserver)(Rect* rect, int elevation, bool whole);
+extern TileRefreshObserver* tile_refresh_observer;
+
+// CE: testing: when set, each map redraw adds the time (performance
+// counter ticks) of its steps: clearing, floor, objects under the roofs,
+// roofs, objects over them, and copying to the screen.
+#define TILE_REFRESH_STEPS 6
+extern unsigned long long* tile_refresh_step_ticks;
 int tile_set_center(int tile, int flags);
 void tile_toggle_roof(int a1);
 int tile_roof_visible();

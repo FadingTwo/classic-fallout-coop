@@ -93,6 +93,16 @@ void coop_net_local_addresses(char* buffer, size_t size);
 void coop_net_init();
 void coop_net_exit();
 
+// How much of one CPU core the game used in a co-op session: mark at its
+// start, report (to the debug log) at its end, as `who` ("host", "player").
+// The next picture sent to the selected player: the map part (x, y,
+// width, height) moved by (dx, dy) pixels since their last one (their
+// camera moved). Their game moves its copy the same way, so walking sends
+// only what's new instead of the whole map.
+void coop_net_set_frame_shift(int dx, int dy, int x, int y, int width, int height);
+void coop_net_cpu_mark();
+void coop_net_cpu_report(const char* who);
+
 // Checksum over the game data both machines must share (MASTER.DAT,
 // CRITTER.DAT, the patches directory without saves, and the language).
 uint64_t coop_net_data_checksum();

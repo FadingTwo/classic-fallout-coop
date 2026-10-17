@@ -12,6 +12,7 @@
 #include "cache.h"
 #include "color.h"
 #include "combat.h"
+#include "coop_host.h"
 #include "critter.h"
 #include "draw.h"
 #include "game.h"
@@ -319,6 +320,7 @@ static int gameMouseActionMenuInit();
 static void gameMouseActionMenuFree();
 static int gmouse_3d_set_flat_fid(int fid, Rect* rect);
 static int gameMouseUpdateHexCursorFid(Rect* rect);
+static void gameMouseRefreshCursorRect(Rect* rect, int elevation);
 static int _gmouse_3d_move_to(int x, int y, int elevation, Rect* rect);
 static int gameMouseHandleScrolling(int x, int y, int cursor);
 static int objectIsDoor(Object* object);
@@ -651,7 +653,7 @@ void gameMouseRefresh()
 
     Rect r1;
     if (_gmouse_3d_move_to(mouseX, mouseY, gElevation, &r1) == 0) {
-        tileWindowRefreshRect(&r1, gElevation);
+        gameMouseRefreshCursorRect(&r1, gElevation);
     }
 
     if ((gGameMouseHexCursor->flags & OBJECT_HIDDEN) != 0 || _gmouse_mapper_mode != 0) {
@@ -721,14 +723,18 @@ void gameMouseRefresh()
                             int fid = buildFid(OBJ_TYPE_INTERFACE, 282, 0, 0, 0);
                             // NOTE: Uninline.
                             if (gmouse_3d_set_flat_fid(fid, &tmp) == 0) {
-                                tileWindowRefreshRect(&tmp, gElevation);
+                                gameMouseRefreshCursorRect(&tmp, gElevation);
                             }
                         }
                     }
 
                     if (pointedObject != gGameMousePointedObject) {
                         gGameMousePointedObject = pointedObject;
-                        _obj_look_at(gDude, gGameMousePointedObject);
+                        // CE: co-op: not for the other players (online):
+                        // the message window is everyone's.
+                        if (!coop_host_in_other_part()) {
+                            _obj_look_at(gDude, gGameMousePointedObject);
+                        }
                     }
                 }
             } else if (gGameMouseMode == GAME_MOUSE_MODE_CROSSHAIR) {
@@ -783,7 +789,7 @@ void gameMouseRefresh()
                         int fid = buildFid(OBJ_TYPE_INTERFACE, 284, 0, 0, 0);
                         // NOTE: Uninline.
                         if (gmouse_3d_set_flat_fid(fid, &tmp) == 0) {
-                            tileWindowRefreshRect(&tmp, gElevation);
+                            gameMouseRefreshCursorRect(&tmp, gElevation);
                         }
                     }
 
@@ -793,7 +799,7 @@ void gameMouseRefresh()
                 } else {
                     Rect tmp;
                     if (gameMouseUpdateHexCursorFid(&tmp) == 0) {
-                        tileWindowRefreshRect(&tmp, gElevation);
+                        gameMouseRefreshCursorRect(&tmp, gElevation);
                     }
                 }
 
@@ -830,7 +836,7 @@ void gameMouseRefresh()
         if (gameMouseRenderActionPoints(formattedActionPoints, color) == 0) {
             Rect tmp;
             objectGetRect(gGameMouseHexCursor, &tmp);
-            tileWindowRefreshRect(&tmp, 0);
+            gameMouseRefreshCursorRect(&tmp, 0);
         }
 
         _gmouse_3d_last_move_time = v3;
@@ -867,9 +873,10 @@ void gameMouseRefresh()
     switch (v34) {
     case 3:
         rectUnion(&r2, &r26, &r2);
-        // FALLTHROUGH
-    case 1:
         tileWindowRefreshRect(&r2, gElevation);
+        break;
+    case 1:
+        gameMouseRefreshCursorRect(&r2, gElevation);
         break;
     case 2:
         tileWindowRefreshRect(&r26, gElevation);
@@ -1401,7 +1408,7 @@ void gameMouseSetMode(int mode)
     _gmouse_3d_hover_test = false;
     _gmouse_3d_last_move_time = getTicks();
 
-    tileWindowRefreshRect(&rect, gElevation);
+    gameMouseRefreshCursorRect(&rect, gElevation);
 
     switch (v5) {
     case 1:
@@ -1563,7 +1570,7 @@ void gameMouseObjectsShow()
             assert(false && "Should be unreachable");
         }
 
-        tileWindowRefreshRect(rect, gElevation);
+        gameMouseRefreshCursorRect(rect, gElevation);
     }
 
     _gmouse_3d_hover_test = false;
@@ -1590,12 +1597,12 @@ void gameMouseObjectsHide()
     }
 
     if (v1 == 1) {
-        tileWindowRefreshRect(&rect1, gElevation);
+        gameMouseRefreshCursorRect(&rect1, gElevation);
     } else if (v1 == 2) {
-        tileWindowRefreshRect(&rect2, gElevation);
+        gameMouseRefreshCursorRect(&rect2, gElevation);
     } else if (v1 == 3) {
         rectUnion(&rect1, &rect2, &rect1);
-        tileWindowRefreshRect(&rect1, gElevation);
+        gameMouseRefreshCursorRect(&rect1, gElevation);
     }
 }
 
@@ -2167,6 +2174,80 @@ void gameMouseActionMenuFree()
     gGameMouseActionPickFrmWidth = 0;
     gGameMouseActionPickFrmHeight = 0;
     gGameMouseActionPickFrmDataSize = 0;
+}
+
+// CE: co-op: set while the map is redrawn for the 3D cursor alone.
+static bool gGameMouseRefreshingCursor = false;
+
+// CE: a redraw for the 3D cursor alone (it moved or changed its look), so
+// the co-op host knows nothing else on the map changed.
+static void gameMouseRefreshCursorRect(Rect* rect, int elevation)
+{
+    gGameMouseRefreshingCursor = true;
+    tileWindowRefreshRect(rect, elevation);
+    gGameMouseRefreshingCursor = false;
+}
+
+bool gameMouseRefreshingCursor()
+{
+    return gGameMouseRefreshingCursor;
+}
+
+void gameMouseSaveHover(GameMouseHoverState* state)
+{
+    if (!gGameMouseInitialized || !gGameMouseObjectsInitialized) {
+        return;
+    }
+
+    state->saved = true;
+    state->hoverTest = _gmouse_3d_hover_test;
+    state->lastMoveTime = _gmouse_3d_last_move_time;
+    state->lastMouseX = gGameMouseLastX;
+    state->lastMouseY = gGameMouseLastY;
+    state->pointedObject = gGameMousePointedObject;
+    state->bouncingFid = gGameMouseBouncingCursor->fid;
+    state->hexFid = gGameMouseHexCursor->fid;
+    state->pickFrame.assign(gGameMouseActionPickFrmData, gGameMouseActionPickFrmData + gGameMouseActionPickFrmDataSize);
+    state->pickOffsetX = gGameMouseActionPickFrm->xOffsets[0];
+    state->pickOffsetY = gGameMouseActionPickFrm->yOffsets[0];
+    state->pickHotX = _gmouse_3d_pick_frame_hot_x;
+    state->pickHotY = _gmouse_3d_pick_frame_hot_y;
+    state->hitFrame.assign(gGameMouseActionHitFrmData, gGameMouseActionHitFrmData + gGameMouseActionHitFrmDataSize);
+    state->hexFrame.assign(gGameMouseHexCursorFrmData, gGameMouseHexCursorFrmData + gGameMouseHexCursorDataSize);
+}
+
+// The cursor's objects take the saved looks without a redraw: the view
+// that comes is drawn anyway, and the cursor moves to its mouse with one.
+void gameMouseLoadHover(const GameMouseHoverState* state)
+{
+    if (!gGameMouseInitialized || !gGameMouseObjectsInitialized || !state->saved) {
+        return;
+    }
+
+    _gmouse_3d_hover_test = state->hoverTest;
+    _gmouse_3d_last_move_time = state->lastMoveTime;
+    gGameMouseLastX = state->lastMouseX;
+    gGameMouseLastY = state->lastMouseY;
+    gGameMousePointedObject = state->pointedObject;
+    if (state->pickFrame.size() == (size_t)gGameMouseActionPickFrmDataSize) {
+        memcpy(gGameMouseActionPickFrmData, state->pickFrame.data(), gGameMouseActionPickFrmDataSize);
+        gGameMouseActionPickFrm->xOffsets[0] = state->pickOffsetX;
+        gGameMouseActionPickFrm->yOffsets[0] = state->pickOffsetY;
+        _gmouse_3d_pick_frame_hot_x = state->pickHotX;
+        _gmouse_3d_pick_frame_hot_y = state->pickHotY;
+    }
+    if (state->hitFrame.size() == (size_t)gGameMouseActionHitFrmDataSize) {
+        memcpy(gGameMouseActionHitFrmData, state->hitFrame.data(), gGameMouseActionHitFrmDataSize);
+    }
+    if (state->hexFrame.size() == (size_t)gGameMouseHexCursorDataSize) {
+        memcpy(gGameMouseHexCursorFrmData, state->hexFrame.data(), gGameMouseHexCursorDataSize);
+    }
+    if (state->bouncingFid != -1 && gGameMouseBouncingCursor->fid != state->bouncingFid) {
+        objectSetFid(gGameMouseBouncingCursor, state->bouncingFid, nullptr);
+    }
+    if (state->hexFid != -1 && gGameMouseHexCursor->fid != state->hexFid) {
+        objectSetFid(gGameMouseHexCursor, state->hexFid, nullptr);
+    }
 }
 
 // NOTE: Inlined.

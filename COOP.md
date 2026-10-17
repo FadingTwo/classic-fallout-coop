@@ -150,11 +150,13 @@ both players share it, like they share the mouse.
    - **REPORT BUG**: sends a short description and the recent log to the
      co-op server (or saves it next to the game if there is none).
 
-Both computers need the same Fallout version, language and patches; the
-host refuses a client whose game data differs. On a LAN the host's
+Everyone needs the same game (Fallout 1 or Fallout 2) and the same mod
+version; the game's release, language or patches may differ (a player
+with other game files joins as a new character). On a LAN the host's
 firewall must allow port 27015 (TCP to play, UDP to be found). Player 1
-sends player 2 the picture: about 0.1-0.3 MB/s, scaled to player 2's
-screen size and packed, and never more than player 2's line takes.
+sends each other player their picture: only what changed since the last
+one (moved with the camera when they walk), packed, about 0.05-0.15 MB/s,
+and never more than their line takes.
 
 ## Without the menu
 

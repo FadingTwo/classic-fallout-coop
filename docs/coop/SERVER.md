@@ -93,8 +93,8 @@ ssh and restarts it, but only when no relayed game is running
 
 ## Limits
 
-The relay passes every relayed game's traffic: about 0.1-0.3 MB/s each
-way per game. `RELAY_MAX_PIPES` (25 games) and the other limits at the top
+The relay passes every relayed game's traffic: about 0.05-0.15 MB/s for
+each player who joined, mostly from player 1 to them. `RELAY_MAX_PIPES` (25 games) and the other limits at the top
 of `coop_server.py` protect a home connection. Joins are limited per
 address so game codes can't be guessed.
 

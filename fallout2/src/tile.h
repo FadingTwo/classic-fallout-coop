@@ -25,6 +25,11 @@ void tileDisable();
 void tileEnable();
 void tileWindowRefreshRect(Rect* rect, int elevation);
 void tileWindowRefresh();
+
+// CE: co-op: told of each part of the map window redrawn (in screen
+// coordinates of the camera at the time), `whole` when all of it.
+typedef void(TileWindowRefreshObserver)(Rect* rect, int elevation, bool whole);
+extern TileWindowRefreshObserver* gTileWindowRefreshObserver;
 int tileSetCenter(int tile, int flags);
 void tile_toggle_roof(bool refresh);
 int tileRoofIsVisible();

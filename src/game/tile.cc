@@ -7,6 +7,8 @@
 #define _USE_MATH_DEFINES
 #include <math.h>
 
+#include <SDL.h>
+
 #include "game/config.h"
 #include "game/gconfig.h"
 #include "game/gmouse.h"
@@ -75,6 +77,10 @@ static bool show_grid = false;
 
 // 0x508344
 static TileWindowRefreshElevationProc* tile_refresh = refresh_game;
+
+TileRefreshObserver* tile_refresh_observer = NULL;
+
+unsigned long long* tile_refresh_step_ticks = NULL;
 
 // 0x508348
 static bool refresh_enabled = true;
@@ -479,6 +485,9 @@ void tile_refresh_rect(Rect* rect, int elevation)
 {
     if (refresh_enabled) {
         if (elevation == map_elevation) {
+            if (tile_refresh_observer != NULL) {
+                tile_refresh_observer(rect, elevation, false);
+            }
             tile_refresh(rect, elevation);
         }
     }
@@ -488,6 +497,9 @@ void tile_refresh_rect(Rect* rect, int elevation)
 void tile_refresh_display()
 {
     if (refresh_enabled) {
+        if (tile_refresh_observer != NULL) {
+            tile_refresh_observer(&buf_rect, map_elevation, true);
+        }
         tile_refresh(&buf_rect, map_elevation);
     }
 }
@@ -598,6 +610,40 @@ static void refresh_game(Rect* rect, int elevation)
     Rect rectToUpdate;
 
     if (rect_inside_bound(rect, &buf_rect, &rectToUpdate) == -1) {
+        return;
+    }
+
+    if (tile_refresh_step_ticks != NULL) {
+        // Testing: the time each step takes.
+        unsigned long long* ticks = tile_refresh_step_ticks;
+        Uint64 start = SDL_GetPerformanceCounter();
+        buf_fill(buf + buf_full * rectToUpdate.uly + rectToUpdate.ulx,
+            rectGetWidth(&rectToUpdate),
+            rectGetHeight(&rectToUpdate),
+            buf_full,
+            0);
+        Uint64 now = SDL_GetPerformanceCounter();
+        ticks[0] += now - start;
+        start = now;
+        square_render_floor(&rectToUpdate, elevation);
+        now = SDL_GetPerformanceCounter();
+        ticks[1] += now - start;
+        start = now;
+        obj_render_pre_roof(&rectToUpdate, elevation);
+        now = SDL_GetPerformanceCounter();
+        ticks[2] += now - start;
+        start = now;
+        square_render_roof(&rectToUpdate, elevation);
+        now = SDL_GetPerformanceCounter();
+        ticks[3] += now - start;
+        start = now;
+        bounds_render(&rectToUpdate, elevation);
+        obj_render_post_roof(&rectToUpdate, elevation);
+        now = SDL_GetPerformanceCounter();
+        ticks[4] += now - start;
+        start = now;
+        blit(&rectToUpdate);
+        ticks[5] += SDL_GetPerformanceCounter() - start;
         return;
     }
 

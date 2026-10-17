@@ -15,6 +15,10 @@ extern ScreenBlitFunc* scr_blit;
 extern SDL_Window* gSdlWindow;
 extern SDL_Surface* gSdlSurface;
 extern void (*svga_present_hook)();
+
+// CE: co-op: while set, what is drawn reaches the screen surface only, not
+// what is shown (the host draws another player's picture to send it).
+extern bool svga_screen_only;
 extern SDL_Renderer* gSdlRenderer;
 extern SDL_Texture* gSdlTexture;
 extern SDL_Surface* gSdlTextureSurface;

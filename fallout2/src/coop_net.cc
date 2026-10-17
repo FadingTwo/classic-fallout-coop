@@ -27,6 +27,7 @@
 #include <netinet/tcp.h>
 #include <sys/select.h>
 #include <ifaddrs.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #endif
@@ -242,6 +243,8 @@ typedef struct CoopPeer {
     // Flow control (see COOP_NET_FRAMES_IN_FLIGHT).
     bool acks = false;
     bool unpacks = false;
+    // Moves its last picture with the camera (flag 16, 1.15).
+    bool shifts = false;
     unsigned int framesSent = 0;
     unsigned int framesAcked = 0;
     std::deque<unsigned int> frameSentAt;
@@ -269,6 +272,11 @@ typedef struct CoopPeer {
     int sentWidth = 0;
     int sentHeight = 0;
     std::string sentStatus;
+    // Testing (COOP_FRAME_CHECK): each sent picture's hash, to compare
+    // with what the client says it shows.
+    std::deque<std::pair<unsigned int, unsigned int>> sentHashes;
+    unsigned int frameMismatches = 0;
+    unsigned int framesChecked = 0;
 } CoopPeer;
 
 static CoopPeer coop_peers[COOP_MAX_PLAYERS];
@@ -284,6 +292,7 @@ static int coop_net_max_clients = COOP_MAX_PLAYERS - 1;
 #define coop_client_character (coop_peer->character)
 #define coop_client_acks (coop_peer->acks)
 #define coop_client_unpacks (coop_peer->unpacks)
+#define coop_client_shifts (coop_peer->shifts)
 #define coop_frames_sent (coop_peer->framesSent)
 #define coop_frames_acked (coop_peer->framesAcked)
 #define coop_frame_sent_at (coop_peer->frameSentAt)
@@ -312,8 +321,31 @@ static std::vector<unsigned char> coop_bring_character;
 
 // Testing: a client that doesn't acknowledge frames, like those before 1.5.7.
 static bool coop_net_no_acks = getenv("COOP_NET_NO_ACKS") != NULL;
+// Testing: the client sends a hash of the picture it shows with each
+// acknowledgement, and the host compares it with what it sent (a picture
+// put together wrongly on the client shows in the host's log).
+static bool coop_net_frame_check = getenv("COOP_FRAME_CHECK") != NULL;
+
+// FNV-1a over 64-bit words (then the rest byte by byte), folded to 32 bits.
+static unsigned int coop_net_frame_hash(const unsigned char* data, size_t size)
+{
+    unsigned long long hash = 1469598103934665603ull;
+    size_t index = 0;
+    for (; index + 8 <= size; index += 8) {
+        unsigned long long word;
+        memcpy(&word, data + index, 8);
+        hash = (hash ^ word) * 1099511628211ull;
+    }
+    for (; index < size; index++) {
+        hash = (hash ^ data[index]) * 1099511628211ull;
+    }
+    return (unsigned int)(hash ^ (hash >> 32));
+}
 // Testing: a client that doesn't take packed frames.
 static bool coop_net_no_packing = getenv("COOP_NET_NO_PACKING") != NULL;
+// Testing: a client that doesn't move its picture with the camera (as
+// before 1.15).
+static bool coop_net_no_shifts = getenv("COOP_NET_NO_SHIFTS") != NULL;
 // Testing: the host doesn't hold frames back (still measures the delay).
 static bool coop_net_no_flow = getenv("COOP_NET_NO_FLOW") != NULL;
 
@@ -362,6 +394,9 @@ void coop_net_exit()
     CoopPeer* selected = coop_peer;
     for (int slot = 1; slot < COOP_MAX_PLAYERS; slot++) {
         coop_peer = &(coop_peers[slot]);
+        if (coop_net_frame_check && coop_client_ready) {
+            debug_printf("\nCOOP NET: player %d: %u pictures checked, %u wrong\n", slot + 1, coop_peer->framesChecked, coop_peer->frameMismatches);
+        }
         if (coop_client.socket != COOP_INVALID_SOCKET) {
             coop_connection_send(&coop_client, COOP_NET_MSG_BYE, std::vector<unsigned char>());
             coop_connection_flush(&coop_client);
@@ -927,6 +962,9 @@ void coop_net_host_pump()
 
         if (coop_client.failed) {
             debug_printf("\nCOOP NET: client disconnected (player %d)\n", slot + 1);
+            if (coop_net_frame_check) {
+                debug_printf("\nCOOP NET: player %d: %u pictures checked, %u wrong\n", slot + 1, coop_peer->framesChecked, coop_peer->frameMismatches);
+            }
             coop_connection_close(&coop_client);
             coop_client_ready = false;
             coop_client_input.clear();
@@ -963,6 +1001,9 @@ static void coop_host_handle(const CoopMessage& message)
             unsigned int flags = reader.atEnd() ? 0 : reader.u8();
             coop_client_acks = (flags & 2) != 0;
             coop_client_unpacks = (flags & 4) != 0;
+            // Since 1.15 flag 16: the client moves its last picture with
+            // the camera (older ones would misread such a frame).
+            coop_client_shifts = (flags & 16) != 0;
             // Since 1.9 flag 8: player 2 brings their own character (a
             // CHARACTER message follows).
             coop_client_brings_character = (flags & 8) != 0;
@@ -1061,6 +1102,20 @@ static void coop_host_handle(const CoopMessage& message)
                     coop_stats_delay_max = std::max(coop_stats_delay_max, delay);
                 }
                 coop_frames_acked++;
+            }
+            if (coop_net_frame_check && reader.ok() && !reader.atEnd()) {
+                unsigned int hash = reader.u32();
+                while (!coop_peer->sentHashes.empty() && coop_peer->sentHashes.front().first <= received) {
+                    if (coop_peer->sentHashes.front().first == received) {
+                        coop_peer->framesChecked++;
+                    }
+                    if (coop_peer->sentHashes.front().first == received && coop_peer->sentHashes.front().second != hash) {
+                        coop_peer->frameMismatches++;
+                        debug_printf("\nCOOP NET: player %d's picture %u differs from the host's (%u so far)\n",
+                            coop_net_selected() + 1, received, coop_peer->frameMismatches);
+                    }
+                    coop_peer->sentHashes.pop_front();
+                }
             }
         }
         break;
@@ -1264,8 +1319,60 @@ bool coop_net_can_send_frame()
     return true;
 }
 
+// A move of part of the picture (see coop_net_set_frame_shift).
+typedef struct CoopFrameShift {
+    bool set;
+    int dx;
+    int dy;
+    int x;
+    int y;
+    int width;
+    int height;
+} CoopFrameShift;
+
+static CoopFrameShift coop_net_pending_shift = { false, 0, 0, 0, 0, 0, 0 };
+
+void coop_net_set_frame_shift(int dx, int dy, int x, int y, int width, int height)
+{
+    coop_net_pending_shift = { true, dx, dy, x, y, width, height };
+}
+
+// Moves the pixels of the shift's rectangle in a `width` x `height`
+// picture by (dx, dy). What moves in from outside the rectangle keeps the
+// old pixels; the changes sent after it fix those. The same on both
+// sides, so the pictures stay alike whatever the shift.
+static void coop_net_shift_frame(unsigned char* frame, int width, int height, const CoopFrameShift& shift)
+{
+    int left = std::max(0, shift.x);
+    int top = std::max(0, shift.y);
+    int right = std::min(width, shift.x + shift.width);
+    int bottom = std::min(height, shift.y + shift.height);
+    int w = right - left;
+    int h = bottom - top;
+    if (w <= 0 || h <= 0 || abs(shift.dx) >= w || abs(shift.dy) >= h || (shift.dx == 0 && shift.dy == 0)) {
+        return;
+    }
+
+    size_t count = (size_t)(w - abs(shift.dx));
+    int fromX = left + std::max(0, -shift.dx);
+    int toX = left + std::max(0, shift.dx);
+    if (shift.dy > 0) {
+        for (int row = h - 1; row >= shift.dy; row--) {
+            memmove(frame + (size_t)(top + row) * width + toX, frame + (size_t)(top + row - shift.dy) * width + fromX, count);
+        }
+    } else {
+        for (int row = 0; row < h + shift.dy; row++) {
+            memmove(frame + (size_t)(top + row) * width + toX, frame + (size_t)(top + row - shift.dy) * width + fromX, count);
+        }
+    }
+}
+
 void coop_net_send_screen(const unsigned char* pixels, int pitch, int width, int height, const unsigned char* palette)
 {
+    // Only for this picture, whether it goes out or not.
+    CoopFrameShift shift = coop_net_pending_shift;
+    coop_net_pending_shift.set = false;
+
     if (!coop_net_can_send_frame()) {
         return;
     }
@@ -1275,7 +1382,11 @@ void coop_net_send_screen(const unsigned char* pixels, int pitch, int width, int
     coop_sent_scaled_from_height = 0;
     int clientWidth = coop_client_screen_width;
     int clientHeight = coop_client_screen_height;
-    if (clientWidth > 0 && clientHeight > 0 && (width > clientWidth || height > clientHeight)) {
+    // Not for a game that moves its picture with the camera (1.15): it
+    // scales the picture itself as it shows it, the same way, and a scaled
+    // picture can't move with the camera (it moves by fractions of its
+    // pixels), so walking sent all of it (some 0.5 MB/s at 1920x1080).
+    if (clientWidth > 0 && clientHeight > 0 && (width > clientWidth || height > clientHeight) && !coop_client_shifts) {
         int scaledWidth = clientWidth;
         int scaledHeight = height * clientWidth / width;
         if (scaledHeight > clientHeight) {
@@ -1314,16 +1425,33 @@ void coop_net_send_screen(const unsigned char* pixels, int pitch, int width, int
 
     bool paletteChanged = full || memcmp(palette, coop_sent_palette, sizeof(coop_sent_palette)) != 0;
 
+    // The camera's move, on our copy of the player's picture first (not for
+    // a picture scaled down to their screen: the move wouldn't be whole
+    // pixels there).
+    bool shifted = coop_client_shifts && shift.set && !full && coop_sent_scaled_from_width == 0 && (shift.dx != 0 || shift.dy != 0);
+    if (shifted) {
+        coop_net_shift_frame(coop_sent_frame.data(), width, height, shift);
+    }
+
     CoopWriter writer;
     writer.u16(width);
     writer.u16(height);
-    writer.u8(paletteChanged ? 1 : 0);
+    writer.u8((paletteChanged ? 1 : 0) | (shifted ? 2 : 0));
     if (paletteChanged) {
         writer.bytes(palette, 768);
         memcpy(coop_sent_palette, palette, sizeof(coop_sent_palette));
     }
+    if (shifted) {
+        writer.u16((unsigned int)(unsigned short)(short)shift.dx);
+        writer.u16((unsigned int)(unsigned short)(short)shift.dy);
+        writer.u16(std::max(0, shift.x));
+        writer.u16(std::max(0, shift.y));
+        writer.u16(std::max(0, shift.width));
+        writer.u16(std::max(0, shift.height));
+    }
 
-    bool anyChange = paletteChanged;
+    // (A shifted copy has to reach the player, changes or not.)
+    bool anyChange = paletteChanged || shifted;
     size_t total = (size_t)width * height;
 
     // The pixels as one run (rows packed), for the comparison below.
@@ -1386,6 +1514,12 @@ void coop_net_send_screen(const unsigned char* pixels, int pitch, int width, int
             coop_stats_raw_bytes += writer.data.size();
         }
         coop_frames_sent++;
+        if (coop_net_frame_check) {
+            coop_peer->sentHashes.push_back(std::make_pair(coop_frames_sent, coop_net_frame_hash(coop_sent_frame.data(), coop_sent_frame.size())));
+            if (coop_peer->sentHashes.size() > 64) {
+                coop_peer->sentHashes.pop_front();
+            }
+        }
         if (coop_client_acks) {
             coop_frame_sent_at.push_back(get_time());
         }
@@ -1947,9 +2081,10 @@ static bool coop_client_connect(CoopConnection* connection, std::string* error)
     int outlines[2];
     coop_outline_colors_from_config(outlines);
     // Flags: 1 colorblind (1.2), 2 acknowledges frames, 4 packed frames (1.5.7).
-    // 8: brings their own character (1.9).
+    // 8: brings their own character (1.9). 16: moves its picture with the
+    // camera (1.15).
     hello.u8((outlines[0] == 2 && outlines[1] == 3 ? 1 : 0) | (coop_net_no_acks ? 0 : 2) | (coop_net_no_packing ? 0 : 4)
-        | (coop_bring_character.empty() ? 0 : 8));
+        | (coop_bring_character.empty() ? 0 : 8) | (coop_net_no_shifts ? 0 : 16));
     hello.u8(outlines[0]);
     hello.u8(outlines[1]);
     hello.u16((unsigned int)screenGetWidth());
@@ -2027,6 +2162,54 @@ void coop_net_client_frame_to_window(int* x, int* y)
     }
 }
 
+// Process CPU time (user and system) in ms, or -1.
+static long long coop_net_cpu_ms()
+{
+#ifdef _WIN32
+    FILETIME created;
+    FILETIME exited;
+    FILETIME kernel;
+    FILETIME user;
+    if (!GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user)) {
+        return -1;
+    }
+    ULARGE_INTEGER kernelTime;
+    kernelTime.LowPart = kernel.dwLowDateTime;
+    kernelTime.HighPart = kernel.dwHighDateTime;
+    ULARGE_INTEGER userTime;
+    userTime.LowPart = user.dwLowDateTime;
+    userTime.HighPart = user.dwHighDateTime;
+    return (long long)((kernelTime.QuadPart + userTime.QuadPart) / 10000);
+#else
+    struct rusage usage;
+    if (getrusage(RUSAGE_SELF, &usage) != 0) {
+        return -1;
+    }
+    return (long long)usage.ru_utime.tv_sec * 1000 + usage.ru_utime.tv_usec / 1000
+        + (long long)usage.ru_stime.tv_sec * 1000 + usage.ru_stime.tv_usec / 1000;
+#endif
+}
+
+static long long coop_net_cpu_start = -1;
+static unsigned int coop_net_cpu_wall_start = 0;
+
+void coop_net_cpu_mark()
+{
+    coop_net_cpu_start = coop_net_cpu_ms();
+    coop_net_cpu_wall_start = SDL_GetTicks();
+}
+
+void coop_net_cpu_report(const char* who)
+{
+    long long cpu = coop_net_cpu_ms();
+    unsigned int wall = SDL_GetTicks() - coop_net_cpu_wall_start;
+    if (coop_net_cpu_start < 0 || cpu < 0 || wall == 0) {
+        return;
+    }
+    long long used = cpu - coop_net_cpu_start;
+    debug_printf("\nCOOP NET: %s used %lld%% of a core (%lld ms CPU in %u ms)\n", who, used * 100 / wall, used, wall);
+}
+
 int coop_net_client_run()
 {
     CoopConnection connection;
@@ -2040,6 +2223,7 @@ int coop_net_client_run()
     }
 
     debug_printf("\nCOOP NET: connected to %s\n", coop_net_host_name.c_str());
+    coop_net_cpu_mark();
 
     // The host's palette comes with its frames, color cycling included; the
     // client's own cycling would overwrite parts of it (wrong colors in the
@@ -2098,6 +2282,7 @@ int coop_net_client_run()
 
     bool hostLeft = false;
     bool hostSaidBye = false;
+    unsigned int lastPresent = 0;
     while (!hostLeft) {
         sharedFpsLimiter.mark();
 
@@ -2216,6 +2401,22 @@ int coop_net_client_run()
                         }
                     }
 
+                    // The camera moved: the map part of our copy moves the
+                    // same way before the changes go on it.
+                    if ((flags & 2) != 0) {
+                        CoopFrameShift shift;
+                        shift.set = true;
+                        shift.dx = (short)reader.u16();
+                        shift.dy = (short)reader.u16();
+                        shift.x = reader.u16();
+                        shift.y = reader.u16();
+                        shift.width = reader.u16();
+                        shift.height = reader.u16();
+                        if (reader.ok()) {
+                            coop_net_shift_frame(frame.data(), frameWidth, frameHeight, shift);
+                        }
+                    }
+
                     size_t total = frame.size();
                     size_t index = 0;
                     while (index < total && reader.ok()) {
@@ -2295,6 +2496,9 @@ int coop_net_client_run()
         if (framesReceived != framesAcked && !coop_net_no_acks) {
             CoopWriter writer;
             writer.u32(framesReceived);
+            if (coop_net_frame_check) {
+                writer.u32(coop_net_frame_hash(frame.data(), frame.size()));
+            }
             coop_connection_send(&connection, COOP_NET_MSG_ACK, writer.data);
             framesAcked = framesReceived;
         }
@@ -2332,11 +2536,18 @@ int coop_net_client_run()
             win_draw(window);
         }
 
-        renderPresent();
+        // Only a new picture needs presenting (each present uploads the
+        // whole window, 60 times a second: over a core on a big screen);
+        // otherwise ten times a second, in case the window was covered.
+        if (redraw || elapsed_time(lastPresent) >= 100) {
+            renderPresent();
+            lastPresent = get_time();
+        }
         sharedFpsLimiter.throttle();
     }
 
     debug_printf("\nCOOP NET: host left (%d sounds played)\n", soundsPlayed);
+    coop_net_cpu_report("player");
     if (!coop_client_exit_requested) {
         // A goodbye from the host, or the connection broke (network, or the
         // co-op server between restarting): then joining again may work.

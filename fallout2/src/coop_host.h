@@ -19,6 +19,8 @@ void coop_host_init();
 void coop_host_exit();
 
 bool coop_host_active();
+// Inside another player's part of the frame (their input and view).
+bool coop_host_in_other_part();
 
 // Main game loop: mark the loop's own get_input() call, so the client's
 // input is kept for player 2's turn of the frame.
@@ -33,6 +35,9 @@ void coop_host_frame();
 // a frame).
 int coop_host_view_center(int slot);
 unsigned int coop_host_view_parts(int slot);
+// Testing: how many of their parts ended with their 3D cursor showing what
+// is under it (the mouse rested there).
+unsigned int coop_host_view_hover_parts(int slot);
 
 // Chat while playing over the network: T starts typing for the active
 // player, Enter sends ("Name: text" in the message window), Esc cancels.

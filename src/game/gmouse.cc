@@ -8,6 +8,7 @@
 #include "game/art.h"
 #include "game/cache.h"
 #include "game/combat.h"
+#include "game/coop_host.h"
 #include "game/critter.h"
 #include "game/game.h"
 #include "game/gconfig.h"
@@ -45,6 +46,7 @@ static int gmouse_3d_lock_frames();
 static void gmouse_3d_unlock_frames();
 static int gmouse_3d_set_flat_fid(int fid, Rect* rect);
 static int gmouse_3d_reset_flat_fid(Rect* rect);
+static void gmouse_3d_refresh_rect(Rect* rect, int elevation);
 static int gmouse_3d_move_to(int x, int y, int elevation, Rect* a4);
 static int gmouse_check_scrolling(int x, int y, int cursor);
 
@@ -297,6 +299,10 @@ static int gmouse_3d_last_mouse_x;
 // 0x595208
 static int gmouse_3d_last_mouse_y;
 
+// What the mouse last rested over (the game says what it is once).
+// CE: was a static in gmouse_bk_process(); co-op keeps one per player.
+static Object* gmouse_bk_last_object;
+
 // 0x59520C
 Object* obj_mouse;
 
@@ -478,7 +484,7 @@ int gmouse_is_scrolling()
 void gmouse_bk_process()
 {
     // 0x595214
-    static Object* last_object;
+    Object*& last_object = gmouse_bk_last_object;
 
     // 0x5053F8
     static int last_tile = -1;
@@ -642,7 +648,7 @@ void gmouse_bk_process()
 
     Rect r1;
     if (gmouse_3d_move_to(mouseX, mouseY, map_elevation, &r1) == 0) {
-        tile_refresh_rect(&r1, map_elevation);
+        gmouse_3d_refresh_rect(&r1, map_elevation);
     }
 
     if (!gmouse_3d_is_on() || gmouse_mapper_mode != 0) {
@@ -708,14 +714,18 @@ void gmouse_bk_process()
                             int fid = art_id(OBJ_TYPE_INTERFACE, 282, 0, 0, 0);
                             // NOTE: Uninline.
                             if (gmouse_3d_set_flat_fid(fid, &tmp) == 0) {
-                                tile_refresh_rect(&tmp, map_elevation);
+                                gmouse_3d_refresh_rect(&tmp, map_elevation);
                             }
                         }
                     }
 
                     if (target != last_object) {
                         last_object = target;
-                        obj_look_at(obj_dude, last_object);
+                        // CE: co-op: not for the other players (online):
+                        // the message window is everyone's.
+                        if (!coop_host_in_other_part()) {
+                            obj_look_at(obj_dude, last_object);
+                        }
                     }
                 }
             } else if (gmouse_3d_current_mode == GAME_MOUSE_MODE_CROSSHAIR) {
@@ -737,7 +747,7 @@ void gmouse_bk_process()
                         int fid = art_id(OBJ_TYPE_INTERFACE, 284, 0, 0, 0);
                         // NOTE: Uninline.
                         if (gmouse_3d_set_flat_fid(fid, &tmp) == 0) {
-                            tile_refresh_rect(&tmp, map_elevation);
+                            gmouse_3d_refresh_rect(&tmp, map_elevation);
                         }
                     }
 
@@ -747,7 +757,7 @@ void gmouse_bk_process()
                 } else {
                     Rect tmp;
                     if (gmouse_3d_reset_flat_fid(&tmp) == 0) {
-                        tile_refresh_rect(&tmp, map_elevation);
+                        gmouse_3d_refresh_rect(&tmp, map_elevation);
                     }
                 }
 
@@ -789,7 +799,7 @@ void gmouse_bk_process()
         if (gmouse_3d_build_hex_frame(formattedActionPoints, color) == 0) {
             Rect tmp;
             obj_bound(obj_mouse_flat, &tmp);
-            tile_refresh_rect(&tmp, 0);
+            gmouse_3d_refresh_rect(&tmp, 0);
         }
 
         gmouse_3d_last_move_time = v3;
@@ -825,9 +835,10 @@ void gmouse_bk_process()
     switch (v34) {
     case 3:
         rect_min_bound(&r2, &r26, &r2);
-        // FALLTHROUGH
-    case 1:
         tile_refresh_rect(&r2, map_elevation);
+        break;
+    case 1:
+        gmouse_3d_refresh_rect(&r2, map_elevation);
         break;
     case 2:
         tile_refresh_rect(&r26, map_elevation);
@@ -1349,7 +1360,7 @@ void gmouse_3d_set_mode(int mode)
     gmouse_3d_hover_test = false;
     gmouse_3d_last_move_time = get_time();
 
-    tile_refresh_rect(&rect, map_elevation);
+    gmouse_3d_refresh_rect(&rect, map_elevation);
 
     switch (v5) {
     case 1:
@@ -1521,7 +1532,7 @@ void gmouse_3d_on()
             assert(false && "Should be unreachable");
         }
 
-        tile_refresh_rect(rect, map_elevation);
+        gmouse_3d_refresh_rect(rect, map_elevation);
     }
 
     gmouse_3d_hover_test = false;
@@ -1548,12 +1559,12 @@ void gmouse_3d_off()
     }
 
     if (v1 == 1) {
-        tile_refresh_rect(&rect1, map_elevation);
+        gmouse_3d_refresh_rect(&rect1, map_elevation);
     } else if (v1 == 2) {
-        tile_refresh_rect(&rect2, map_elevation);
+        gmouse_3d_refresh_rect(&rect2, map_elevation);
     } else if (v1 == 3) {
         rect_min_bound(&rect1, &rect2, &rect1);
-        tile_refresh_rect(&rect1, map_elevation);
+        gmouse_3d_refresh_rect(&rect1, map_elevation);
     }
 }
 
@@ -2154,6 +2165,80 @@ static int gmouse_3d_reset_flat_fid(Rect* rect)
 
     // NOTE: Uninline.
     return gmouse_3d_set_flat_fid(fid, rect);
+}
+
+// CE: co-op: set while the map is redrawn for the 3D cursor alone.
+static bool gmouse_3d_cursor_refresh = false;
+
+// CE: a redraw for the 3D cursor alone (it moved or changed its look), so
+// the co-op host knows nothing else on the map changed.
+static void gmouse_3d_refresh_rect(Rect* rect, int elevation)
+{
+    gmouse_3d_cursor_refresh = true;
+    tile_refresh_rect(rect, elevation);
+    gmouse_3d_cursor_refresh = false;
+}
+
+bool gmouse_3d_refreshing_cursor()
+{
+    return gmouse_3d_cursor_refresh;
+}
+
+void gmouse_3d_save_hover(GmouseHoverState* state)
+{
+    if (!gmouse_initialized || !gmouse_3d_initialized) {
+        return;
+    }
+
+    state->saved = true;
+    state->hoverTest = gmouse_3d_hover_test;
+    state->lastMoveTime = gmouse_3d_last_move_time;
+    state->lastMouseX = gmouse_3d_last_mouse_x;
+    state->lastMouseY = gmouse_3d_last_mouse_y;
+    state->lastObject = gmouse_bk_last_object;
+    state->mouseFid = obj_mouse->fid;
+    state->flatFid = obj_mouse_flat->fid;
+    state->pickFrame.assign(gmouse_3d_pick_frame_data, gmouse_3d_pick_frame_data + gmouse_3d_pick_frame_size);
+    state->pickOffsetX = gmouse_3d_pick_frame->xOffsets[0];
+    state->pickOffsetY = gmouse_3d_pick_frame->yOffsets[0];
+    state->pickHotX = gmouse_3d_pick_frame_hot_x;
+    state->pickHotY = gmouse_3d_pick_frame_hot_y;
+    state->toHitFrame.assign(gmouse_3d_to_hit_frame_data, gmouse_3d_to_hit_frame_data + gmouse_3d_to_hit_frame_size);
+    state->hexFrame.assign(gmouse_3d_hex_frame_data, gmouse_3d_hex_frame_data + gmouse_3d_hex_frame_size);
+}
+
+// The cursor's objects take the saved looks without a redraw: the view
+// that comes is drawn anyway, and the cursor moves to its mouse with one.
+void gmouse_3d_load_hover(const GmouseHoverState* state)
+{
+    if (!gmouse_initialized || !gmouse_3d_initialized || !state->saved) {
+        return;
+    }
+
+    gmouse_3d_hover_test = state->hoverTest;
+    gmouse_3d_last_move_time = state->lastMoveTime;
+    gmouse_3d_last_mouse_x = state->lastMouseX;
+    gmouse_3d_last_mouse_y = state->lastMouseY;
+    gmouse_bk_last_object = state->lastObject;
+    if (state->pickFrame.size() == (size_t)gmouse_3d_pick_frame_size) {
+        memcpy(gmouse_3d_pick_frame_data, state->pickFrame.data(), gmouse_3d_pick_frame_size);
+        gmouse_3d_pick_frame->xOffsets[0] = state->pickOffsetX;
+        gmouse_3d_pick_frame->yOffsets[0] = state->pickOffsetY;
+        gmouse_3d_pick_frame_hot_x = state->pickHotX;
+        gmouse_3d_pick_frame_hot_y = state->pickHotY;
+    }
+    if (state->toHitFrame.size() == (size_t)gmouse_3d_to_hit_frame_size) {
+        memcpy(gmouse_3d_to_hit_frame_data, state->toHitFrame.data(), gmouse_3d_to_hit_frame_size);
+    }
+    if (state->hexFrame.size() == (size_t)gmouse_3d_hex_frame_size) {
+        memcpy(gmouse_3d_hex_frame_data, state->hexFrame.data(), gmouse_3d_hex_frame_size);
+    }
+    if (state->mouseFid != -1 && obj_mouse->fid != state->mouseFid) {
+        obj_change_fid(obj_mouse, state->mouseFid, NULL);
+    }
+    if (state->flatFid != -1 && obj_mouse_flat->fid != state->flatFid) {
+        obj_change_fid(obj_mouse_flat, state->flatFid, NULL);
+    }
 }
 
 // 0x445A20

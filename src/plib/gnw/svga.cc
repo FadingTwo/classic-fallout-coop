@@ -63,6 +63,8 @@ void GNW95_SetPalette(unsigned char* palette)
     }
 }
 
+bool svga_screen_only = false;
+
 // 0x4CB850
 void GNW95_ShowRect(unsigned char* src, unsigned int srcPitch, unsigned int a3, unsigned int srcX, unsigned int srcY, unsigned int srcWidth, unsigned int srcHeight, unsigned int destX, unsigned int destY)
 {
@@ -77,7 +79,9 @@ void GNW95_ShowRect(unsigned char* src, unsigned int srcPitch, unsigned int a3, 
     SDL_Rect destRect;
     destRect.x = destX;
     destRect.y = destY;
-    SDL_BlitSurface(gSdlSurface, &srcRect, gSdlTextureSurface, &destRect);
+    if (!svga_screen_only) {
+        SDL_BlitSurface(gSdlSurface, &srcRect, gSdlTextureSurface, &destRect);
+    }
 }
 
 bool svga_init(VideoOptions* video_options)

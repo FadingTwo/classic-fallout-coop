@@ -297,6 +297,8 @@ unsigned char* directDrawGetPalette()
     return palette;
 }
 
+bool svga_screen_only = false;
+
 // 0x4CB850
 void _GNW95_ShowRect(unsigned char* src, int srcPitch, int a3, int srcX, int srcY, int srcWidth, int srcHeight, int destX, int destY)
 {
@@ -311,7 +313,9 @@ void _GNW95_ShowRect(unsigned char* src, int srcPitch, int a3, int srcX, int src
     SDL_Rect destRect;
     destRect.x = destX;
     destRect.y = destY;
-    SDL_BlitSurface(gSdlSurface, &srcRect, gSdlTextureSurface, &destRect);
+    if (!svga_screen_only) {
+        SDL_BlitSurface(gSdlSurface, &srcRect, gSdlTextureSurface, &destRect);
+    }
 }
 
 // Clears drawing surface.
