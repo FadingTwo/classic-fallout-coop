@@ -1034,6 +1034,9 @@ int scriptsHandleRequests()
             gameDialogEnter(gScriptsRequestedDialogWith, 0);
             coop_set_dialog_player(nullptr);
             coop_set_viewer(nullptr);
+            // Their screen drew the map as they see it (other outlines);
+            // player 1's view again.
+            tileWindowRefresh();
         } else {
             gameDialogEnter(gScriptsRequestedDialogWith, 0);
         }
@@ -1374,6 +1377,7 @@ static void scriptsOpenGiving()
             inventoryOpenGiving(gScriptsRequestedStealingBy, gScriptsRequestedStealingFrom);
         }
         coop_set_viewer(nullptr);
+        tileWindowRefresh();
     }
 }
 

@@ -967,6 +967,9 @@ int scripts_check_state()
             gdialog_enter(scriptState.dialogTarget, 0);
             coop_set_dialog_player(NULL);
             coop_set_viewer(NULL);
+            // Their screen drew the map as they see it (other outlines);
+            // player 1's view again.
+            tile_refresh_display();
         } else {
             gdialog_enter(scriptState.dialogTarget, 0);
         }
@@ -999,6 +1002,7 @@ int scripts_check_state()
                 inven_give_container(scriptState.stealingBy, scriptState.stealingFrom);
             }
             coop_set_viewer(NULL);
+            tile_refresh_display();
         }
     }
 
@@ -1075,6 +1079,7 @@ int scripts_check_state_in_combat()
                 inven_give_container(scriptState.stealingBy, scriptState.stealingFrom);
             }
             coop_set_viewer(NULL);
+            tile_refresh_display();
         }
     }
 

@@ -19,6 +19,7 @@
 #include "game/gmouse.h"
 #include "game/gsound.h"
 #include "game/intface.h"
+#include "game/light.h"
 #include "game/map.h"
 #include "plib/gnw/gnw.h"
 #include "game/object.h"
@@ -419,9 +420,33 @@ static bool coop_host_draw_picture(int slot, Object* player)
     return true;
 }
 
+// Testing: what can change what player 1's view shows without a redraw
+// (where things are, their looks and lights, the egg, the camera), as one
+// line, to tell what changed when a restored view differs from a full
+// redraw.
+static std::string coop_host_view_state()
+{
+    char line[160];
+    std::string state;
+    snprintf(line, sizeof(line), "camera %d; egg %d %d,%d", tile_center_tile, obj_egg->tile, obj_egg->x, obj_egg->y);
+    state += line;
+    for (int index = 0; index < coop_player_count(); index++) {
+        Object* obj = coop_player(index)->obj;
+        snprintf(line, sizeof(line), "; p%d %d %d,%d fid %x frame %d light %d/%d flags %x lit %d", index + 1, obj->tile, obj->x, obj->y,
+            obj->fid, obj->frame, obj->lightDistance, obj->lightIntensity, obj->flags, light_get_tile(obj->elevation, obj->tile));
+        state += line;
+    }
+    return state;
+}
+
+static std::string coop_host_restore_state;
+// ... and at the end of the frame before (player 1's view drawn or
+// restored, checked).
+static std::string coop_host_end_state;
+
 // Testing: redraws the whole map window and compares it with what it held
 // (`what`, for the log); how many pixels differed.
-static int coop_host_compare_full_redraw(const char* what, unsigned int* logged)
+static int coop_host_compare_full_redraw(const char* what, unsigned int* logged, bool ignoreCursor = false)
 {
     unsigned char* buffer = win_get_buf(display_win);
     if (buffer == NULL) {
@@ -435,6 +460,22 @@ static int coop_host_compare_full_redraw(const char* what, unsigned int* logged)
     coop_host_own_draw = true;
     tile_refresh_display();
     coop_host_own_draw = ownDraw;
+    // Testing a player's picture: not where their 3D cursor is (a redraw of
+    // its part draws it where a full one doesn't, at the map's edge).
+    if (ignoreCursor && gmouse_3d_is_on()) {
+        Object* cursors[2] = { obj_mouse, obj_mouse_flat };
+        for (Object* cursor : cursors) {
+            Rect rect;
+            obj_bound(cursor, &rect);
+            int height = (int)(size / width);
+            for (int y = std::max(rect.uly, 0); y <= std::min(rect.lry, height - 1); y++) {
+                for (int x = std::max(rect.ulx, 0); x <= std::min(rect.lrx, width - 1); x++) {
+                    coop_host_view_check[(size_t)y * width + x] = buffer[(size_t)y * width + x];
+                }
+            }
+        }
+    }
+
     if (memcmp(coop_host_view_check.data(), buffer, size) == 0) {
         return 0;
     }
@@ -467,7 +508,7 @@ static int coop_host_compare_full_redraw(const char* what, unsigned int* logged)
     // The first few big ones as pictures: coop-redraw-N-a.bmp as it was,
     // -b.bmp redrawn.
     static int dumps = 0;
-    if (pixels > 1000 && dumps < 4 && gSdlSurface != NULL && gSdlSurface->format->palette != NULL) {
+    if (pixels > 50 && dumps < 4 && gSdlSurface != NULL && gSdlSurface->format->palette != NULL) {
         dumps++;
         int height = (int)(size / width);
         for (int which = 0; which < 2; which++) {
@@ -492,7 +533,22 @@ static void coop_host_check_picture(int slot)
 {
     char what[64];
     snprintf(what, sizeof(what), "player %d's picture from the last one", slot + 1);
-    int pixels = coop_host_compare_full_redraw(what, &coop_host_picture_mismatches_logged);
+    int pixels = coop_host_compare_full_redraw(what, &coop_host_picture_mismatches_logged, true);
+    static unsigned int cursorsLogged = 0;
+    if (pixels > 50 && cursorsLogged++ < 20) {
+        // What the cursor was then and is now (the picture's own record
+        // is still the last one's).
+        CoopPicture* picture = &(coop_host_pictures[slot]);
+        Rect mouseRect;
+        Rect flatRect;
+        obj_bound(obj_mouse, &mouseRect);
+        obj_bound(obj_mouse_flat, &flatRect);
+        debug_printf("COOP HOST:   cursor then: %d rects %d,%d-%d,%d %d,%d-%d,%d; now: %s %d,%d-%d,%d %d,%d-%d,%d\n", picture->cursorCount,
+            picture->cursor[0].ulx, picture->cursor[0].uly, picture->cursor[0].lrx, picture->cursor[0].lry,
+            picture->cursor[1].ulx, picture->cursor[1].uly, picture->cursor[1].lrx, picture->cursor[1].lry,
+            gmouse_3d_is_on() ? "shown" : "hidden", mouseRect.ulx, mouseRect.uly, mouseRect.lrx, mouseRect.lry,
+            flatRect.ulx, flatRect.uly, flatRect.lrx, flatRect.lry);
+    }
     if (pixels != 0) {
         coop_host_picture_mismatches++;
         coop_host_picture_mismatches_total++;
@@ -1110,20 +1166,30 @@ static void coop_host_view_load(CoopView* view, Object* incoming, const CoopView
         view->cursorOn = true;
     }
 
-    // The camera follows its player when they move, like player 1's does.
+    // The camera follows its player when they move, like player 1's does,
+    // as far as the map's scroll limits let it. They count from the player
+    // the view is for: tile_set_center() measures from obj_dude, still
+    // player 1 here, and refused to follow a player some 15 hexes or more
+    // from player 1, who then walked off their own screen.
+    bool centered = false;
     if (incoming->tile != view->followedTile) {
-        view->cameraTile = incoming->tile;
         view->followedTile = incoming->tile;
+        Object* dude = obj_dude;
+        obj_dude = incoming;
+        if (tile_set_center(incoming->tile, 0) == 0) {
+            view->cameraTile = incoming->tile;
+            centered = true;
+        }
+        obj_dude = dude;
     }
 
-    // Scroll limits count from the player the view is for. tile_set_center()
-    // measures from obj_dude, still player 1 here: it refused to follow a
-    // player some 15 hexes or more from player 1, who then walked off their
-    // own screen.
-    Object* dude = obj_dude;
-    obj_dude = incoming;
-    tile_set_center(view->cameraTile, 0);
-    obj_dude = dude;
+    // Otherwise exactly where it was: the limits measure how far a camera
+    // moves away from the player, from where it is now - another player's
+    // view - and refused to put a player's own camera back, so they saw
+    // someone else's part of the map.
+    if (!centered) {
+        tile_set_center(view->cameraTile, TILE_SET_CENTER_FLAG_IGNORE_SCROLL_RESTRICTIONS);
+    }
     mouse_set_context(&(view->mouse));
     gmouse_3d_set_mode(view->mode);
     gmouse_set_cursor(view->cursor);
@@ -1393,11 +1459,15 @@ void coop_host_frame()
         // Player 1's map window as it is, and whether the parts change it.
         unsigned char* mapBuffer = win_get_buf(display_win);
         size_t mapSize = mapBuffer != NULL ? (size_t)win_width(display_win) * win_height(display_win) : 0;
+        int mapCenter = tile_center_tile;
         int mapIndex = map_get_index_number();
         int mapElevation = map_elevation;
         bool restore = coop_host_restore_setting() != 0 && mapBuffer != NULL;
         if (restore) {
             coop_host_restore_saved.assign(mapBuffer, mapBuffer + mapSize);
+            if (coop_host_restore_check_on) {
+                coop_host_restore_state = coop_host_view_state();
+            }
         }
         coop_host_restore_changed = false;
         coop_host_in_parts = true;
@@ -1435,7 +1505,8 @@ void coop_host_frame()
             && win_get_buf(display_win) == mapBuffer
             && (size_t)win_width(display_win) * win_height(display_win) == mapSize
             && map_get_index_number() == mapIndex
-            && map_elevation == mapElevation;
+            && map_elevation == mapElevation
+            && tile_center_tile == mapCenter;
         if (restore) {
             // As it was; the cursor back where player 1's mouse is.
             memcpy(mapBuffer, coop_host_restore_saved.data(), mapSize);
@@ -1460,11 +1531,20 @@ void coop_host_frame()
         if (restore && coop_host_restore_check_on) {
             // The same as a full redraw?
             int pixels = coop_host_compare_full_redraw("restored view", &coop_host_restore_mismatches_logged);
+            static unsigned int statesLogged = 0;
+            if (pixels > 50 && statesLogged++ < 20) {
+                std::string now = coop_host_view_state();
+                debug_printf("COOP HOST:   frame before: %s\nCOOP HOST:   when taken:   %s\nCOOP HOST:   now:          %s\n",
+                    coop_host_end_state.c_str(), coop_host_restore_state.c_str(), now.c_str());
+            }
             if (pixels != 0) {
                 coop_host_restore_mismatches++;
                 coop_host_restore_mismatches_total++;
                 coop_host_restore_mismatch_most = std::max(coop_host_restore_mismatch_most, pixels);
             }
+        }
+        if (coop_host_restore_check_on) {
+            coop_host_end_state = coop_host_view_state();
         }
     }
     coop_net_select(selected);

@@ -925,6 +925,9 @@ void coop_process_requests()
         gdialog_barter(merchant);
     }
     coop_viewer = oldViewer;
+    // The map as the trading player saw it (other outlines): player 1's
+    // view again.
+    tile_refresh_display();
 }
 
 void coop_set_viewer(PlayerState* player)
