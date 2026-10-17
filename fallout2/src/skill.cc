@@ -290,8 +290,13 @@ int skillGetBaseValue(Object* obj, int skill)
         return 0;
     }
 
+    // CE: only critters have skills; other objects (what a script asks
+    // whether a critter can see, say: its sneak is looked up) used to read
+    // past their smaller proto.
     Proto* proto;
-    protoGetProto(obj->pid, &proto);
+    if (PID_TYPE(obj->pid) != OBJ_TYPE_CRITTER || protoGetProto(obj->pid, &proto) == -1) {
+        return 0;
+    }
 
     return proto->critter.data.skills[skill];
 }

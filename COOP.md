@@ -29,10 +29,10 @@ Co-op is off unless `fallout.cfg` has a `[coop]` section with
 `enabled=1`. Without it the game behaves exactly like Fallout CE (this is
 verified byte for byte against upstream, see "Tests").
 
-## Fallout 2 (beta)
+## Fallout 2
 
 The package has Fallout 2 co-op too (`fallout2-ce`, built on Fallout 2
-Community Edition). With Fallout 2 installed, the setup screen asks which
+Community Edition). With Fallout 2 installed, the launcher asks which
 game to play (Enter picks the one played last); Fallout 2's settings are
 in `fallout2.cfg`. It plays like Fallout 1 co-op, with these differences:
 

@@ -8,6 +8,7 @@
 #include "automap.h"
 #include "color.h"
 #include "combat.h"
+#include "coop.h"
 #include "config.h"
 #include "critter.h"
 #include "cycle.h"
@@ -1769,7 +1770,13 @@ static int pipboyRenderVideoArchive(int a1)
 static void pipboyHandleAlarmClock(int eventCode)
 {
     if (eventCode == 1024) {
-        if (_critter_can_obj_dude_rest()) {
+        if (!coop_primary_is_active()) {
+            // CE: co-op: only player 1 rests and waits (as in Fallout 1
+            // co-op): time passes for everyone.
+            soundPlayFile("iisxxxx1");
+            showDialogBox("Only player 1 can rest.", nullptr, 0, 192, 135, _colorTable[32328], nullptr, _colorTable[32328], DIALOG_BOX_LARGE);
+            gPipboyTab = gPipboyPrevTab;
+        } else if (_critter_can_obj_dude_rest()) {
             pipboyWindowDestroyButtons();
             pipboyWindowRenderRestOptions(0);
             pipboyWindowCreateButtons(5, gPipboyRestOptionsCount, false);

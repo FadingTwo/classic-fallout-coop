@@ -67,9 +67,6 @@ while true; do
     RANDOM=$seed
     what=$(pick "${whats[@]}")
     how=$(pick direct relay relay slow asan wine)
-    # Player 2's scripted clicks in character creation come at fixed times,
-    # too early for a game slowed down by the address sanitizer.
-    [ "$what" = play ] && [ "$how" = asan ] && how=direct
     # Four players under the address sanitizer are four slow processes at
     # once: too heavy for a shared server.
     [ "$what" = tour4 ] && [ "$how" = asan ] && how=direct
@@ -124,6 +121,9 @@ while true; do
     client=$(grep -h "result:" "$dir/client/autotest/result.txt" 2>/dev/null | tail -1)
     maps=$(grep -h "visited" "$dir/host/autotest/result.txt" 2>/dev/null | tail -1)
     asan=$(grep -l "ERROR: AddressSanitizer" "$dir"/*/stdout.log 2>/dev/null | wc -l)
+    # A cache that can't get a block (full of blocks in use): many of these
+    # mean the host thrashes its caches, slow for real players too.
+    heap=$(grep -ac "Could not allocate block" "$dir/host/debug.log" 2>/dev/null)
     status=PASS
     if [[ "$host" != *"PASS"* || "$client" != *"PASS"* || "$asan" != "0" ]]; then
         status=FAIL
@@ -140,7 +140,7 @@ while true; do
     line="run $n $what $how"
     [ "$how" = slow ] && line="$line ${rate}B/s"
     [ $heapCheck = 1 ] && line="$line heapcheck"
-    echo "$(date '+%F %T') $line $hostRes/$clientRes seed $seed: $status (${maps:-$what}, ${seconds}s, asan errors $asan)" >>"$out/summary.log"
+    echo "$(date '+%F %T') $line $hostRes/$clientRes seed $seed: $status (${maps:-$what}, ${seconds}s, asan errors $asan, heap warnings ${heap:-0})" >>"$out/summary.log"
     if [ $status = FAIL ]; then
         grep -h "FAIL" "$dir"/*/autotest/result.txt 2>/dev/null | head -5 | sed 's/^/    /' >>"$out/summary.log"
         grep -h "HEAP CHECK" "$dir"/*/stdout.log 2>/dev/null | head -3 | sed 's/^/    /' >>"$out/summary.log"

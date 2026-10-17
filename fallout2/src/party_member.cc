@@ -823,9 +823,16 @@ int _partyMemberSyncPosition()
 
     int n = 0;
     int distance = 2;
-    for (int index = 1; index < gPartyMembersLength; index++) {
+    // CE: co-op: gDude may be player 2 (a ladder or an elevator player 2
+    // used, a map change while they play), in which case player 1, always
+    // the first member, gathers around them too; it stayed behind, on the
+    // old elevation or at its old tile on the new map.
+    for (int index = 0; index < gPartyMembersLength; index++) {
         PartyMemberListItem* partyMember = &(gPartyMembers[index]);
         Object* partyMemberObj = partyMember->object;
+        if (partyMemberObj == gDude) {
+            continue;
+        }
         if ((partyMemberObj->flags & OBJECT_HIDDEN) == 0 && PID_TYPE(partyMemberObj->pid) == OBJ_TYPE_CRITTER) {
             int rotation;
             if ((n % 2) != 0) {
@@ -1305,7 +1312,8 @@ static int partyFixMultipleMembers()
         Script* script;
         if (scriptGetScript(partyMember->object->sid, &script) != -1) {
             script->owner = partyMember->object;
-        } else {
+        } else if (coop_player_of(partyMember->object) == nullptr) {
+            // (Co-op: the other players have no script of their own.)
             debugPrint("\nError: Failed to fix party member critter scripts!");
         }
     }

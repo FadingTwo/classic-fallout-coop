@@ -6,6 +6,9 @@
 
 #include <stdio.h>
 #include <string.h>
+#ifdef __linux__
+#include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <random>
@@ -150,6 +153,10 @@ static void coop_autotest_check_far_cameras(const char* mapName);
 static void coop_autotest_heal_players();
 static int coop_autotest_menu_more(AutotestNewGameProc* newGame);
 static int coop_autotest_credits(AutotestNewGameProc* newGame);
+static int coop_autotest_lobby_find(AutotestNewGameProc* newGame);
+static int coop_autotest_explode_exit(AutotestNewGameProc* newGame);
+static int coop_autotest_p2_moves(AutotestNewGameProc* newGame);
+static int coop_autotest_combat_far(AutotestNewGameProc* newGame);
 static int coop_autotest_net_death_host(AutotestNewGameProc* newGame);
 static void coop_autotest_session_shots()
 {
@@ -213,6 +220,10 @@ void coop_autotest_register()
     autotest_add_script("coop_sound", coop_autotest_sound);
     autotest_add_script("menu_more", coop_autotest_menu_more);
     autotest_add_script("credits", coop_autotest_credits);
+    autotest_add_script("lobby_find", coop_autotest_lobby_find);
+    autotest_add_script("explode_exit", coop_autotest_explode_exit);
+    autotest_add_script("coop_p2_moves", coop_autotest_p2_moves);
+    autotest_add_script("coop_combat_far", coop_autotest_combat_far);
     autotest_add_script("net_death_host", coop_autotest_net_death_host);
 }
 
@@ -970,12 +981,14 @@ static int coop_autotest_join(AutotestNewGameProc* newGame)
     // Character creation by mouse (640x480 editor layout): tag three
     // skills, spend the 5 character points on Strength, screenshot, Done.
     inject_wait(10);
+    // (Slowly: over the network a click can arrive while the editor is
+    // still redrawing the last one.)
     coop_autotest_click_centered(355, 31);
-    inject_wait(20);
+    inject_wait(45);
     coop_autotest_click_centered(355, 42);
-    inject_wait(20);
+    inject_wait(45);
     coop_autotest_click_centered(355, 53);
-    inject_wait(20);
+    inject_wait(45);
     // The stat slider runs its own repeat loop; give it time to settle.
     for (int index = 0; index < 5; index++) {
         coop_autotest_click_centered(157, 42);
@@ -2746,8 +2759,10 @@ static int coop_autotest_net_play_host(AutotestNewGameProc* newGame)
     // The camera check (below).
     int lastTile = -1;
     int settledFrames = 0;
+    unsigned int settledSince = 0;
     int farTile = -1;
     int farFrames = 0;
+    unsigned int farSince = 0;
     unsigned int farParts = 0;
     bool cameraChecked = false;
     const int chatKeys[] = { KEY_LOWERCASE_T, 'W', 'a', 'r', ' ', 'n', 'e', 'v', 'e', 'r', ' ', 'c', 'h', 'a', 'n', 'g', 'e', 's', KEY_RETURN };
@@ -2791,8 +2806,13 @@ static int coop_autotest_net_play_host(AutotestNewGameProc* newGame)
             // player 1, and their view is checked a little later.
             if (moved && farTile == -1 && !cameraChecked) {
                 settledFrames = p2->tile == lastTile ? settledFrames + 1 : 0;
+                if (settledFrames == 0) {
+                    settledSince = get_time();
+                }
                 lastTile = p2->tile;
-                if (settledFrames >= 30) {
+                // 30 frames, or a second on a slow host (a big screen under
+                // the address sanitizer: a few frames a second).
+                if (settledFrames >= 30 || (settledFrames >= 3 && elapsed_time(settledSince) >= 1000)) {
                     farTile = coop_autotest_far_tile(p2);
                     if (farTile == -1) {
                         autotest_log("camera check: no free tile far from player 1 here");
@@ -2804,9 +2824,10 @@ static int coop_autotest_net_play_host(AutotestNewGameProc* newGame)
                         tile_refresh_rect(&rect, p2->elevation);
                         autotest_log("camera check: player 2 put at tile %d, %d hexes from player 1", farTile, tile_dist(obj_dude->tile, farTile));
                         farParts = coop_host_view_parts(1);
+                        farSince = get_time();
                     }
                 }
-            } else if (farTile != -1 && !cameraChecked && ++farFrames >= 30 && coop_host_view_parts(1) >= farParts + 2) {
+            } else if (farTile != -1 && !cameraChecked && (++farFrames >= 30 || (farFrames >= 3 && elapsed_time(farSince) >= 1000)) && coop_host_view_parts(1) >= farParts + 2) {
                 cameraChecked = true;
                 int center = coop_host_view_center(1);
                 if (center != farTile) {
@@ -2855,8 +2876,9 @@ static int coop_autotest_net_play_client(AutotestNewGameProc* newGame)
     coop_autotest_relay_client_setup();
 
     // Character creation (same layout as coop_join): tag three skills,
-    // Strength +5, Done, then the look list: leather jacket.
-    inject_wait(240);
+    // Strength +5, Done, then the look list: leather jacket. (Given time
+    // to come up: a big screen of player 1's takes a while.)
+    inject_wait(480);
     inject_call(coop_autotest_screenshot);
     coop_autotest_click_centered(355, 31);
     inject_wait(20);
@@ -4058,6 +4080,25 @@ static void coop_autotest_host_frame()
 // Network tour, host side: both players (equipped) travel through towns;
 // each stop runs a few seconds of the real game with the client walking
 // around, with screenshots on both sides. Paired with net_tour_client.
+// Resident memory in MB (Linux; -1 elsewhere): a long tour shows whether
+// the host keeps growing.
+static int coop_autotest_memory_mb()
+{
+#ifdef __linux__
+    FILE* stream = fopen("/proc/self/statm", "r");
+    if (stream != NULL) {
+        long pages = 0;
+        long resident = 0;
+        int read = fscanf(stream, "%ld %ld", &pages, &resident);
+        fclose(stream);
+        if (read == 2) {
+            return (int)(resident * sysconf(_SC_PAGESIZE) / (1024 * 1024));
+        }
+    }
+#endif
+    return -1;
+}
+
 static int coop_autotest_net_tour_host(AutotestNewGameProc* newGame)
 {
     if (coop_net_mode() != COOP_NET_HOST) {
@@ -4221,6 +4262,9 @@ static int coop_autotest_net_tour_host(AutotestNewGameProc* newGame)
     }
 
     int visited = 0;
+    int memoryFirst = -1;
+    int memoryLast = -1;
+    int memoryMost = -1;
     for (const std::string& stopName : tour) {
         const char* stop = stopName.c_str();
         int index = map_match_map_name(stop);
@@ -4419,9 +4463,13 @@ static int coop_autotest_net_tour_host(AutotestNewGameProc* newGame)
         // (Fetched only now: loading a save replaces the objects.)
         Object* p1obj = p1->obj;
         Object* p2obj = coop_player(1)->obj;
-        autotest_log("%s: p1 tile %d elev %d hp %d rads %d, p2 tile %d elev %d hp %d rads %d, distance %d",
+        int memory = coop_autotest_memory_mb();
+        memoryFirst = visited == 0 ? memory : memoryFirst;
+        memoryMost = std::max(memoryMost, memory);
+        memoryLast = memory;
+        autotest_log("%s: p1 tile %d elev %d hp %d rads %d, p2 tile %d elev %d hp %d rads %d, distance %d, memory %d MB",
             map_data.name, p1obj->tile, p1obj->elevation, critter_get_hits(p1obj), critter_get_rads(p1obj),
-            p2obj->tile, p2obj->elevation, critter_get_hits(p2obj), critter_get_rads(p2obj), obj_dist(p1obj, p2obj));
+            p2obj->tile, p2obj->elevation, critter_get_hits(p2obj), critter_get_rads(p2obj), obj_dist(p1obj, p2obj), memory);
 
         bool together = coop_player_count() == players;
         for (int index = 1; index < coop_player_count(); index++) {
@@ -4441,7 +4489,7 @@ static int coop_autotest_net_tour_host(AutotestNewGameProc* newGame)
         visited++;
     }
 
-    autotest_log("visited %d maps", visited);
+    autotest_log("visited %d maps, memory %d MB after the first, %d on the last, %d at most", visited, memoryFirst, memoryLast, memoryMost);
     coop_host_exit();
     return 0;
 }
@@ -5231,6 +5279,183 @@ static int coop_autotest_net_death_host(AutotestNewGameProc* newGame)
     }
 
     coop_host_exit();
+    return 0;
+}
+
+// JOIN GAME's list from the server set with [coop]server: how many games
+// it shows, and how many it leaves out for another mod version and for
+// the other game (COOP_AUTOTEST_LOBBY_EXPECT="<games> <versions> <game>").
+// Run with COOP_AUTOTEST_NO_LAN=1, or games on the LAN count too.
+static int coop_autotest_lobby_find(AutotestNewGameProc* newGame)
+{
+    (void)newGame;
+    char* server;
+    if (!config_get_string(&game_config, COOP_CONFIG_KEY, COOP_CONFIG_SERVER_KEY, &server) || server[0] == '\0') {
+        autotest_fail("no [coop]server set");
+        return -1;
+    }
+
+    int otherVersions = -1;
+    int otherGame = -1;
+    std::vector<CoopLobbyGame> games = coop_lobby_find(server, &otherVersions, &otherGame);
+    std::string names;
+    for (const CoopLobbyGame& game : games) {
+        names += (names.empty() ? "" : ", ") + game.name;
+    }
+    autotest_log("%s: %zu games (%s), %d left out for another version, %d for the other game",
+        coop_net_game_name(), games.size(), names.c_str(), otherVersions, otherGame);
+
+    const char* expect = getenv("COOP_AUTOTEST_LOBBY_EXPECT");
+    int wantGames;
+    int wantVersions;
+    int wantGame;
+    if (expect == NULL || sscanf(expect, "%d %d %d", &wantGames, &wantVersions, &wantGame) != 3) {
+        autotest_fail("COOP_AUTOTEST_LOBBY_EXPECT not set");
+        return -1;
+    }
+    if ((int)games.size() != wantGames || otherVersions != wantVersions || otherGame != wantGame) {
+        autotest_fail("expected %d games, %d left out for another version and %d for the other game",
+            wantGames, wantVersions, wantGame);
+    }
+    return 0;
+}
+
+// A map change while an explosion still plays (a timed charge, another
+// player's grenade): the stopped sequence has to run the explosion's
+// report while the explosion still exists, and erase it after (Fallout 2
+// soak2 run 71: heap damage; the same code here). For AddressSanitizer;
+// the game must also take input again afterwards.
+static int coop_autotest_explode_exit(AutotestNewGameProc* newGame)
+{
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    for (int round = 0; round < 3; round++) {
+        int tile = tile_num_in_direction(obj_dude->tile, round * 2, 3);
+        int rc = action_explode(tile, obj_dude->elevation, 5, 10, obj_dude, true);
+        // Stopped at once, a few frames in, or later.
+        for (int frame = 0; frame < round * round * 2; frame++) {
+            get_input();
+        }
+        char map[16];
+        snprintf(map, sizeof(map), "%s", round % 2 == 0 ? "SHADYE.MAP" : "V13ENT.MAP");
+        if (map_load(map) != 0) {
+            autotest_fail("round %d: loading %s failed", round, map);
+            return -1;
+        }
+        autotest_log("round %d: explosion %d, then %s; interface %s", round, rc, map, game_ui_is_disabled() ? "still disabled" : "back");
+        if (game_ui_is_disabled()) {
+            autotest_fail("round %d: the interface stayed disabled", round);
+        }
+    }
+    return 0;
+}
+
+// Whether player 1 stands next to the active player, on the same elevation.
+static bool coop_autotest_p1_near_active(const char* when)
+{
+    Object* p1 = coop_player(0)->obj;
+    int distance = obj_dist(p1, obj_dude);
+    autotest_log("%s: active player tile %d elev %d, player 1 tile %d elev %d, distance %d", when, obj_dude->tile, obj_dude->elevation,
+        p1->tile, p1->elevation, distance);
+    if (p1->elevation != obj_dude->elevation || p1->tile == -1 || distance > 4) {
+        autotest_fail("%s: player 1 was left behind", when);
+        return false;
+    }
+    return true;
+}
+
+// Player 2 changes the elevation (a ladder, an elevator: scripts move
+// dude_obj, which is player 2 then) and the map: player 1 must come along,
+// as the others do when player 1 moves. With ONE PC's F9 here; in network
+// play player 2's own actions run the same way.
+static int coop_autotest_p2_moves(AutotestNewGameProc* newGame)
+{
+    if (!coop_is_enabled()) {
+        autotest_fail("needs [coop]enabled=1");
+        return -1;
+    }
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+    PlayerState* p2 = coop_add_player("premade\\stealth.gcd");
+    if (p2 == NULL) {
+        autotest_fail("coop_add_player failed");
+        return -1;
+    }
+
+    coop_handle_switch_key();
+    if (obj_dude != p2->obj) {
+        autotest_fail("F9 did not give player 2 control");
+        return -1;
+    }
+
+    // As move_to() does for dude_obj on another elevation.
+    int otherElevation = obj_dude->elevation == 0 ? 1 : 0;
+    obj_move_to_tile(obj_dude, obj_dude->tile, otherElevation, NULL);
+    map_set_elevation(otherElevation);
+    coop_autotest_frames_until(500, NULL);
+    coop_autotest_p1_near_active("player 2 changed the elevation");
+
+    // A map change while player 2 is the one playing.
+    MapTransition transition;
+    transition.map = map_match_map_name("SHADYE.MAP");
+    transition.elevation = 0;
+    transition.tile = -1;
+    transition.rotation = 0;
+    map_leave_map(&transition);
+    map_check_state();
+    coop_autotest_frames_until(500, NULL);
+    coop_autotest_p1_near_active("map changed while player 2 played");
+    return 0;
+}
+
+// A fight player 1 starts while player 2 is far away, out of sight: player
+// 2 must still take part (left out, they could not even move until it
+// ended).
+static int coop_autotest_combat_far(AutotestNewGameProc* newGame)
+{
+    if (!coop_is_enabled()) {
+        autotest_fail("needs [coop]enabled=1");
+        return -1;
+    }
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+    PlayerState* p2 = coop_add_player("premade\\stealth.gcd");
+    if (p2 == NULL) {
+        autotest_fail("coop_add_player failed");
+        return -1;
+    }
+
+    int farTile = coop_autotest_far_tile(p2->obj);
+    if (farTile == -1) {
+        autotest_fail("no free tile far from player 1");
+        return -1;
+    }
+    obj_move_to_tile(p2->obj, farTile, obj_dude->elevation, NULL);
+    Object* enemy = coop_autotest_spawn_enemy(obj_dude);
+    if (enemy == NULL) {
+        return -1;
+    }
+    autotest_log("player 2 %d hexes from player 1, %d from the enemy", obj_dist(p2->obj, obj_dude), obj_dist(p2->obj, enemy));
+
+    coop_autotest_enemy = enemy;
+    memset(coop_autotest_turns, 0, sizeof(coop_autotest_turns));
+    coop_autotest_turns_total = 0;
+    coop_set_turn_hook(coop_autotest_attack_turn);
+    STRUCT_664980 attack;
+    memset(&attack, 0, sizeof(attack));
+    attack.attacker = obj_dude;
+    attack.defender = enemy;
+    combat(&attack);
+    coop_set_turn_hook(NULL);
+
+    autotest_log("turns p1 %d, p2 %d; enemy dead %d", coop_autotest_turns[0], coop_autotest_turns[1], critter_is_dead(enemy) ? 1 : 0);
+    if (coop_autotest_turns[1] == 0) {
+        autotest_fail("player 2, far away, never had a turn");
+    }
     return 0;
 }
 

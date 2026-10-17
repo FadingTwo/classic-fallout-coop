@@ -1144,7 +1144,14 @@ system:
             debug_printf("\n%s\n", stats);
         }
 
-        if (a4 == 0) {
+        // Testing with every block from the system: a block for the heap
+        // only (a4: the caches') still has to fit in the heap's size, so a
+        // cache fills up and makes room as it does in its heap. Refused
+        // always, each new cache entry failed ten times and then flushed
+        // the whole cache: nothing stayed cached, the log filled with
+        // warnings, and test runs crawled.
+        bool fits = heap_system_only() && heap->systemSize + size <= heap->size;
+        if (a4 == 0 || fits) {
             if (!heap_system_only()) {
                 debug_printf("Allocating block from system memory...\n");
             }

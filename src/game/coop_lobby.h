@@ -40,8 +40,9 @@ bool coop_lobby_host_public();
 // Client side: games on the LAN (about a second) and on `server`, only
 // those this copy can join (same mod version and game data).
 // `otherVersions` (if given) gets how many games were left out for
-// another mod version or game data.
-std::vector<CoopLobbyGame> coop_lobby_find(const std::string& server, int* otherVersions = nullptr);
+// another mod version or game data, `otherGame` how many for the other
+// game (Fallout 2 for a Fallout 1 player, or the other way round).
+std::vector<CoopLobbyGame> coop_lobby_find(const std::string& server, int* otherVersions = nullptr, int* otherGame = nullptr);
 
 } // namespace fallout
 

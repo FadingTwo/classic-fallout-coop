@@ -2,7 +2,7 @@
 
 Play Fallout with friends. This is a fan-made co-op mod for two to four
 players for Fallout 1, built on [Fallout Community Edition](https://github.com/alexbatalov/fallout1-ce),
-and now also Fallout 2 (beta, built on [Fallout 2 Community Edition](https://github.com/alexbatalov/fallout2-ce)).
+and Fallout 2, built on [Fallout 2 Community Edition](https://github.com/alexbatalov/fallout2-ce).
 Player 1 hosts the game; the others join over a LAN, the internet, or on
 the same PC, each with their own character.
 
@@ -16,9 +16,10 @@ explains the process.
 ![Four players in the Hub, each on their own computer: all four screens at the same moment](docs/coop/four-players.jpg)
 
 You need your own copy of Fallout or Fallout 2 (GOG or Steam). No game
-files are included. With both installed, the setup screen asks which one
-to play. Co-op is off by default: without it the game plays exactly like
-Fallout CE.
+files are included: the download is a launcher that finds the games you
+have and starts them with co-op added. With Fallout 2 installed, it asks
+which one to play. Co-op is off by default: without it the game plays
+exactly like Fallout CE.
 
 Co-op lives in Fallout's own main menu: **MULTIPLAYER** opens hosting,
 joining, one-PC play, updates and bug reports.
@@ -31,16 +32,18 @@ Download the package for your system under
 [Releases](https://github.com/FadingTwo/classic-fallout-coop/releases), or build
 it yourself (see the end of this page).
 
-Unpack it into a folder of its own (not into the Fallout folder) and run it:
+Unpack it into a folder of its own (not into the Fallout folder) and start
+the launcher:
 
 - **Windows:** `fallout-ce.exe`. It isn't code-signed, so SmartScreen may
   warn; choose *More info → Run anyway*.
 - **Linux:** needs SDL2 (`sudo apt install libsdl2-2.0-0`), then
   `./fallout-ce`.
 
-The first start shows a setup screen that finds your Fallout installation
-(GOG, Steam and others) and reads the game from there. Then
-pick **MULTIPLAYER** in the main menu. Without a co-op server (see
+The launcher finds Fallout and Fallout 2 where GOG, Steam and other stores
+install them (or you paste the game's folder once) and reads the game from
+there; your game's files aren't changed. Then pick **MULTIPLAYER** in the
+main menu. Without a co-op server (see
 [docs/coop/SERVER.md](docs/coop/SERVER.md)) you play on a LAN, on one PC,
 or online by entering the host's address.
 

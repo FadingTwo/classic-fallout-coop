@@ -1575,6 +1575,14 @@ static int _anim_set_end(int animationSequenceIndex)
         return -1;
     }
 
+    // CE: a callback below ending this same sequence again would run its
+    // callbacks and erase its objects twice.
+    static bool ending[ANIMATION_SEQUENCE_LIST_CAPACITY];
+    if (ending[animationSequenceIndex]) {
+        return -1;
+    }
+    ending[animationSequenceIndex] = true;
+
     for (i = 0; i < gAnimationCurrentSad; i++) {
         AnimationSad* sad = &(gAnimationSads[i]);
         if (sad->animationSequenceIndex == animationSequenceIndex) {
@@ -1582,32 +1590,12 @@ static int _anim_set_end(int animationSequenceIndex)
         }
     }
 
-    // CE: The objects erased here are freed; the loop below must not look
-    // at them again (found with AddressSanitizer in Fallout 1 CE).
-    Object* erased[ANIMATION_DESCRIPTION_LIST_CAPACITY];
-    int erasedCount = 0;
-
-    for (i = 0; i < animationSequence->length; i++) {
-        animationDescription = &(animationSequence->animations[i]);
-        if (animationDescription->kind == ANIM_KIND_HIDE && ((i < animationSequence->animationIndex) || (animationDescription->extendedFlags & ANIMATION_SEQUENCE_FORCED))) {
-            bool alreadyErased = false;
-            for (int e = 0; e < erasedCount; e++) {
-                if (erased[e] == animationDescription->owner) {
-                    alreadyErased = true;
-                }
-            }
-            if (alreadyErased) {
-                continue;
-            }
-
-            erased[erasedCount++] = animationDescription->owner;
-            Rect rect;
-            int elevation = animationDescription->owner->elevation;
-            objectDestroy(animationDescription->owner, &rect);
-            tileWindowRefreshRect(&rect, elevation);
-        }
-    }
-
+    // CE: pending forced callbacks run before the hidden objects are erased,
+    // as when the sequence plays to its end. Erased first (when a map change
+    // stopped an explosion), the explosion's report and damage read and
+    // wrote the freed explosion object, and a weapon was dropped after it
+    // was erased: heap damage (a Fallout 2 soak crash, "corrupted size vs.
+    // prev_size", then AddressSanitizer).
     for (i = 0; i < animationSequence->length; i++) {
         animationDescription = &(animationSequence->animations[i]);
         if (animationDescription->artCacheKey) {
@@ -1618,13 +1606,7 @@ static int _anim_set_end(int animationSequenceIndex)
             // TODO: Check.
             if (animationDescription->kind != ANIM_KIND_PING) {
                 Object* owner = animationDescription->owner;
-                bool ownerErased = false;
-                for (int e = 0; e < erasedCount; e++) {
-                    if (erased[e] == owner) {
-                        ownerErased = true;
-                    }
-                }
-                if (!ownerErased && FID_TYPE(owner->fid) == OBJ_TYPE_CRITTER) {
+                if (FID_TYPE(owner->fid) == OBJ_TYPE_CRITTER) {
                     int j = 0;
                     for (; j < i; j++) {
                         AnimationDescription* ad = &(animationSequence->animations[j]);
@@ -1661,19 +1643,7 @@ static int _anim_set_end(int animationSequenceIndex)
             }
         } else if (i >= animationSequence->field_0) {
             if (animationDescription->extendedFlags & ANIMATION_SEQUENCE_FORCED) {
-                // CE: not with an object erased above: an explosion's
-                // scenery callback is for the explosion, which is hidden
-                // (erased) after it, and a map change stops the sequence
-                // before either ran (found with AddressSanitizer).
-                bool paramErased = false;
-                for (int e = 0; e < erasedCount; e++) {
-                    if ((void*)erased[e] == animationDescription->param1) {
-                        paramErased = true;
-                    }
-                }
-                if (!paramErased) {
-                    animationDescription->callback(animationDescription->param1, animationDescription->param2);
-                }
+                animationDescription->callback(animationDescription->param1, animationDescription->param2);
             } else {
                 if (animationDescription->kind == ANIM_KIND_CALLBACK && animationDescription->callback == (AnimationCallback*)_gsnd_anim_sound) {
                     soundEffectDelete((Sound*)animationDescription->param1);
@@ -1682,6 +1652,33 @@ static int _anim_set_end(int animationSequenceIndex)
         }
     }
 
+    // The hidden objects go last, as when the sequence plays to its end
+    // (hiding only hides them): (still) pending forced callbacks use them.
+    Object* erased[ANIMATION_DESCRIPTION_LIST_CAPACITY];
+    int erasedCount = 0;
+
+    for (i = 0; i < animationSequence->length; i++) {
+        animationDescription = &(animationSequence->animations[i]);
+        if (animationDescription->kind == ANIM_KIND_HIDE && ((i < animationSequence->animationIndex) || (animationDescription->extendedFlags & ANIMATION_SEQUENCE_FORCED))) {
+            bool alreadyErased = false;
+            for (int e = 0; e < erasedCount; e++) {
+                if (erased[e] == animationDescription->owner) {
+                    alreadyErased = true;
+                }
+            }
+            if (alreadyErased) {
+                continue;
+            }
+
+            erased[erasedCount++] = animationDescription->owner;
+            Rect rect;
+            int elevation = animationDescription->owner->elevation;
+            objectDestroy(animationDescription->owner, &rect);
+            tileWindowRefreshRect(&rect, elevation);
+        }
+    }
+
+    ending[animationSequenceIndex] = false;
     animationSequence->animationIndex = -1;
     animationSequence->field_0 = -1000;
     if ((animationSequence->flags & ANIM_SEQ_COMBAT_ANIM_STARTED) != 0) {

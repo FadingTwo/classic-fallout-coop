@@ -406,9 +406,14 @@ static void mainLoop()
         // CE: co-op host: player 2's part of the frame (input and own view).
         coop_host_frame();
 
-        // A death there (player 2 is gDude then) ends the game too.
-        if (_game_user_wants_to_quit == 0 && coop_game_lost()) {
-            endgameSetupDeathEnding(ENDGAME_DEATH_ENDING_REASON_DEATH);
+        // A death there (player 2 is gDude then) ends the game too, and
+        // must get the death scene like any other: critterKill() has
+        // already set the game to end then (player 2 being gDude), which
+        // skipped this and went back to the main menu without it.
+        if (coop_game_lost()) {
+            if (_game_user_wants_to_quit == 0) {
+                endgameSetupDeathEnding(ENDGAME_DEATH_ENDING_REASON_DEATH);
+            }
             _main_show_death_scene = 1;
             _game_user_wants_to_quit = 2;
         }
@@ -422,6 +427,14 @@ static void mainLoop()
     if (cursorWasHidden) {
         mouseHideCursor();
     }
+}
+
+bool main_game_loop_for_test()
+{
+    mainLoop();
+    bool death = _main_show_death_scene != 0;
+    _main_show_death_scene = 0;
+    return death;
 }
 
 // 0x48118C

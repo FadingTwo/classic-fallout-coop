@@ -248,15 +248,24 @@ static std::vector<unsigned int> lobby_search_targets()
 }
 
 static int lobby_other_versions = 0;
+static int lobby_other_game = 0;
 
-// Whether a listed game is ours: the same game (since 1.13.3 hosts say
-// which; other game files of it are fine), or else the same game files.
-static bool lobby_same_game(const std::string& game, const std::string& gameChecksum, const std::string& checksum)
+// Whether a listed game is one we can join: the same game (since 1.13.3
+// hosts say which; other game files of it are fine, older hosts need the
+// same game files) and the same mod version. Counts the others: the other
+// game (Fallout 1 for a Fallout 2 player, or the other way round) apart,
+// since updating doesn't help with that one.
+static bool lobby_joinable(const std::string& version, const std::string& game, const std::string& gameChecksum, const std::string& checksum)
 {
-    if (!game.empty()) {
-        return game == coop_net_game_name();
+    if (!game.empty() && game != coop_net_game_name()) {
+        lobby_other_game++;
+        return false;
     }
-    return gameChecksum == checksum;
+    if (version != COOP_VERSION || (game.empty() && gameChecksum != checksum)) {
+        lobby_other_versions++;
+        return false;
+    }
+    return true;
 }
 
 static void lobby_find_lan(std::vector<CoopLobbyGame>& games, const std::string& checksum)
@@ -316,8 +325,7 @@ static void lobby_find_lan(std::vector<CoopLobbyGame>& games, const std::string&
         if (fields.size() < 6 || fields[0] != LOBBY_ANSWER) {
             continue;
         }
-        if (fields[1] != COOP_VERSION || !lobby_same_game(fields.size() >= 7 ? fields[6] : std::string(), fields[2], checksum)) {
-            lobby_other_versions++;
+        if (!lobby_joinable(fields[1], fields.size() >= 7 ? fields[6] : std::string(), fields[2], checksum)) {
             continue;
         }
 
@@ -359,8 +367,9 @@ static void lobby_find_public(std::vector<CoopLobbyGame>& games, const std::stri
         return;
     }
 
-    // address|port|players|version|checksum|name|relay per line (relay:
-    // the code to join through the server, or empty).
+    // address|port|players|version|checksum|name|relay|game per line
+    // (relay: the code to join through the server, or empty; game since
+    // 1.13.3).
     size_t lineStart = 0;
     while (lineStart < body.size()) {
         size_t lineEnd = body.find('\n', lineStart);
@@ -404,8 +413,7 @@ static void lobby_find_public(std::vector<CoopLobbyGame>& games, const std::stri
             relay = lobby_clean(relay, 8);
         }
 
-        if (fields[3] != COOP_VERSION || !lobby_same_game(gameName, fields[4], checksum)) {
-            lobby_other_versions++;
+        if (!lobby_joinable(fields[3], gameName, fields[4], checksum)) {
             continue;
         }
 
@@ -428,15 +436,22 @@ static void lobby_find_public(std::vector<CoopLobbyGame>& games, const std::stri
     }
 }
 
-std::vector<CoopLobbyGame> coop_lobby_find(const std::string& server, int* otherVersions)
+std::vector<CoopLobbyGame> coop_lobby_find(const std::string& server, int* otherVersions, int* otherGame)
 {
     std::vector<CoopLobbyGame> games;
     std::string checksum = lobby_checksum_text();
     lobby_other_versions = 0;
-    lobby_find_lan(games, checksum);
+    lobby_other_game = 0;
+    // Tests of the server's list leave out whatever answers on the LAN.
+    if (getenv("COOP_AUTOTEST_NO_LAN") == NULL) {
+        lobby_find_lan(games, checksum);
+    }
     lobby_find_public(games, server, checksum);
     if (otherVersions != nullptr) {
         *otherVersions = lobby_other_versions;
+    }
+    if (otherGame != nullptr) {
+        *otherGame = lobby_other_game;
     }
     return games;
 }

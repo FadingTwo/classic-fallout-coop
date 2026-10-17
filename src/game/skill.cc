@@ -262,8 +262,12 @@ int skill_points(Object* obj, int skill)
         return 0;
     }
 
+    // CE: only critters have skills; other objects used to read past
+    // their smaller proto (see stat_get_base).
     Proto* proto;
-    proto_ptr(obj->pid, &proto);
+    if (PID_TYPE(obj->pid) != OBJ_TYPE_CRITTER || proto_ptr(obj->pid, &proto) == -1) {
+        return 0;
+    }
 
     return proto->critter.data.skills[skill];
 }

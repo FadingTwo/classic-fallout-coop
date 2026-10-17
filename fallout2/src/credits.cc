@@ -44,6 +44,23 @@ static int gCreditsWindowNameFont;
 // 0x56D750
 static int gCreditsWindowTitleColor;
 
+// CE: co-op: added after the game's own credits (same format: '@' title,
+// '#' highlighted name).
+static const char* gCreditsCoopLines[] = {
+    "",
+    "",
+    "@CLASSIC FALLOUT CO-OP",
+    "",
+    "#Built on Fallout 2 Community Edition",
+    "by Alexander Batalov",
+    "",
+    "@SPECIAL THANKS",
+    "",
+    "#Mondilesh",
+    "for spotting Jet in Fallout 1",
+};
+static size_t gCreditsCoopNext = 0;
+
 // 0x42C860
 void creditsOpen(const char* filePath, int backgroundFid, bool useReversedStyle)
 {
@@ -64,6 +81,9 @@ void creditsOpen(const char* filePath, int backgroundFid, bool useReversedStyle)
     }
 
     soundContinueAll();
+
+    // The co-op lines follow the game's credits (not other texts).
+    gCreditsCoopNext = compat_stricmp(filePath, "credits.txt") == 0 ? 0 : sizeof(gCreditsCoopLines) / sizeof(gCreditsCoopLines[0]);
 
     char localizedPath[COMPAT_MAX_PATH];
     if (_message_make_path(localizedPath, sizeof(localizedPath), filePath)) {
@@ -256,8 +276,19 @@ void creditsOpen(const char* filePath, int backgroundFid, bool useReversedStyle)
 // 0x42CE6C
 static bool creditsFileParseNextLine(char* dest, int* font, int* color)
 {
+    const size_t coopLineCount = sizeof(gCreditsCoopLines) / sizeof(gCreditsCoopLines[0]);
+
     char string[256];
-    while (fileReadString(string, 256, gCreditsFile)) {
+    for (;;) {
+        if (!fileReadString(string, 256, gCreditsFile)) {
+            // The game's credits are done: the co-op ones.
+            if (gCreditsCoopNext >= coopLineCount) {
+                return false;
+            }
+            // With the newline, like the lines read from the file.
+            snprintf(string, sizeof(string), "%s\n", gCreditsCoopLines[gCreditsCoopNext++]);
+        }
+
         char* pch;
         if (string[0] == ';') {
             continue;

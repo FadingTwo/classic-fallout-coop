@@ -115,6 +115,10 @@ int dbGetFileContents(const char* filePath, void* ptr)
 
         while (remainingSize >= chunkSize) {
             size_t bytesRead = xfileRead(byteBuffer, sizeof(*byteBuffer), chunkSize, stream);
+            if (bytesRead == 0) {
+                // CE: a broken file: stop instead of looping forever.
+                break;
+            }
             byteBuffer += bytesRead;
             remainingSize -= bytesRead;
 

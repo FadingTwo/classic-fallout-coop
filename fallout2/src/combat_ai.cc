@@ -8,6 +8,7 @@
 #include "animation.h"
 #include "art.h"
 #include "combat.h"
+#include "coop.h"
 #include "config.h"
 #include "critter.h"
 #include "debug.h"
@@ -3176,6 +3177,12 @@ bool _combatai_want_to_join(Object* a1)
 
     if ((a1->data.critter.combat.results & (DAM_DEAD | DAM_KNOCKED_OUT)) != 0) {
         return false;
+    }
+
+    // CE: co-op: a player always takes part. (Out of sight like a
+    // companion, they sat out the whole fight, unable to move.)
+    if (coop_player_of(a1) != nullptr) {
+        return true;
     }
 
     if (a1->data.critter.combat.damageLastTurn > 0) {

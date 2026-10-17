@@ -317,17 +317,28 @@ static int coop_menu_join()
         main_menu_show_buttons(coop_menu_labels, coop_menu_keys, COOP_MENU_BUSY_ENTRIES);
         main_menu_status("Looking for games...");
         int otherVersions = 0;
-        std::vector<CoopLobbyGame> games = coop_lobby_find(coop_menu_server(), &otherVersions);
+        int otherGame = 0;
+        std::vector<CoopLobbyGame> games = coop_lobby_find(coop_menu_server(), &otherVersions, &otherGame);
         main_menu_status("");
 
-        // Games are there, but for another version: say so, or players
-        // think nobody is hosting.
+        // Games are there, but for another version or the other game: say
+        // so, or players think nobody is hosting (and updating doesn't
+        // help with the other game).
         if (games.empty() && otherVersions > 0) {
             const char* lines[] = {
                 "Games were found, but they use",
                 "another version of the mod.",
                 "Both players need the same one:",
                 "MULTIPLAYER, UPDATE.",
+            };
+            coop_menu_message("JOIN GAME", lines, 4);
+        } else if (games.empty() && otherGame > 0) {
+            bool fallout1 = strcmp(coop_net_game_name(), "fallout1") == 0;
+            const char* lines[] = {
+                "Games were found, but only for",
+                fallout1 ? "Fallout 2. To join one, quit" : "Fallout 1. To join one, quit",
+                fallout1 ? "and pick FALLOUT 2 when the" : "and pick FALLOUT when the",
+                "game starts.",
             };
             coop_menu_message("JOIN GAME", lines, 4);
         }
