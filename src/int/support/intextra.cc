@@ -626,6 +626,12 @@ static void op_create_object_sid(Program* program)
         }
     }
 
+    // SFALL: Prevent a crash when the proto is missing (as Fallout 2 CE; the
+    // object is not made then, and its script was given to it anyway).
+    if (object == NULL) {
+        goto out;
+    }
+
     if (sid != -1) {
         int scriptType = 0;
         switch (PID_TYPE(object->pid)) {

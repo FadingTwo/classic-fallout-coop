@@ -360,10 +360,15 @@ static bool config_parse_line(Config* config, char* string)
         *pch = '\0';
     }
 
-    // Find opening bracket.
-    pch = strchr(string, '[');
-    if (pch != NULL) {
-        char* sectionKey = pch + 1;
+    // CE: A section key only where the line starts with a bracket (as
+    // Fallout 2 CE): any line with brackets started one, a value too (an
+    // IPv6 address, a name with brackets), and the keys after it went there.
+    while (isspace(static_cast<unsigned char>(*string))) {
+        string++;
+    }
+
+    if (*string == '[') {
+        char* sectionKey = string + 1;
 
         // Find closing bracket.
         pch = strchr(sectionKey, ']');

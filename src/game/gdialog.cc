@@ -652,12 +652,16 @@ void gdialog_enter(Object* target, int a2)
     dialog_target = target;
     dialogue_just_started = 1;
 
-    if (target->sid != -1) {
-        exec_script_proc(target->sid, SCRIPT_PROC_TALK);
+    // CE: The speaker's script id kept apart: its talk procedure can make it
+    // destroy itself, and reading it from |target| afterwards read freed
+    // memory (as Fallout 2 CE found, a crash on some systems).
+    int sid = target->sid;
+    if (sid != -1) {
+        exec_script_proc(sid, SCRIPT_PROC_TALK);
     }
 
     Script* script;
-    if (scr_ptr(target->sid, &script) == -1) {
+    if (scr_ptr(sid, &script) == -1) {
         gmouse_3d_on();
         map_enable_bk_processes();
         scr_exec_map_update_scripts();
@@ -2522,6 +2526,13 @@ static void gdialog_review_display(int win, int origin)
             text_height(),
             640,
             colorTable[768] | 0x2000000);
+
+        // SFALL: Cosmetic fix to the dialog review interface to prevent the
+        // player name from being displayed at the bottom of the window when the
+        // text is longer than one screen (as Fallout 2 CE).
+        if (y >= 407) {
+            break;
+        }
 
         if (dialogReviewEntry->optionMessageListId != -3) {
             snprintf(name, sizeof(name), "%s:", object_name(obj_dude));

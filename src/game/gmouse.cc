@@ -799,7 +799,10 @@ void gmouse_bk_process()
         if (gmouse_3d_build_hex_frame(formattedActionPoints, color) == 0) {
             Rect tmp;
             obj_bound(obj_mouse_flat, &tmp);
-            gmouse_3d_refresh_rect(&tmp, 0);
+            // CE: The map's elevation (was 0: above the ground floor the
+            // action points or X showed only once something else was drawn
+            // there).
+            gmouse_3d_refresh_rect(&tmp, map_elevation);
         }
 
         gmouse_3d_last_move_time = v3;

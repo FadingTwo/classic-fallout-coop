@@ -17,12 +17,15 @@
 #include <string>
 #include <vector>
 
+#include <adecode/adecode.h>
+
 #include "game/actions.h"
 #include "game/anim.h"
 #include "game/art.h"
 #include "game/autotest.h"
 #include "game/combat.h"
 #include "game/combat_defs.h"
+#include "game/config.h"
 #include "game/coop.h"
 #include "game/coop_crash.h"
 #include "game/coop_host.h"
@@ -62,6 +65,7 @@
 #include "game/worldmap.h"
 #include "platform_compat.h"
 #include "plib/color/color.h"
+#include "plib/gnw/gnw.h"
 #include "plib/gnw/inject.h"
 #include "plib/gnw/input.h"
 #include "plib/gnw/kb.h"
@@ -97,12 +101,16 @@ static bool coop_autotest_video();
 static void coop_autotest_video_start();
 static bool coop_autotest_pass_turn(Object* player);
 static Object* coop_autotest_spawn_enemy(Object* nextTo);
+static void coop_autotest_clear_critters();
 static int coop_autotest_join(AutotestNewGameProc* newGame);
 static int coop_autotest_looks(AutotestNewGameProc* newGame);
 static int coop_autotest_barter(AutotestNewGameProc* newGame);
 static int coop_autotest_roofs(AutotestNewGameProc* newGame);
 static int coop_autotest_four(AutotestNewGameProc* newGame);
 static int coop_autotest_sfx_sizes(AutotestNewGameProc* newGame);
+static int coop_autotest_acm_fmt31(AutotestNewGameProc* newGame);
+static int coop_autotest_config_brackets(AutotestNewGameProc* newGame);
+static int coop_autotest_object_find(AutotestNewGameProc* newGame);
 static int coop_autotest_net_four_host(AutotestNewGameProc* newGame);
 static int coop_autotest_net_four_client(AutotestNewGameProc* newGame);
 static void coop_autotest_press_space_forever();
@@ -156,6 +164,8 @@ static int coop_autotest_menu_more(AutotestNewGameProc* newGame);
 static int coop_autotest_credits(AutotestNewGameProc* newGame);
 static int coop_autotest_lobby_find(AutotestNewGameProc* newGame);
 static int coop_autotest_explode_exit(AutotestNewGameProc* newGame);
+static int coop_autotest_map_entry(AutotestNewGameProc* newGame);
+static int coop_autotest_egg(AutotestNewGameProc* newGame);
 static int coop_autotest_p2_moves(AutotestNewGameProc* newGame);
 static int coop_autotest_combat_far(AutotestNewGameProc* newGame);
 static int coop_autotest_net_death_host(AutotestNewGameProc* newGame);
@@ -190,6 +200,9 @@ void coop_autotest_register()
     autotest_add_script("coop_roofs", coop_autotest_roofs);
     autotest_add_script("coop_four", coop_autotest_four);
     autotest_add_script("sfx_sizes", coop_autotest_sfx_sizes);
+    autotest_add_script("acm_fmt31", coop_autotest_acm_fmt31);
+    autotest_add_script("config_brackets", coop_autotest_config_brackets);
+    autotest_add_script("object_find", coop_autotest_object_find);
     autotest_add_script("net_four_host", coop_autotest_net_four_host);
     autotest_add_script("net_four_client", coop_autotest_net_four_client);
     autotest_add_script("coop_give", coop_autotest_give);
@@ -224,6 +237,8 @@ void coop_autotest_register()
     autotest_add_script("credits", coop_autotest_credits);
     autotest_add_script("lobby_find", coop_autotest_lobby_find);
     autotest_add_script("explode_exit", coop_autotest_explode_exit);
+    autotest_add_script("map_entry", coop_autotest_map_entry);
+    autotest_add_script("coop_egg", coop_autotest_egg);
     autotest_add_script("coop_p2_moves", coop_autotest_p2_moves);
     autotest_add_script("coop_combat_far", coop_autotest_combat_far);
     autotest_add_script("net_death_host", coop_autotest_net_death_host);
@@ -2137,6 +2152,162 @@ static void coop_autotest_db_progress()
 // Every sound effect read into a buffer of exactly its listed size, with
 // guard bytes after it: none may be written past (the sound cache's heap
 // was found damaged after 16496-byte blocks).
+// Going through a map's objects meets each once, all of them and per
+// elevation. The first hex with objects came twice (a dead critter there
+// was erased twice when the map aged its dead).
+static int coop_autotest_object_find(AutotestNewGameProc* newGame)
+{
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    std::vector<Object*> seen;
+    int twice = 0;
+    for (Object* obj = obj_find_first(); obj != NULL; obj = obj_find_next()) {
+        if (std::find(seen.begin(), seen.end(), obj) != seen.end()) {
+            twice++;
+        } else {
+            seen.push_back(obj);
+        }
+    }
+
+    int twiceAt = 0;
+    int countAt = 0;
+    for (int elevation = 0; elevation < ELEVATION_COUNT; elevation++) {
+        std::vector<Object*> seenAt;
+        for (Object* obj = obj_find_first_at(elevation); obj != NULL; obj = obj_find_next_at()) {
+            if (std::find(seenAt.begin(), seenAt.end(), obj) != seenAt.end()) {
+                twiceAt++;
+            } else {
+                seenAt.push_back(obj);
+                countAt++;
+            }
+        }
+    }
+
+    autotest_log("%s: %d objects, %d met twice; per elevation %d objects, %d met twice", map_data.name, (int)seen.size(), twice,
+        countAt, twiceAt);
+    if (twice != 0 || twiceAt != 0) {
+        autotest_fail("objects were met twice");
+    }
+    return 0;
+}
+
+// A config file whose values have brackets (an IPv6 address, a name):
+// they stay values in their section. Any line with brackets started a
+// section, and the keys after it went there.
+static int coop_autotest_config_brackets(AutotestNewGameProc* newGame)
+{
+    (void)newGame;
+
+    const char* path = "autotest/brackets.cfg";
+    FILE* stream = fopen(path, "wt");
+    if (stream == NULL) {
+        autotest_fail("cannot write %s", path);
+        return -1;
+    }
+    fputs("[coop]\nhost=[2001:db8::1]:27015\nname=Bob [GER]\nport=27016\n  [sound]\nmusic_volume=12\n", stream);
+    fclose(stream);
+
+    Config config;
+    config_init(&config);
+    bool loaded = config_load(&config, path, false);
+    char* host = NULL;
+    char* name = NULL;
+    char* port = NULL;
+    char* volume = NULL;
+    config_get_string(&config, "coop", "host", &host);
+    config_get_string(&config, "coop", "name", &name);
+    config_get_string(&config, "coop", "port", &port);
+    config_get_string(&config, "sound", "music_volume", &volume);
+    autotest_log("loaded %d: host %s, name %s, port %s, sound music_volume %s", loaded ? 1 : 0,
+        host != NULL ? host : "-", name != NULL ? name : "-", port != NULL ? port : "-", volume != NULL ? volume : "-");
+    if (host == NULL || strcmp(host, "[2001:db8::1]:27015") != 0 || name == NULL || strcmp(name, "Bob [GER]") != 0
+        || port == NULL || strcmp(port, "27016") != 0 || volume == NULL || strcmp(volume, "12") != 0) {
+        autotest_fail("values with brackets broke the config file");
+    }
+    config_exit(&config);
+    return 0;
+}
+
+// A sound in ACM band format 31 (as some Russian localizations' speech):
+// its samples, 16 bits each, come out as they went in. The decoder ended
+// the sound there (Fallout 2 CE added the format, its #246).
+struct CoopAutotestMemoryReader {
+    const std::vector<unsigned char>* bytes;
+    size_t at;
+};
+
+static unsigned int coop_autotest_memory_read(void* data, void* buffer, unsigned int size)
+{
+    CoopAutotestMemoryReader* reader = static_cast<CoopAutotestMemoryReader*>(data);
+    size_t count = std::min((size_t)size, reader->bytes->size() - reader->at);
+    memcpy(buffer, reader->bytes->data() + reader->at, count);
+    reader->at += count;
+    return (unsigned int)count;
+}
+
+static int coop_autotest_acm_fmt31(AutotestNewGameProc* newGame)
+{
+    (void)newGame;
+
+    // The bits least significant first, as the decoder reads them.
+    std::vector<unsigned char> bytes;
+    unsigned long long pending = 0;
+    int pendingBits = 0;
+    auto put = [&](unsigned int value, int bits) {
+        pending |= (unsigned long long)(value & ((1u << bits) - 1)) << pendingBits;
+        pendingBits += bits;
+        while (pendingBits >= 8) {
+            bytes.push_back((unsigned char)(pending & 0xFF));
+            pending >>= 8;
+            pendingBits -= 8;
+        }
+    };
+
+    const short samples[] = { 1000, -1000, 32767, -32768, 0, 123, -123, 4242 };
+    const int count = (int)(sizeof(samples) / sizeof(samples[0]));
+    const int levels = 2;
+    put(0x032897, 24); // ACM
+    put(1, 8); // version
+    put(count, 16); // samples in the file
+    put(0, 16);
+    put(1, 16); // channels
+    put(22050, 16); // rate
+    put(levels, 4); // 4 subbands ...
+    put(count >> levels, 12); // ... of 2 samples each
+    put(0, 4); // the block's scale
+    put(0, 16);
+    put(31, 5); // the format of the first band: the whole block
+    for (short sample : samples) {
+        put((unsigned short)sample, 16);
+    }
+    put(0, 8);
+    bytes.resize(bytes.size() + 64, 0);
+
+    CoopAutotestMemoryReader reader = { &bytes, 0 };
+    int channels;
+    int rate;
+    int sampleCount;
+    AudioDecoder* decoder = Create_AudioDecoder(coop_autotest_memory_read, &reader, &channels, &rate, &sampleCount);
+    if (decoder == NULL) {
+        autotest_fail("the decoder did not open the sound");
+        return -1;
+    }
+
+    short out[16];
+    memset(out, 0x55, sizeof(out));
+    unsigned int read = AudioDecoder_Read(decoder, out, sizeof(out));
+    AudioDecoder_Close(decoder);
+
+    autotest_log("%d channel(s) at %d Hz, %d samples; read %u bytes: %d %d %d %d %d %d %d %d", channels, rate, sampleCount, read,
+        out[0], out[1], out[2], out[3], out[4], out[5], out[6], out[7]);
+    if (read != count * 2 || memcmp(out, samples, sizeof(samples)) != 0) {
+        autotest_fail("format 31 samples did not come out as they went in");
+    }
+    return 0;
+}
+
 static int coop_autotest_sfx_sizes(AutotestNewGameProc* newGame)
 {
     const char* paths[] = { "sound\\sfx\\*.ACM", "sound\\sfx\\*.SND" };
@@ -3037,6 +3208,7 @@ static int coop_autotest_net_combat_host(AutotestNewGameProc* newGame)
         autotest_fail("player 2 was not kept for the joining client");
     }
 
+    coop_autotest_clear_critters();
     coop_autotest_scene();
     coop_autotest_video_start();
 
@@ -3360,6 +3532,25 @@ static Object* coop_autotest_spawn_enemy(Object* nextTo)
         critter_get_hits(enemy), enemy->data.critter.combat.team);
 
     return enemy;
+}
+
+// Removes every critter from the map except the players (drawn gone at
+// once).
+static void coop_autotest_clear_critters()
+{
+    std::vector<Object*> critters;
+    for (Object* obj = obj_find_first(); obj != NULL; obj = obj_find_next()) {
+        if (PID_TYPE(obj->pid) == OBJ_TYPE_CRITTER && coop_player_of(obj) == NULL) {
+            critters.push_back(obj);
+        }
+    }
+
+    for (Object* obj : critters) {
+        obj_erase_object(obj, NULL);
+    }
+    tile_refresh_display();
+
+    autotest_log("removed %d critters from %s", (int)critters.size(), map_data.name);
 }
 
 // For screenshots: with COOP_AUTOTEST_MAP set, both players (equipped)
@@ -4623,6 +4814,9 @@ static int coop_autotest_net_session_host(AutotestNewGameProc* newGame)
         return -1;
     }
     std::string p2Name = critter_name(p2->obj);
+    // No rats: on a busy machine the start map's found the players first,
+    // and their fight came before the test's.
+    coop_autotest_clear_critters();
 
     coop_host_init();
     if (!coop_autotest_relay_host_setup()) {
@@ -5354,6 +5548,135 @@ static int coop_autotest_lobby_find(AutotestNewGameProc* newGame)
 // report while the explosion still exists, and erase it after (Fallout 2
 // soak2 run 71: heap damage; the same code here). For AddressSanitizer;
 // the game must also take input again afterwards.
+// Player 2 walks in their scope, as on their turn in a fight: the egg
+// (see-through walls) stays with player 1, at their place within the hex.
+// It moved off player 1 by every step player 2 took (their tile changes
+// leave the egg to player 1, their steps within a hex moved it).
+static int coop_autotest_egg(AutotestNewGameProc* newGame)
+{
+    if (!coop_is_enabled()) {
+        autotest_fail("needs [coop]enabled=1");
+        return -1;
+    }
+
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    PlayerState* p2 = coop_add_player("premade\\stealth.gcd");
+    if (p2 == NULL) {
+        autotest_fail("coop_add_player failed");
+        return -1;
+    }
+    Object* p1obj = obj_dude;
+    Object* p2obj = p2->obj;
+
+    int target = -1;
+    for (int attempt = 0; attempt < 30 && target == -1; attempt++) {
+        int tile = tile_num_in_direction(p2obj->tile, attempt % 6, 4 + attempt / 6);
+        if (obj_blocking_at(NULL, tile, p2obj->elevation) == NULL
+            && make_path_func(p2obj, p2obj->tile, tile, NULL, 0, obj_blocking_at) != 0) {
+            target = tile;
+        }
+    }
+    if (target == -1) {
+        autotest_fail("no tile for player 2 to walk to");
+        return -1;
+    }
+
+    int startTile = p2obj->tile;
+    {
+        ActivePlayerScope scope(p2);
+        register_begin(ANIMATION_REQUEST_RESERVED);
+        register_object_move_to_tile(p2obj, target, p2obj->elevation, -1, 0);
+        register_end();
+        unsigned int start = get_time();
+        while (anim_busy(p2obj) && elapsed_time(start) < 10000) {
+            get_input();
+        }
+    }
+
+    autotest_log("player 2 walked from %d to %d; player 1 at %d %d,%d, the egg at %d %d,%d", startTile, p2obj->tile,
+        p1obj->tile, p1obj->x, p1obj->y, obj_egg->tile, obj_egg->x, obj_egg->y);
+    if (p2obj->tile == startTile) {
+        autotest_fail("player 2 did not walk");
+    }
+    if (obj_egg->tile != p1obj->tile || obj_egg->x != p1obj->x || obj_egg->y != p1obj->y) {
+        autotest_fail("the egg left player 1");
+    }
+    return 0;
+}
+
+// Entering maps as from the world map (COOP_AUTOTEST_MAPS, comma
+// separated, or ALL): the screen must then show the new map as a full
+// redraw does. USEDCAR.MAP's start can't be centered on (a scroll blocker), and the map
+// was never drawn: the last one stayed on screen with bits of the new one
+// (single player too).
+static int coop_autotest_map_entry(AutotestNewGameProc* newGame)
+{
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    const char* list = getenv("COOP_AUTOTEST_MAPS");
+    std::vector<std::string> maps;
+    if (list != NULL && strcmp(list, "ALL") == 0) {
+        for (int index = 1; index < 500; index++) {
+            char name[16];
+            if (map_get_name_idx(name, index) != 0) {
+                break;
+            }
+            maps.push_back(name);
+        }
+    } else {
+        std::string rest = list != NULL ? list : "JUNKENT.MAP,USEDCAR.MAP,HUBDWNTN.MAP,USEDCAR.MAP";
+        size_t comma;
+        while ((comma = rest.find(',')) != std::string::npos) {
+            maps.push_back(rest.substr(0, comma));
+            rest = rest.substr(comma + 1);
+        }
+        maps.push_back(rest);
+    }
+
+    int worst = 0;
+    for (const std::string& name : maps) {
+        int index = map_match_map_name(name.c_str());
+        if (index == -1) {
+            autotest_fail("no map %s", name.c_str());
+            continue;
+        }
+
+        MapTransition transition;
+        transition.map = index;
+        transition.elevation = 0;
+        transition.tile = -1;
+        transition.rotation = 0;
+        map_leave_map(&transition);
+        map_check_state();
+
+        unsigned char* buffer = win_get_buf(display_win);
+        size_t size = (size_t)win_width(display_win) * win_height(display_win);
+        std::vector<unsigned char> shown(buffer, buffer + size);
+        tile_refresh_display();
+        int pixels = 0;
+        for (size_t at = 0; at < size; at++) {
+            if (shown[at] != buffer[at]) {
+                pixels++;
+            }
+        }
+        autotest_log("%s: player at %d, camera %d; the screen differs from a full redraw in %d pixels", name.c_str(),
+            obj_dude->tile, tile_center_tile, pixels);
+        worst = std::max(worst, pixels);
+    }
+
+    // (A few at most: the engine draws a part a pixel differently than a
+    // whole.)
+    if (worst > 100) {
+        autotest_fail("a map was not drawn when entered (%d pixels differ)", worst);
+    }
+    return 0;
+}
+
 static int coop_autotest_explode_exit(AutotestNewGameProc* newGame)
 {
     if (!autotest_new_game(newGame, "premade\\combat.gcd")) {

@@ -1141,7 +1141,11 @@ int _obj_offset(Object* obj, int x, int y, Rect* rect)
         return -1;
     }
 
-    if (obj == gDude) {
+    // CE: co-op: the egg goes with player 1, as in objectSetLocation():
+    // another player in their scope (a fight's turn) moved it off player 1
+    // by every step they took, unless it is around them (on one PC, in
+    // control).
+    if (obj == gDude && (coop_primary_is_active() || gEgg->tile == obj->tile)) {
         if (rect != nullptr) {
             Rect eggRect;
             objectGetRect(gEgg, &eggRect);
@@ -1521,6 +1525,10 @@ void obj_follow_viewer(Object* obj)
 
     obj_update_roof(obj->tile, obj->elevation, nullptr);
     objectSetLocation(gEgg, obj->tile, obj->elevation, nullptr);
+    // Where they are within the hex too (mid-step), as the egg moves with
+    // player 1 (it stayed at the hex's middle: a pixel or few off from
+    // where it was drawn, until they reached the next hex).
+    _obj_offset(gEgg, obj->x, obj->y, nullptr);
 }
 
 // 0x48A9A0

@@ -57,6 +57,7 @@
 #include "svga.h"
 #include "stat.h"
 #include "tile.h"
+#include "window_manager.h"
 #include "worldmap.h"
 
 namespace fallout {
@@ -130,6 +131,8 @@ static bool coop_autotest_players_together(const char* when);
 static int coop_autotest_poison(AutotestNewGameProc* newGame);
 static int coop_autotest_lobby_find(AutotestNewGameProc* newGame);
 static int coop_autotest_explode_exit(AutotestNewGameProc* newGame);
+static int coop_autotest_map_entry(AutotestNewGameProc* newGame);
+static int coop_autotest_egg(AutotestNewGameProc* newGame);
 static int coop_autotest_net_death_host(AutotestNewGameProc* newGame);
 static int coop_autotest_net_worldmap_host(AutotestNewGameProc* newGame);
 static int coop_autotest_net_ending_host(AutotestNewGameProc* newGame);
@@ -183,6 +186,8 @@ void coop_autotest_register()
     autotest_add_script("coop_poison", coop_autotest_poison);
     autotest_add_script("lobby_find", coop_autotest_lobby_find);
     autotest_add_script("explode_exit", coop_autotest_explode_exit);
+    autotest_add_script("map_entry", coop_autotest_map_entry);
+    autotest_add_script("coop_egg", coop_autotest_egg);
     autotest_add_script("net_death_host", coop_autotest_net_death_host);
     autotest_add_script("net_worldmap_host", coop_autotest_net_worldmap_host);
     autotest_add_script("net_ending_host", coop_autotest_net_ending_host);
@@ -1017,7 +1022,8 @@ static Object* coop_autotest_spawn_enemy(Object* nextTo)
     return enemy;
 }
 
-// Removes every critter from the map except the players.
+// Removes every critter from the map except the players (drawn gone at
+// once).
 static void coop_autotest_clear_critters()
 {
     std::vector<Object*> critters;
@@ -1030,6 +1036,7 @@ static void coop_autotest_clear_critters()
     for (Object* obj : critters) {
         objectDestroy(obj, nullptr);
     }
+    tileWindowRefresh();
 
     autotest_log("removed %d critters from %s", (int)critters.size(), gMapHeader.name);
 }
@@ -4070,6 +4077,132 @@ static int coop_autotest_lobby_find(AutotestNewGameProc* newGame)
 // report while the explosion still exists, and erase it after (soak2 run
 // 71: heap damage). For AddressSanitizer; the game must also take input
 // again afterwards (the report gives the interface back).
+// Player 2 walks in their scope, as on their turn in a fight: the egg
+// (see-through walls) stays with player 1, at their place within the hex
+// (as in Fallout 1 CE co-op).
+static int coop_autotest_egg(AutotestNewGameProc* newGame)
+{
+    if (!coop_is_enabled()) {
+        autotest_fail("needs [coop]enabled=1");
+        return -1;
+    }
+
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    PlayerState* p2 = coop_add_player("premade\\stealth.gcd");
+    if (p2 == nullptr) {
+        autotest_fail("coop_add_player failed");
+        return -1;
+    }
+    Object* p1obj = gDude;
+    Object* p2obj = p2->obj;
+
+    int target = -1;
+    for (int attempt = 0; attempt < 30 && target == -1; attempt++) {
+        int tile = tileGetTileInDirection(p2obj->tile, attempt % 6, 4 + attempt / 6);
+        if (_obj_blocking_at(nullptr, tile, p2obj->elevation) == nullptr
+            && pathfinderFindPath(p2obj, p2obj->tile, tile, nullptr, 0, _obj_blocking_at) != 0) {
+            target = tile;
+        }
+    }
+    if (target == -1) {
+        autotest_fail("no tile for player 2 to walk to");
+        return -1;
+    }
+
+    int startTile = p2obj->tile;
+    {
+        ActivePlayerScope scope(p2);
+        reg_anim_begin(ANIMATION_REQUEST_RESERVED);
+        animationRegisterMoveToTile(p2obj, target, p2obj->elevation, -1, 0);
+        reg_anim_end();
+        unsigned int start = getTicks();
+        while (animationIsBusy(p2obj) && getTicksSince(start) < 10000) {
+            inputGetInput();
+        }
+    }
+
+    autotest_log("player 2 walked from %d to %d; player 1 at %d %d,%d, the egg at %d %d,%d", startTile, p2obj->tile,
+        p1obj->tile, p1obj->x, p1obj->y, gEgg->tile, gEgg->x, gEgg->y);
+    if (p2obj->tile == startTile) {
+        autotest_fail("player 2 did not walk");
+    }
+    if (gEgg->tile != p1obj->tile || gEgg->x != p1obj->x || gEgg->y != p1obj->y) {
+        autotest_fail("the egg left player 1");
+    }
+    return 0;
+}
+
+// Entering maps as from the world map (COOP_AUTOTEST_MAPS, comma
+// separated, or ALL): the screen must then show the new map as a full
+// redraw does (as in Fallout 1 CE co-op, where a map whose start can't be
+// centered on was never drawn: the last one stayed on screen).
+static int coop_autotest_map_entry(AutotestNewGameProc* newGame)
+{
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    const char* list = getenv("COOP_AUTOTEST_MAPS");
+    std::vector<std::string> maps;
+    if (list != nullptr && strcmp(list, "ALL") == 0) {
+        for (int index = 1; index < 1000; index++) {
+            char name[64];
+            if (wmMapIdxToName(index, name, sizeof(name)) != 0) {
+                break;
+            }
+            maps.push_back(name);
+        }
+    } else {
+        std::string rest = list != nullptr ? list : "arvillag.map,klamall.map,denbus1.map";
+        size_t comma;
+        while ((comma = rest.find(',')) != std::string::npos) {
+            maps.push_back(rest.substr(0, comma));
+            rest = rest.substr(comma + 1);
+        }
+        maps.push_back(rest);
+    }
+
+    int worst = 0;
+    for (const std::string& name : maps) {
+        int index = coop_autotest_map_index(name.c_str());
+        if (index == -1) {
+            autotest_fail("no map %s", name.c_str());
+            continue;
+        }
+
+        MapTransition transition;
+        memset(&transition, 0, sizeof(transition));
+        transition.map = index;
+        transition.tile = -1;
+        mapSetTransition(&transition);
+        mapHandleTransition();
+
+        unsigned char* buffer = windowGetBuffer(gIsoWindow);
+        size_t size = (size_t)windowGetWidth(gIsoWindow) * windowGetHeight(gIsoWindow);
+        std::vector<unsigned char> shown(buffer, buffer + size);
+        tileWindowRefresh();
+        int pixels = 0;
+        for (size_t at = 0; at < size; at++) {
+            if (shown[at] != buffer[at]) {
+                pixels++;
+            }
+        }
+        autotest_log("%s: player at %d, camera %d; the screen differs from a full redraw in %d pixels", name.c_str(),
+            gDude->tile, gCenterTile, pixels);
+        worst = std::max(worst, pixels);
+    }
+
+    // (A few at most: the engine draws a part a pixel differently than a
+    // whole.)
+    if (worst > 100) {
+        autotest_fail("a map was not drawn when entered (%d pixels differ)", worst);
+    }
+    return 0;
+}
+
 static int coop_autotest_explode_exit(AutotestNewGameProc* newGame)
 {
     if (!autotest_new_game(newGame, "premade\\combat.gcd")) {

@@ -7,7 +7,8 @@
 #   - screen sizes for both players, and a seed (map order, where player 2
 #     walks).
 # One line per run in <out>/summary.log, with everything needed to repeat
-# it; failed runs keep their logs in <out>/fail-<n>, passed ones are removed.
+# it; failed runs keep their logs in <out>/fail-<n> (packed; the newest
+# SOAK_KEEP_FAILS, 10), passed ones are removed.
 #
 #   nice tools/soak.sh <out dir>
 #
@@ -157,14 +158,23 @@ while true; do
         grep -h "FAIL" "$dir"/*/autotest/result.txt 2>/dev/null | head -5 | sed 's/^/    /' >>"$out/summary.log"
         grep -h "HEAP CHECK" "$dir"/*/stdout.log 2>/dev/null | head -3 | sed 's/^/    /' >>"$out/summary.log"
         grep -ah "differs from the host's" "$dir/host/debug.log" 2>/dev/null | head -2 | sed 's/^/    /' >>"$out/summary.log"
-        grep -ah "differs from a full redraw in" "$dir/host/debug.log" 2>/dev/null | sort -t' ' -k10 -n | tail -2 | sed 's/^/    /' >>"$out/summary.log"
+        # The two biggest (by the number after "redraw in").
+        grep -ah "differs from a full redraw in" "$dir/host/debug.log" 2>/dev/null \
+            | awk '{ for (i = 2; i < NF; i++) if ($i == "in" && $(i - 1) == "redraw") print $(i + 1) "\t" $0 }' \
+            | sort -n | tail -2 | cut -f2- | sed 's/^/    /' >>"$out/summary.log"
         mv "$dir" "$out/fail-$n"
         mv "$dir.txt" "$out/fail-$n.txt" 2>/dev/null
-        # Keep the newest SOAK_KEEP_FAILS (30) failures' logs.
-        ls -d "$out"/fail-[0-9]* 2>/dev/null | grep -v '\.txt$' | sort -V | head -n -"${SOAK_KEEP_FAILS:-30}" | while read -r old; do
-            rm -rf "$old" "$old.txt" "$old.host.txt"
+        # The players' console output and the relay code go along.
+        for f in "$dir".host.txt "$dir".client*.txt "$out/code-$n.txt"; do
+            [ -e "$f" ] && mv "$f" "$out/fail-$n/$(basename "$f" | sed "s/^run-$n\.//; s/^code-$n\./code./")"
+        done
+        # Packed: the screenshots and logs of a long run are gigabytes.
+        find "$out/fail-$n" -type f -size +64k ! -name '*.gz' -exec gzip -q {} +
+        # Keep the newest SOAK_KEEP_FAILS (10) failures' logs.
+        ls -d "$out"/fail-[0-9]* 2>/dev/null | grep -v '\.txt$' | sort -V | head -n -"${SOAK_KEEP_FAILS:-10}" | while read -r old; do
+            rm -rf "$old" "$old.txt"
         done
     else
-        rm -rf "$dir" "$dir.txt" "$dir.host.txt"
+        rm -rf "$dir" "$dir.txt" "$dir".host.txt "$dir".client*.txt "$out/code-$n.txt"
     fi
 done

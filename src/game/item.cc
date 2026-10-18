@@ -2499,7 +2499,11 @@ static void perform_withdrawal_start(Object* obj, int perk, int pid)
     perk_add_effect(obj, perk);
 
     if (obj == obj_dude) {
-        display_print(perk_description(perk));
+        // SFALL: Fix crash when description is missing (as Fallout 2 CE).
+        char* description = perk_description(perk);
+        if (description != NULL) {
+            display_print(description);
+        }
     }
 
     duration = 10080;

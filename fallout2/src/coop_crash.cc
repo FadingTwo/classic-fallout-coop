@@ -92,18 +92,76 @@ static void crash_write_header(CrashFile file, const char* what)
 
 #ifdef _WIN32
 
+#if defined(_M_X64) || defined(__x86_64__)
+// The registers, and the calls that led there: the stack unwound with the
+// program's own unwind tables (tools/crash-symbols.sh names them).
+static void crash_write_windows_stack(HANDLE file, const CONTEXT* crashContext)
+{
+    const char* names[] = { "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15" };
+    const DWORD64 values[] = { crashContext->Rax, crashContext->Rbx, crashContext->Rcx, crashContext->Rdx, crashContext->Rsi,
+        crashContext->Rdi, crashContext->Rbp, crashContext->Rsp, crashContext->R8, crashContext->R9, crashContext->R10,
+        crashContext->R11, crashContext->R12, crashContext->R13, crashContext->R14, crashContext->R15 };
+    crash_text(file, "Registers:");
+    for (int index = 0; index < 16; index++) {
+        crash_text(file, index % 4 == 0 ? "\n  " : "  ");
+        crash_text(file, names[index]);
+        crash_text(file, " ");
+        crash_hex(file, values[index]);
+    }
+
+    // (Only within this thread's stack: a broken one ends the walk.)
+    NT_TIB* tib = (NT_TIB*)NtCurrentTeb();
+    DWORD64 stackLow = (DWORD64)(uintptr_t)tib->StackLimit;
+    DWORD64 stackHigh = (DWORD64)(uintptr_t)tib->StackBase;
+    crash_text(file, "\nStack:\n");
+    CONTEXT context = *crashContext;
+    for (int frame = 0; frame < 32 && context.Rip != 0; frame++) {
+        crash_text(file, "  ");
+        crash_hex(file, context.Rip);
+        crash_text(file, "\n");
+
+        DWORD64 imageBase = 0;
+        PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(context.Rip, &imageBase, NULL);
+        if (function != NULL) {
+            void* handlerData = NULL;
+            DWORD64 establisherFrame = 0;
+            RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, context.Rip, function, &context, &handlerData, &establisherFrame, NULL);
+        } else {
+            // A leaf function: the return address is on top of the stack.
+            if (context.Rsp < stackLow || context.Rsp + 8 > stackHigh) {
+                break;
+            }
+            context.Rip = *(DWORD64*)(uintptr_t)context.Rsp;
+            context.Rsp += 8;
+        }
+        if (context.Rsp < stackLow || context.Rsp >= stackHigh) {
+            break;
+        }
+    }
+}
+#endif
+
 static LONG WINAPI coop_crash_handler(EXCEPTION_POINTERS* info)
 {
     HANDLE file = CreateFileA(coop_crash_path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (file != INVALID_HANDLE_VALUE) {
+        EXCEPTION_RECORD* record = info->ExceptionRecord;
         crash_write_header(file, "Windows exception");
         crash_text(file, "Code: ");
-        crash_hex(file, info->ExceptionRecord->ExceptionCode);
+        crash_hex(file, record->ExceptionCode);
         crash_text(file, "\nAddress: ");
-        crash_hex(file, (unsigned long long)(uintptr_t)info->ExceptionRecord->ExceptionAddress);
+        crash_hex(file, (unsigned long long)(uintptr_t)record->ExceptionAddress);
+        // A bad memory access: where it read or wrote.
+        if (record->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && record->NumberParameters >= 2) {
+            crash_text(file, record->ExceptionInformation[0] == 1 ? "\nWriting at: " : "\nReading at: ");
+            crash_hex(file, (unsigned long long)record->ExceptionInformation[1]);
+        }
         crash_text(file, "\nModule base: ");
         crash_hex(file, (unsigned long long)(uintptr_t)GetModuleHandleA(NULL));
         crash_text(file, "\nPlatform: Windows\n");
+#if defined(_M_X64) || defined(__x86_64__)
+        crash_write_windows_stack(file, info->ContextRecord);
+#endif
         crash_write_log(file);
         CloseHandle(file);
     }

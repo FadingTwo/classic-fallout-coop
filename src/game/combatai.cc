@@ -33,6 +33,9 @@
 #include "plib/gnw/input.h"
 #include "plib/gnw/memory.h"
 
+// Room for a combat taunt (CE: was 80).
+#define AI_MESSAGE_SIZE 260
+
 namespace fallout {
 
 typedef enum HurtTooMuch {
@@ -102,7 +105,7 @@ static MessageList ai_message_file;
 static AiPacket* cap;
 
 // 0x56BE10
-static char target_str[80];
+static char target_str[AI_MESSAGE_SIZE];
 
 // 0x56BEBC
 static int curr_crit_num;
@@ -111,7 +114,7 @@ static int curr_crit_num;
 static Object** curr_crit_list;
 
 // 0x56BE60
-static char attack_str[80];
+static char attack_str[AI_MESSAGE_SIZE];
 
 // 0x424450
 static void parse_hurt_str(char* str, int* value)
@@ -1459,7 +1462,10 @@ int combatai_msg(Object* critter, Attack* attack, int type, int delay)
     }
 
     debug_printf("%s said message %d\n", object_name(critter), messageListItem.num);
-    strcpy(string, messageListItem.text);
+    // CE: Bounded, in room for a whole line (were 80 characters, copied
+    // whole: another language's longer line ran over what follows; as in
+    // Fallout 2 CE).
+    snprintf(string, AI_MESSAGE_SIZE, "%s", messageListItem.text);
 
     // TODO: Get rid of casts.
     return register_object_call(critter, (void*)type, (AnimationCallback*)ai_print_msg, delay);

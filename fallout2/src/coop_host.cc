@@ -353,15 +353,17 @@ static bool coop_host_draw_picture(int slot, Object* player)
         objectGetRect(gGameMouseHexCursor, &rect);
         fits = fits && coop_host_add_rect(rects, rect, width, height, &area);
     }
-    if (player->tile != picture->tile) {
-        Rect rect = picture->egg;
-        rect.left += dx;
-        rect.right += dx;
-        rect.top += dy;
-        rect.bottom += dy;
-        fits = fits && coop_host_add_rect(rects, rect, width, height, &area);
-        objectGetRect(gEgg, &rect);
-        fits = fits && coop_host_add_rect(rects, rect, width, height, &area);
+    // (The egg moves within a hex too, mid-step.)
+    Rect oldEgg = picture->egg;
+    oldEgg.left += dx;
+    oldEgg.right += dx;
+    oldEgg.top += dy;
+    oldEgg.bottom += dy;
+    Rect egg;
+    objectGetRect(gEgg, &egg);
+    if (player->tile != picture->tile || memcmp(&oldEgg, &egg, sizeof(egg)) != 0) {
+        fits = fits && coop_host_add_rect(rects, oldEgg, width, height, &area);
+        fits = fits && coop_host_add_rect(rects, egg, width, height, &area);
     }
     // Most of the window: a full redraw is as quick.
     if (!fits || area > width * height * 3 / 4) {
@@ -396,6 +398,11 @@ static std::string coop_host_view_state()
     std::string state;
     snprintf(line, sizeof(line), "camera %d; egg %d %d,%d", tile_center_tile, gEgg->tile, gEgg->x, gEgg->y);
     state += line;
+    // Player 1's 3D cursor: the arrow (or X) and the hex.
+    snprintf(line, sizeof(line), "; cursor %d %d,%d fid %x frame %d flags %x, hex %d fid %x frame %d flags %x",
+        gGameMouseBouncingCursor->tile, gGameMouseBouncingCursor->x, gGameMouseBouncingCursor->y, gGameMouseBouncingCursor->fid, gGameMouseBouncingCursor->frame, gGameMouseBouncingCursor->flags,
+        gGameMouseHexCursor->tile, gGameMouseHexCursor->fid, gGameMouseHexCursor->frame, gGameMouseHexCursor->flags);
+    state += line;
     for (int index = 0; index < coop_player_count(); index++) {
         Object* obj = coop_player(index)->obj;
         snprintf(line, sizeof(line), "; p%d %d %d,%d fid %x frame %d light %d/%d flags %x lit %d", index + 1, obj->tile, obj->x, obj->y,
@@ -409,6 +416,17 @@ static std::string coop_host_restore_state;
 // ... and at the end of the frame before (player 1's view drawn or
 // restored, checked).
 static std::string coop_host_end_state;
+
+// The last comparison's difference was the biggest so far (by twice).
+static bool coop_host_compare_record = false;
+
+// A line longer than the debug log takes (260 characters), in pieces.
+static void coop_host_log_long(const char* label, const std::string& text)
+{
+    for (size_t at = 0; at == 0 || at < text.size(); at += 200) {
+        debug_printf("COOP HOST:   %s%s\n", at == 0 ? label : "  ... ", text.substr(at, 200).c_str());
+    }
+}
 
 // Testing: redraws the whole map window and compares it with what it held
 // (`what`, for the log); how many pixels differed.
@@ -426,8 +444,8 @@ static int coop_host_compare_full_redraw(const char* what, unsigned int* logged,
     coop_host_own_draw = true;
     tile_refresh_display();
     coop_host_own_draw = ownDraw;
-    // Testing a player's picture: not where their 3D cursor is (a redraw of
-    // its part draws it where a full one doesn't, at the map's edge).
+    // Not where the 3D cursor is, when asked (a redraw of its part draws it
+    // where a full one doesn't, at the map's edge).
     if (ignoreCursor && gameMouseObjectsIsVisible()) {
         Object* cursors[2] = { gGameMouseBouncingCursor, gGameMouseHexCursor };
         for (Object* cursor : cursors) {
@@ -465,16 +483,22 @@ static int coop_host_compare_full_redraw(const char* what, unsigned int* logged,
         }
     }
     // The first few, and the first few big ones (a missed change rather
-    // than the engine drawing a part a pixel differently than a whole).
+    // than the engine drawing a part a pixel differently than a whole);
+    // and the biggest so far, which may come later.
     static unsigned int bigLogged = 0;
-    if (pixels > 50 ? bigLogged++ < 20 : (*logged)++ < 20) {
+    static int biggest = 0;
+    coop_host_compare_record = pixels > 1000 && pixels > biggest * 2;
+    if (coop_host_compare_record) {
+        biggest = pixels;
+    }
+    if (coop_host_compare_record || (pixels > 50 ? bigLogged++ < 20 : (*logged)++ < 20)) {
         debug_printf("\nCOOP HOST: %s differs from a full redraw in %d pixels in %d,%d-%d,%d\n", what, pixels, left, top, right, bottom);
     }
 
-    // The first few big ones as pictures: coop-redraw-N-a.bmp as it was,
-    // -b.bmp redrawn.
+    // The first few big ones (and a few biggest so far) as pictures:
+    // coop-redraw-N-a.bmp as it was, -b.bmp redrawn.
     static int dumps = 0;
-    if (pixels > 50 && dumps < 4 && gSdlSurface != nullptr && gSdlSurface->format->palette != nullptr) {
+    if (pixels > 50 && (dumps < 4 || (coop_host_compare_record && dumps < 8)) && gSdlSurface != nullptr && gSdlSurface->format->palette != nullptr) {
         dumps++;
         int height = (int)(size / width);
         for (int which = 0; which < 2; which++) {
@@ -1494,13 +1518,15 @@ void coop_host_frame()
         coop_host_restore_ms += elapsed_time(restoreStart);
 
         if (restore && coop_host_restore_check_on) {
-            // The same as a full redraw?
-            int pixels = coop_host_compare_full_redraw("restored view", &coop_host_restore_mismatches_logged);
+            // The same as a full redraw? (Not where player 1's 3D cursor is:
+            // at the map's edge the cursor's own redraw draws it, a full one
+            // doesn't, as for the others' pictures.)
+            int pixels = coop_host_compare_full_redraw("restored view", &coop_host_restore_mismatches_logged, true);
             static unsigned int statesLogged = 0;
-            if (pixels > 50 && statesLogged++ < 20) {
-                std::string now = coop_host_view_state();
-                debug_printf("COOP HOST:   frame before: %s\nCOOP HOST:   when taken:   %s\nCOOP HOST:   now:          %s\n",
-                    coop_host_end_state.c_str(), coop_host_restore_state.c_str(), now.c_str());
+            if (pixels > 50 && (statesLogged++ < 20 || coop_host_compare_record)) {
+                coop_host_log_long("frame before: ", coop_host_end_state);
+                coop_host_log_long("when taken:   ", coop_host_restore_state);
+                coop_host_log_long("now:          ", coop_host_view_state());
             }
             if (pixels != 0) {
                 coop_host_restore_mismatches++;

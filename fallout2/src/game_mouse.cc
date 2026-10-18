@@ -836,7 +836,10 @@ void gameMouseRefresh()
         if (gameMouseRenderActionPoints(formattedActionPoints, color) == 0) {
             Rect tmp;
             objectGetRect(gGameMouseHexCursor, &tmp);
-            gameMouseRefreshCursorRect(&tmp, 0);
+            // CE: The map's elevation (was 0: above the ground floor the
+            // action points or X showed only once something else was drawn
+            // there).
+            gameMouseRefreshCursorRect(&tmp, gElevation);
         }
 
         _gmouse_3d_last_move_time = v3;

@@ -1273,6 +1273,9 @@ int mapHandleTransition()
 
             if (tileSetCenter(gDude->tile, TILE_SET_CENTER_REFRESH_WINDOW) == -1) {
                 debugPrint("\nError: map: attempt to center out-of-bounds!");
+                // CE: The new map drawn anyway (mapLoad() leaves that to
+                // this centering): the last one stayed on screen.
+                tileWindowRefresh();
             }
 
             memset(&gMapTransition, 0, sizeof(gMapTransition));

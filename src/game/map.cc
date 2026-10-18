@@ -1292,6 +1292,9 @@ int map_check_state()
 
             if (tile_set_center(obj_dude->tile, TILE_SET_CENTER_REFRESH_WINDOW) == -1) {
                 debug_printf("\nError: map: attempt to center out-of-bounds!");
+                // CE: The new map drawn anyway (map_load() leaves that to
+                // this centering): the last one stayed on screen.
+                tile_refresh_display();
             }
 
             memset(&map_state, 0, sizeof(map_state));

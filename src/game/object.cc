@@ -1153,7 +1153,10 @@ int obj_offset(Object* obj, int x, int y, Rect* rect)
         return -1;
     }
 
-    if (obj == obj_dude) {
+    // Co-op: the egg goes with player 1, as in obj_move_to_tile(): another
+    // player in their scope (a fight's turn) moved it off player 1 by every
+    // step they took, unless it is around them (on one PC, in control).
+    if (obj == obj_dude && (coop_primary_is_active() || obj_egg->tile == obj->tile)) {
         if (rect != NULL) {
             Rect eggRect;
             obj_bound(obj_egg, &eggRect);
@@ -1518,6 +1521,10 @@ void obj_follow_viewer(Object* obj)
 
     obj_update_roof(obj->tile, obj->elevation, NULL);
     obj_move_to_tile(obj_egg, obj->tile, obj->elevation, NULL);
+    // Where they are within the hex too (mid-step), as the egg moves with
+    // player 1 (it stayed at the hex's middle: a pixel or few off from
+    // where it was drawn, until they reached the next hex).
+    obj_offset(obj_egg, obj->x, obj->y, NULL);
 }
 
 // 0x47C588
@@ -2127,25 +2134,18 @@ Object* obj_find_first()
 {
     find_elev = 0;
 
-    ObjectListNode* objectListNode;
+    // CE: On to the next hexes when one holds only objects of a disabled
+    // art type (it stopped there), as Fallout 2 CE.
     for (find_tile = 0; find_tile < HEX_GRID_SIZE; find_tile++) {
-        objectListNode = objectTable[find_tile];
-        if (objectListNode) {
-            break;
+        ObjectListNode* objectListNode = objectTable[find_tile];
+        while (objectListNode != NULL) {
+            Object* object = objectListNode->obj;
+            if (!art_get_disable(FID_TYPE(object->fid))) {
+                find_ptr = objectListNode;
+                return object;
+            }
+            objectListNode = objectListNode->next;
         }
-    }
-
-    if (find_tile == HEX_GRID_SIZE) {
-        find_ptr = NULL;
-        return NULL;
-    }
-
-    while (objectListNode != NULL) {
-        if (art_get_disable(FID_TYPE(objectListNode->obj->fid)) == 0) {
-            find_ptr = objectListNode;
-            return objectListNode->obj;
-        }
-        objectListNode = objectListNode->next;
     }
 
     find_ptr = NULL;
@@ -2161,9 +2161,17 @@ Object* obj_find_next()
 
     ObjectListNode* objectListNode = find_ptr->next;
 
-    while (find_tile < HEX_GRID_SIZE) {
+    // CE: The next hex after the current one: it read the current hex again
+    // (the first hex with objects was gone through twice: a dead critter
+    // there was erased twice when a map aged its dead), as Fallout 2 CE.
+    while (true) {
         if (objectListNode == NULL) {
-            objectListNode = objectTable[find_tile++];
+            find_tile++;
+            if (find_tile >= HEX_GRID_SIZE) {
+                break;
+            }
+
+            objectListNode = objectTable[find_tile];
         }
 
         while (objectListNode != NULL) {
@@ -2213,9 +2221,17 @@ Object* obj_find_next_at()
 
     ObjectListNode* objectListNode = find_ptr->next;
 
-    while (find_tile < HEX_GRID_SIZE) {
+    // CE: The next hex after the current one: it read the current hex again
+    // (the first hex with objects was gone through twice: a dead critter
+    // there was erased twice when a map aged its dead), as Fallout 2 CE.
+    while (true) {
         if (objectListNode == NULL) {
-            objectListNode = objectTable[find_tile++];
+            find_tile++;
+            if (find_tile >= HEX_GRID_SIZE) {
+                break;
+            }
+
+            objectListNode = objectTable[find_tile];
         }
 
         while (objectListNode != NULL) {

@@ -954,6 +954,19 @@ static void coop_menu_offer_crash_report()
         return;
     }
 
+    // What the player plays, as in a bug report (not known while crashing:
+    // the report was written then without them).
+    std::string info = std::string("Game: ") + (strcmp(coop_net_game_name(), "fallout2") == 0 ? "Fallout 2" : "Fallout 1") + "\n";
+    char checksum[32];
+    snprintf(checksum, sizeof(checksum), "%016llx", (unsigned long long)coop_net_data_checksum());
+    info += std::string("Game files: ") + checksum + "\n";
+    char* language;
+    if (config_get_string(&game_config, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_LANGUAGE_KEY, &language)) {
+        info += std::string("Language: ") + language + "\n";
+    }
+    size_t firstLineEnd = report.find('\n');
+    report.insert(firstLineEnd != std::string::npos ? firstLineEnd + 1 : 0, info);
+
     std::string server = coop_menu_server();
     std::string body;
     std::string error = "No report server is set up.";

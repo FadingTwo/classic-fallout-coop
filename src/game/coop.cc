@@ -363,7 +363,11 @@ PlayerState* coop_add_player(const char* premadePath)
     obj->flags |= OBJECT_LIGHT_THRU;
     obj_set_light(obj, 4, 0x10000, NULL);
     obj_attempt_placement(obj, leader->tile, leader->elevation, 2);
-    obj_set_rotation(obj, leader->rotation, NULL);
+    // (Drawn turned at once: the screen showed them as placed, facing
+    // their own way, until something there was drawn again.)
+    Rect rect;
+    obj_set_rotation(obj, leader->rotation, &rect);
+    tile_refresh_rect(&rect, obj->elevation);
 
     if (partyMemberAdd(obj) == -1) {
         debug_printf("\nCOOP: could not add player 2 to the party\n");

@@ -101,7 +101,8 @@ that many bytes a second, like a slow line) and `COOP_RELAY_IDLE_TIMEOUT`.
 relay, through a slow relay, under the address sanitizer
 (`SOAK_ASAN_BIN`) or with a Windows player 2 (`SOAK_WINE`); random screen
 sizes and a random seed. Every run adds a line to `summary.log` with what
-you need to repeat it; failed runs keep their logs in `fail-<n>`.
+you need to repeat it; failed runs keep their logs in `fail-<n>`, packed
+with gzip (`zgrep`, `zcat`), the newest `SOAK_KEEP_FAILS` (10) of them.
 `SOAK_PORT_OFFSET=n` moves its local relay servers' ports, to run a second
 soak next to another (e.g. a work branch beside the main one).
 
