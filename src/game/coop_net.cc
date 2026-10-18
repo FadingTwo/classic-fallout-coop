@@ -74,6 +74,39 @@ static int coop_net_game_id()
     return COOP_NET_GAME;
 }
 
+// Which version we say we are: this one, or ([coop]test_version=x, for
+// tests) another.
+static const char* coop_net_version()
+{
+    char* value;
+    if (config_get_string(&game_config, COOP_CONFIG_KEY, "test_version", &value) && value[0] != '\0') {
+        return value;
+    }
+    return COOP_VERSION;
+}
+
+// Whether version a ("1.15.3") is older than b; none counts as oldest.
+static bool coop_net_version_older(const std::string& a, const std::string& b)
+{
+    if (a.empty() || b.empty()) {
+        return a.empty() && !b.empty();
+    }
+    size_t at = 0;
+    size_t bt = 0;
+    while (at < a.size() || bt < b.size()) {
+        long an = at < a.size() ? strtol(a.c_str() + at, NULL, 10) : 0;
+        long bn = bt < b.size() ? strtol(b.c_str() + bt, NULL, 10) : 0;
+        if (an != bn) {
+            return an < bn;
+        }
+        at = a.find('.', at);
+        at = at == std::string::npos ? a.size() : at + 1;
+        bt = b.find('.', bt);
+        bt = bt == std::string::npos ? b.size() : bt + 1;
+    }
+    return false;
+}
+
 const char* coop_net_game_name()
 {
     return coop_net_game_id() == 1 ? "fallout1" : "fallout2";
@@ -981,6 +1014,8 @@ static void coop_host_welcome(bool accepted, const char* reason)
     // Since 1.5.7: this screen's size (frames may come scaled down).
     writer.u16((unsigned int)screenGetWidth());
     writer.u16((unsigned int)screenGetHeight());
+    // Since 1.15.3: this game's version.
+    writer.str(coop_net_version());
     coop_connection_send(&coop_client, COOP_NET_MSG_WELCOME, writer.data);
 }
 
@@ -1028,6 +1063,11 @@ static void coop_host_handle(const CoopMessage& message)
             if (!reader.atEnd()) {
                 clientGame = reader.u8();
             }
+            // Since 1.15.3: their version (none: older than that).
+            std::string clientVersion;
+            if (!reader.atEnd()) {
+                clientVersion = reader.str();
+            }
             coop_set_outline_colors(coop_net_selected(), outlines);
             debug_printf("COOP: player %d outlines: %s, %s\n", coop_net_selected() + 1, coop_outline_color_name(outlines[0]), coop_outline_color_name(outlines[1]));
 
@@ -1043,6 +1083,22 @@ static void coop_host_handle(const CoopMessage& message)
             } else if (checksum != coop_net_data_checksum() && clientGame == 0) {
                 coop_host_welcome(false, "Game data differs (version, language or patches).");
                 coop_client.failed = true;
+            } else if (clientVersion != coop_net_version()) {
+                // Both need the same version: each side says which one
+                // (older clients show the reason as it comes).
+                bool clientOlder = coop_net_version_older(clientVersion, coop_net_version());
+                char reason[220];
+                snprintf(reason, sizeof(reason), "Player 1 has version %s and you have %s: both need the same version. %s",
+                    coop_net_version(), clientVersion.empty() ? "an older one" : clientVersion.c_str(),
+                    clientOlder ? "Update yours with MULTIPLAYER > UPDATE (or from the website)." : "Player 1 needs to update: MULTIPLAYER > UPDATE.");
+                coop_host_welcome(false, reason);
+                coop_client.failed = true;
+                char message[200];
+                snprintf(message, sizeof(message), "A player could not join: they have version %s, you have %s. %s",
+                    clientVersion.empty() ? "an older one" : clientVersion.c_str(), coop_net_version(),
+                    clientOlder ? "They need to update." : "Update yours: MULTIPLAYER > UPDATE.");
+                display_print(message);
+                debug_printf("\nCOOP NET: refused a client with version %s\n", clientVersion.empty() ? "older than 1.15.3" : clientVersion.c_str());
             } else {
                 // Other game files (another store's release, language or
                 // patches) are fine: the game runs here, the other player
@@ -1823,7 +1879,7 @@ static CoopSocket coop_relay_request_room(const std::string& server, const std::
     }
 
     std::string line;
-    if (!coop_relay_send_line(socket, "FCOOP-RELAY HOST " + (wanted.empty() ? std::string("-") : wanted) + " " + coop_net_game_name())
+    if (!coop_relay_send_line(socket, "FCOOP-RELAY HOST " + (wanted.empty() ? std::string("-") : wanted) + " " + coop_net_game_name() + " " + coop_net_version())
         || !coop_relay_read_line(socket, COOP_RELAY_CONNECT_TIMEOUT, &line)
         || line.compare(0, 5, "ROOM ") != 0) {
         *error = line.compare(0, 4, "ERR ") == 0 ? line.substr(4) : "The co-op server did not answer.";
@@ -2001,7 +2057,7 @@ static CoopSocket coop_relay_join(std::string* error)
     }
 
     std::string line;
-    if (!coop_relay_send_line(socket, "FCOOP-RELAY JOIN " + coop_relay_join_code + " " + coop_net_game_name())
+    if (!coop_relay_send_line(socket, "FCOOP-RELAY JOIN " + coop_relay_join_code + " " + coop_net_game_name() + " " + coop_net_version())
         || !coop_relay_read_line(socket, COOP_RELAY_JOIN_TIMEOUT, &line)
         || line != "OK") {
         *error = line.compare(0, 4, "ERR ") == 0 ? line.substr(4) : "No answer through the co-op server.";
@@ -2089,6 +2145,7 @@ static bool coop_client_connect(CoopConnection* connection, std::string* error)
     hello.u16((unsigned int)screenGetWidth());
     hello.u16((unsigned int)screenGetHeight());
     hello.u8(coop_net_game_id());
+    hello.str(coop_net_version());
     coop_connection_send(connection, COOP_NET_MSG_HELLO, hello.data);
     if (!coop_bring_character.empty()) {
         coop_connection_send(connection, COOP_NET_MSG_CHARACTER, coop_bring_character);
@@ -2110,8 +2167,20 @@ static bool coop_client_connect(CoopConnection* connection, std::string* error)
                 coop_client_host_width = reader.u16();
                 coop_client_host_height = reader.u16();
             }
+            // Since 1.15.3: player 1's version (none: older than that).
+            std::string hostVersion;
+            if (!reader.atEnd()) {
+                hostVersion = reader.str();
+            }
             if (!accepted) {
                 *error = "Host refused: " + reason;
+                coop_connection_close(connection);
+                return false;
+            }
+            if (hostVersion != coop_net_version()) {
+                *error = std::string("Player 1 has ") + (hostVersion.empty() ? "an older version" : "version " + hostVersion) + " and you have " + coop_net_version()
+                    + ": both need the same version. Player 1 can update with MULTIPLAYER > UPDATE.";
+                debug_printf("\nCOOP NET: player 1 has version %s\n", hostVersion.empty() ? "older than 1.15.3" : hostVersion.c_str());
                 coop_connection_close(connection);
                 return false;
             }
@@ -2550,7 +2619,10 @@ int coop_net_client_run()
     if (!coop_client_exit_requested) {
         // A goodbye from the host, or the connection broke (network, or the
         // co-op server between restarting): then joining again may work.
-        coop_net_error = hostSaidBye ? "Player 1 has left the game." : "The connection to player 1 was lost.";
+        // (Before a first picture: the join itself broke, say why it may.)
+        coop_net_error = hostSaidBye ? "Player 1 has left the game."
+            : framesReceived == 0 ? "The connection to player 1 closed before the game showed. Try again; if it keeps happening, check that you both have the same version and send a bug report (MULTIPLAYER > REPORT BUG)."
+                                  : "The connection to player 1 was lost.";
     }
     coop_client_exit_hook();
     win_delete(window);

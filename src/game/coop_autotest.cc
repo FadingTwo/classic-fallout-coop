@@ -161,6 +161,7 @@ static int coop_autotest_far_tile(Object* player);
 static void coop_autotest_check_far_cameras(const char* mapName);
 static void coop_autotest_heal_players();
 static int coop_autotest_menu_more(AutotestNewGameProc* newGame);
+static int coop_autotest_menu_update_prompt(AutotestNewGameProc* newGame);
 static int coop_autotest_credits(AutotestNewGameProc* newGame);
 static int coop_autotest_lobby_find(AutotestNewGameProc* newGame);
 static int coop_autotest_explode_exit(AutotestNewGameProc* newGame);
@@ -234,6 +235,7 @@ void coop_autotest_register()
     autotest_add_script("draw_bench", coop_autotest_draw_bench);
     autotest_add_script("coop_sound", coop_autotest_sound);
     autotest_add_script("menu_more", coop_autotest_menu_more);
+    autotest_add_script("menu_update_prompt", coop_autotest_menu_update_prompt);
     autotest_add_script("credits", coop_autotest_credits);
     autotest_add_script("lobby_find", coop_autotest_lobby_find);
     autotest_add_script("explode_exit", coop_autotest_explode_exit);
@@ -4016,6 +4018,41 @@ static int coop_autotest_menu_crash_report(AutotestNewGameProc* newGame)
 
 // UPDATE (a newer version is offered and downloaded) and REPORT BUG (sent)
 // against tools/coop_server.py, set as [coop] server.
+// MULTIPLAYER with a newer version on the server (COOP_AUTOTEST_UPDATE_CHECK):
+// it is offered at once, and UPDATE NOW installs it without asking again.
+static int coop_autotest_menu_update_prompt(AutotestNewGameProc* newGame)
+{
+    loadColorTable("color.pal");
+    palette_fade_to(cmap);
+    main_menu_create();
+    main_menu_show(false);
+
+    inject_wait(10);
+    coop_autotest_click_menu_slot(3);
+    if (main_menu_loop() != MAIN_MENU_MULTIPLAYER) {
+        autotest_fail("MULTIPLAYER not chosen");
+        return -1;
+    }
+
+    // "Version x is out", UPDATE NOW, "available", then "updated".
+    inject_wait(60);
+    inject_call(coop_autotest_screenshot);
+    inject_key(KEY_RETURN);
+    inject_wait(15);
+    coop_autotest_click_menu_slot(0);
+    inject_wait(60);
+    inject_key(KEY_RETURN);
+    inject_wait(60);
+    inject_call(coop_autotest_screenshot);
+    inject_key(KEY_RETURN);
+    inject_wait(15);
+    coop_autotest_click_menu_slot(5);
+
+    int rc = coop_menu_run();
+    autotest_log("menu returned %d", rc);
+    return 0;
+}
+
 static int coop_autotest_menu_server(AutotestNewGameProc* newGame)
 {
     loadColorTable("color.pal");

@@ -35,15 +35,19 @@ start with an HTTP upgrade (GET /fallout-coop/relay, Upgrade: fcoop-relay;
 answered with 101, X-Real-IP gives the player's address). Then each
 connection starts with one line:
 
-    FCOOP-RELAY HOST <code or -> [game]  player 1's control connection;
+    FCOOP-RELAY HOST <code or -> [game] [version]
+                                      player 1's control connection;
                                       answer "ROOM <code>", then "CONN <id>"
                                       for each player 2 (and PING now and
                                       then)
-    FCOOP-RELAY JOIN <code> [game]    player 2; answer "OK" once player 1
+    FCOOP-RELAY JOIN <code> [game] [version]
+                                      player 2; answer "OK" once player 1
                                       accepted (or "ERR <reason>"), then the
                                       game's own bytes. A Fallout 1 player
                                       never reaches a Fallout 2 game (game:
                                       fallout1 or fallout2, since 1.13.3).
+                                      The versions (since 1.15.3) go in the
+                                      log: why a join failed shows there.
     FCOOP-RELAY ACCEPT <code> <id>    player 1's connection for CONN <id>;
                                       no answer, then the game's own bytes
 
@@ -231,11 +235,17 @@ def _game_name(text):
     return text if text in ("fallout1", "fallout2") else ""
 
 
+def _version_name(text):
+    """A version like 1.15.3 (what 1.15.3 and later send), else empty."""
+    text = text or ""
+    return text if len(text) <= 16 and all(c.isdigit() or c == "." for c in text) and text[:1].isdigit() else ""
+
+
 def _game_title(game):
     return "Fallout 2" if game == "fallout2" else "Fallout 1"
 
 
-def _relay_host(conn, address, wanted, game=""):
+def _relay_host(conn, address, wanted, game="", version=""):
     with _relay_lock:
         if len(_rooms) >= RELAY_MAX_ROOMS or sum(1 for r in _rooms.values() if r["address"] == address) >= RELAY_MAX_ROOMS_PER_ADDRESS:
             conn.sendall(b"ERR The server is busy. Try again later.\n")
@@ -254,10 +264,10 @@ def _relay_host(conn, address, wanted, game=""):
         if code is None:
             conn.close()
             return
-        room = {"control": conn, "address": address, "pending": {}, "send_lock": threading.Lock(), "game": game}
+        room = {"control": conn, "address": address, "pending": {}, "send_lock": threading.Lock(), "game": game, "version": version}
         _rooms[code] = room
     _stats_add("online_hosts")
-    print("relay: room %s for %s" % (code, address), flush=True)
+    print("relay: room %s for %s (%s %s)" % (code, address, game or "?", version or "before 1.15.3"), flush=True)
     try:
         conn.sendall(("ROOM %s\n" % code).encode())
         conn.settimeout(25)
@@ -277,7 +287,7 @@ def _relay_host(conn, address, wanted, game=""):
     print("relay: room %s closed" % code, flush=True)
 
 
-def _relay_join(conn, code, address, game=""):
+def _relay_join(conn, code, address, game="", version=""):
     global _relay_next_id, _relay_pipes
     code = code.upper().replace("-", "")
     with _relay_lock:
@@ -349,7 +359,10 @@ def _relay_join(conn, code, address, game=""):
             _relay_pipes -= 1
         return
     started = time.time()
-    print("relay: join %s from %s: playing" % (code, address), flush=True)
+    # Both versions: a join between two differs is refused by player 1's game
+    # (since 1.15.3), and then the game ends at once.
+    print("relay: join %s from %s: playing (player 2 %s, player 1 %s)" % (code, address, version or "before 1.15.3",
+          room["version"] or "before 1.15.3"), flush=True)
     with _relay_lock:
         _relay_games[pending_id] = {"code": code, "since": started}
     _stats_add("relayed_games")
@@ -401,9 +414,11 @@ def _relay_connection(conn, address):
             line = _relay_read_line(conn)
         parts = (line or "").split()
         if len(parts) >= 3 and parts[0] == "FCOOP-RELAY" and parts[1] == "HOST":
-            _relay_host(conn, address, parts[2], _game_name(parts[3]) if len(parts) >= 4 else "")
+            _relay_host(conn, address, parts[2], _game_name(parts[3]) if len(parts) >= 4 else "",
+                        _version_name(parts[4]) if len(parts) >= 5 else "")
         elif len(parts) >= 3 and parts[0] == "FCOOP-RELAY" and parts[1] == "JOIN":
-            _relay_join(conn, parts[2], address, _game_name(parts[3]) if len(parts) >= 4 else "")
+            _relay_join(conn, parts[2], address, _game_name(parts[3]) if len(parts) >= 4 else "",
+                        _version_name(parts[4]) if len(parts) >= 5 else "")
         elif len(parts) >= 4 and parts[0] == "FCOOP-RELAY" and parts[1] == "ACCEPT" and parts[3].isdigit():
             _relay_accept(conn, parts[2], int(parts[3]))
         else:

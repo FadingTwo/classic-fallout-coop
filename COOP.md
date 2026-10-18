@@ -129,7 +129,7 @@ both players share it, like they share the mouse.
 2. In the main menu choose **MULTIPLAYER**:
    - **HOST GAME** (player 1): then NEW GAME or LOAD GAME, then one of
      LAN ONLY (same network), LIST ONLINE (in everyone's server browser)
-     or PRIVATE CODE (only with the game code). Online games go through
+     or WITH A FRIEND (only with the game code). Online games go through
      the co-op server's relay, so nobody opens ports; they get a code like
      KQX472. PLAYERS sets how many can join (2-4) and HARDER makes enemies
      tougher the more of you play. The others can join any time; they

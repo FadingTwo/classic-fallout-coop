@@ -46,6 +46,11 @@ static bool coop_menu_session = false;
 
 static std::string coop_menu_server();
 static std::string coop_menu_relay();
+static bool coop_menu_newer_version();
+static int coop_menu_update(bool ask = true);
+
+// The newest version on the co-op server (empty: not known).
+static std::string coop_menu_latest_version;
 
 static void coop_menu_message(const char* title, const char** lines, int count)
 {
@@ -96,7 +101,7 @@ static int coop_menu_host()
             snprintf(players, sizeof(players), "PLAYERS: %d", coop_net_max_clients_value() + 1);
             char harder[32];
             snprintf(harder, sizeof(harder), "HARDER: %s", coop_harder_setting() ? "ON" : "OFF");
-            const char* labels[] = { "LAN ONLY", "LIST ONLINE", "PRIVATE CODE", players, harder, "BACK" };
+            const char* labels[] = { "LAN ONLY", "LIST ONLINE", "WITH A FRIEND", players, harder, "BACK" };
             const int keys[] = { KEY_LOWERCASE_L, KEY_LOWERCASE_O, KEY_LOWERCASE_P, KEY_LOWERCASE_N, KEY_LOWERCASE_H, KEY_LOWERCASE_B };
             choice = main_menu_choose(labels, keys, 6);
             if (choice == 3) {
@@ -156,17 +161,19 @@ static int coop_menu_host()
     }
 
     if (online && coop_net_relay_code()[0] != '\0') {
-        char code[64];
-        snprintf(code, sizeof(code), "Game code: %s", coop_net_relay_code());
-        const char* version = "Everyone needs the same mod version.";
+        // The code copied, to paste to a friend; their JOIN GAME offers a
+        // copied code by itself.
+        bool copied = SDL_SetClipboardText(coop_net_relay_code()) == 0;
+        char title[64];
+        snprintf(title, sizeof(title), "GAME CODE  %s", coop_net_relay_code());
         const char* lines[] = {
-            code,
-            "The others: MULTIPLAYER, JOIN GAME,",
-            listOnline ? "then this game in the list," : "then ENTER ADDRESS and the code.",
-            listOnline ? "or ENTER ADDRESS and the code." : "No open ports needed.",
-            version,
+            copied ? "Copied: paste it to your friends." : "Send this code to your friends.",
+            "They press MULTIPLAYER, JOIN GAME",
+            listOnline ? "and pick this game, or enter the code." : "and enter (or paste) the code.",
+            "No open ports needed. Everyone",
+            "needs the same version of the mod.",
         };
-        coop_menu_message("HOSTING ONLINE", lines, 5);
+        coop_menu_message(title, lines, 5);
         return game;
     }
 
@@ -277,13 +284,47 @@ static int coop_menu_connect(const char* address, int port, const std::string& r
     palette_fade_to(cmap);
     main_menu_status("");
 
-    const char* error = coop_net_last_error();
-    if (rc != 0 || error[0] != '\0') {
-        const char* lines[] = { error[0] != '\0' ? error : "The connection failed." };
+    std::string error = coop_net_last_error();
+    if (rc != 0 || !error.empty()) {
+        const char* lines[] = { !error.empty() ? error.c_str() : "The connection failed." };
         coop_menu_message(rc != 0 ? "COULD NOT JOIN" : "MULTIPLAYER", lines, 1);
+
+        // Another version, and a newer one is out: updating is a click
+        // away (the game starts again with it).
+        if (error.find("same version") != std::string::npos && coop_menu_newer_version()) {
+            const char* labels[] = { "UPDATE NOW", "BACK" };
+            const int keys[] = { KEY_LOWERCASE_U, KEY_LOWERCASE_B };
+            if (main_menu_choose(labels, keys, 2) == 0) {
+                coop_menu_update(false);
+            }
+        }
     }
 
     return -1;
+}
+
+// A game code on the clipboard (copied from a friend's message), or empty.
+static std::string coop_menu_clipboard_code()
+{
+    std::string code;
+    if (!SDL_HasClipboardText()) {
+        return code;
+    }
+    char* text = SDL_GetClipboardText();
+    if (text == NULL) {
+        return code;
+    }
+    std::string copied = text;
+    SDL_free(text);
+    size_t first = copied.find_first_not_of(" \t\r\n");
+    size_t last = copied.find_last_not_of(" \t\r\n");
+    if (first != std::string::npos && last - first < 12) {
+        copied = copied.substr(first, last - first + 1);
+        if (!coop_net_parse_code(copied.c_str(), &code)) {
+            code.clear();
+        }
+    }
+    return code;
 }
 
 static int coop_menu_join_address()
@@ -313,6 +354,22 @@ static int coop_menu_join_address()
 // ENTER ADDRESS for anything else.
 static int coop_menu_join()
 {
+    std::string copiedCode = coop_menu_clipboard_code();
+    if (!copiedCode.empty()) {
+        std::string label = "JOIN " + copiedCode;
+        const char* labels[] = { label.c_str(), "FIND GAMES", "BACK" };
+        const int keys[] = { KEY_LOWERCASE_J, KEY_LOWERCASE_F, KEY_LOWERCASE_B };
+        main_menu_status("A game code is copied.");
+        int choice = main_menu_choose(labels, keys, 3);
+        main_menu_status("");
+        if (choice == 0) {
+            return coop_menu_connect(copiedCode.c_str(), 0, copiedCode);
+        }
+        if (choice != 1) {
+            return -1;
+        }
+    }
+
     for (;;) {
         main_menu_show_buttons(coop_menu_labels, coop_menu_keys, COOP_MENU_BUSY_ENTRIES);
         main_menu_status("Looking for games...");
@@ -512,7 +569,7 @@ static void coop_menu_no_server(const char* title)
 // UPDATE: <server>/fallout-coop/latest.txt is key=value lines: version,
 // notes, and the package to download: url_windows, url_linux, url_macos
 // or url.
-static int coop_menu_update()
+static int coop_menu_update(bool ask)
 {
     std::string server = coop_menu_server();
     if (server.empty()) {
@@ -615,10 +672,12 @@ static int coop_menu_update()
         return -1;
     }
 
-    const char* labels[] = { "INSTALL", "LATER" };
-    const int keys[] = { KEY_LOWERCASE_I, KEY_LOWERCASE_L };
-    if (main_menu_choose(labels, keys, 2) != 0) {
-        return -1;
+    if (ask) {
+        const char* labels[] = { "INSTALL", "LATER" };
+        const int keys[] = { KEY_LOWERCASE_I, KEY_LOWERCASE_L };
+        if (main_menu_choose(labels, keys, 2) != 0) {
+            return -1;
+        }
     }
 
     main_menu_status("Downloading...");
@@ -922,6 +981,7 @@ static bool coop_menu_newer_version()
             size_t end = body.find_first_of("\r\n", at);
             std::string version = body.substr(at + 8, end == std::string::npos ? std::string::npos : end - at - 8);
             newer = coop_menu_compare_versions(version, COOP_VERSION) > 0;
+            coop_menu_latest_version = version;
             debug_printf("\nCOOP MENU: latest version %s%s\n", version.c_str(), newer ? " (newer)" : "");
         }
     }
@@ -994,6 +1054,21 @@ int coop_menu_run()
     memcpy(labels, coop_menu_labels, sizeof(labels));
     if (coop_menu_newer_version()) {
         labels[3] = "NEW UPDATE!";
+
+        // Asked once a session: with different versions players can't
+        // play together.
+        static bool asked = false;
+        if (!asked) {
+            asked = true;
+            std::string line = "Version " + coop_menu_latest_version + " is out (you have " + COOP_VERSION + ").";
+            const char* lines[] = { line.c_str(), "Everyone needs the same version", "to play together." };
+            coop_menu_message("NEW UPDATE", lines, 3);
+            const char* updateLabels[] = { "UPDATE NOW", "LATER" };
+            const int updateKeys[] = { KEY_LOWERCASE_U, KEY_LOWERCASE_L };
+            if (main_menu_choose(updateLabels, updateKeys, 2) == 0) {
+                coop_menu_update(false);
+            }
+        }
     }
     const int* keys = coop_menu_keys;
 
