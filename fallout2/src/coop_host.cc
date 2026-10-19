@@ -493,6 +493,53 @@ static int coop_host_compare_full_redraw(const char* what, unsigned int* logged,
     }
     if (coop_host_compare_record || (pixels > 50 ? bigLogged++ < 20 : (*logged)++ < 20)) {
         debug_printf("\nCOOP HOST: %s differs from a full redraw in %d pixels in %d,%d-%d,%d\n", what, pixels, left, top, right, bottom);
+
+        // What's drawn there (big ones): which object kept an old look.
+        if (pixels > 50) {
+            Rect differs = { left, top, right, bottom };
+            int listed = 0;
+            for (int elevation = 0; elevation < 3; elevation++) {
+                for (Object* obj = objectFindFirstAtElevation((gElevation + elevation) % 3); obj != nullptr && listed < 12; obj = objectFindNextAtElevation()) {
+                    Rect rect;
+                    Rect both;
+                    objectGetRect(obj, &rect);
+                    if (rectIntersection(&differs, &rect, &both) == 0) {
+                        debug_printf("COOP HOST:   drawn there: pid %x fid %x tile %d elevation %d (view %d) flags %x, %d,%d-%d,%d, light %d\n",
+                            obj->pid, obj->fid, obj->tile, obj->elevation, gElevation, obj->flags, rect.left, rect.top, rect.right, rect.bottom,
+                            lightGetTileIntensity(obj->elevation, obj->tile));
+                        listed++;
+                    }
+                }
+            }
+            // And what a full redraw draws there.
+            objectTraceDraws(&differs);
+            bool ownDrawThen = coop_host_own_draw;
+            coop_host_own_draw = true;
+            tile_refresh_display();
+            coop_host_own_draw = ownDrawThen;
+            objectTraceDraws(nullptr);
+            int again = 0;
+            for (int y = std::max(top, 0); y <= bottom; y++) {
+                for (int x = std::max(left, 0); x <= right; x++) {
+                    if (coop_host_view_check[(size_t)y * width + x] != buffer[(size_t)y * width + x]) {
+                        again++;
+                    }
+                }
+            }
+            debug_printf("COOP HOST:   drawn again: %d pixels differ\n", again);
+
+            Object* unplaced[16];
+            int unplacedCount = objectGetUnplaced(unplaced, 16);
+            for (int index = 0; index < unplacedCount; index++) {
+                Rect rect;
+                Rect both;
+                objectGetRect(unplaced[index], &rect);
+                if (rectIntersection(&differs, &rect, &both) == 0) {
+                    debug_printf("COOP HOST:   drawn there, on no tile: pid %x fid %x frame %d flags %x, %d,%d-%d,%d\n",
+                        unplaced[index]->pid, unplaced[index]->fid, unplaced[index]->frame, unplaced[index]->flags, rect.left, rect.top, rect.right, rect.bottom);
+                }
+            }
+        }
     }
 
     // The first few big ones (and a few biggest so far) as pictures:

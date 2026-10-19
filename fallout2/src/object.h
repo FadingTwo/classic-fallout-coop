@@ -73,6 +73,13 @@ Object* objectFindFirst();
 Object* objectFindNext();
 Object* objectFindFirstAtElevation(int elevation);
 Object* objectFindNextAtElevation();
+// CE: co-op: the objects on no tile (drawn after the roofs, at screen
+// positions), up to `max`; returns how many.
+int objectGetUnplaced(Object** objects, int max);
+// CE: co-op: testing, the objects drawn in `rect` go to the debug log until
+// called with nullptr.
+void objectTraceDraws(const Rect* rect);
+const Rect* objectTraceDrawsRect();
 Object* objectFindFirstAtLocation(int elevation, int tile);
 Object* objectFindNextAtLocation();
 void objectGetRect(Object* obj, Rect* rect);

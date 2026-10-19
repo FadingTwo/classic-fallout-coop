@@ -102,6 +102,9 @@ static int _outlineCount = 0;
 // 0x519628
 static ObjectListNode* gObjectListHead = nullptr;
 
+// CE: co-op: testing, objects drawn here are logged (objectTraceDraws).
+static const Rect* gObjectTraceRect = nullptr;
+
 // 0x51962C
 static int _centerToUpperLeft = 0;
 
@@ -2247,6 +2250,25 @@ Object* objectFindFirstAtElevation(int elevation)
 }
 
 // 0x48B510
+void objectTraceDraws(const Rect* rect)
+{
+    gObjectTraceRect = rect;
+}
+
+const Rect* objectTraceDrawsRect()
+{
+    return gObjectTraceRect;
+}
+
+int objectGetUnplaced(Object** objects, int max)
+{
+    int count = 0;
+    for (ObjectListNode* node = gObjectListHead; node != nullptr && count < max; node = node->next) {
+        objects[count++] = node->obj;
+    }
+    return count;
+}
+
 Object* objectFindNextAtElevation()
 {
     if (gObjectFindLastObjectListNode == nullptr) {
@@ -4632,6 +4654,24 @@ static int _obj_adjust_light(Object* obj, int a2, Rect* rect)
 
                         if (v12) {
                             adjustLightIntensity(obj->elevation, tile, v28[index]);
+
+                            // CE: co-op: everything on a tile whose light
+                            // changed is redrawn, not only what's before the
+                            // first object stopping the light: one after it
+                            // kept its old light where nothing else redrew
+                            // (as in Fallout 1 CE co-op).
+                            if (rect != nullptr) {
+                                for (ObjectListNode* node = gObjectListHeadByTile[tile]; node != nullptr; node = node->next) {
+                                    if (node->obj->elevation > obj->elevation) {
+                                        break;
+                                    }
+                                    if (node->obj->elevation == obj->elevation && (node->obj->flags & OBJECT_HIDDEN) == 0) {
+                                        Rect nodeRect;
+                                        objectGetRect(node->obj, &nodeRect);
+                                        rectUnion(&objectRect, &nodeRect, &objectRect);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -4993,6 +5033,16 @@ static void _obj_render_object(Object* object, Rect* rect, int light)
     if (rectIntersection(&objectRect, rect, &objectRect) != 0) {
         artUnlock(cacheEntry);
         return;
+    }
+
+    // CE: co-op: testing, what's drawn in a rect (redraw checks).
+    if (gObjectTraceRect != nullptr) {
+        Rect traced;
+        if (rectIntersection(&objectRect, gObjectTraceRect, &traced) == 0) {
+            debugPrint("COOP HOST:   drew there: pid %x fid %x frame %d tile %d elevation %d flags %x, %d,%d-%d,%d\n",
+                object->pid, object->fid, object->frame, object->tile, object->elevation, object->flags,
+                objectRect.left, objectRect.top, objectRect.right, objectRect.bottom);
+        }
     }
 
     unsigned char* src = artGetFrameData(art, object->frame, object->rotation);

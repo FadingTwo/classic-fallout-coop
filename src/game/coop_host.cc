@@ -527,6 +527,36 @@ static int coop_host_compare_full_redraw(const char* what, unsigned int* logged,
     }
     if (coop_host_compare_record || (pixels > 50 ? bigLogged++ < 20 : (*logged)++ < 20)) {
         debug_printf("\nCOOP HOST: %s differs from a full redraw in %d pixels in %d,%d-%d,%d\n", what, pixels, left, top, right, bottom);
+
+        // What's drawn there (big ones): which object kept an old look.
+        if (pixels > 50) {
+            Rect differs = { left, top, right, bottom };
+            int listed = 0;
+            for (int elevation = 0; elevation < 3; elevation++) {
+                for (Object* obj = obj_find_first_at((map_elevation + elevation) % 3); obj != NULL && listed < 12; obj = obj_find_next_at()) {
+                    Rect rect;
+                    Rect both;
+                    obj_bound(obj, &rect);
+                    if (rect_inside_bound(&differs, &rect, &both) == 0) {
+                        debug_printf("COOP HOST:   drawn there: pid %x fid %x tile %d elevation %d (view %d) flags %x, %d,%d-%d,%d, light %d\n",
+                            obj->pid, obj->fid, obj->tile, obj->elevation, map_elevation, obj->flags, rect.ulx, rect.uly, rect.lrx, rect.lry,
+                            light_get_tile(obj->elevation, obj->tile));
+                        listed++;
+                    }
+                }
+            }
+            Object* unplaced[16];
+            int unplacedCount = obj_get_unplaced(unplaced, 16);
+            for (int index = 0; index < unplacedCount; index++) {
+                Rect rect;
+                Rect both;
+                obj_bound(unplaced[index], &rect);
+                if (rect_inside_bound(&differs, &rect, &both) == 0) {
+                    debug_printf("COOP HOST:   drawn there, on no tile: pid %x fid %x frame %d flags %x, %d,%d-%d,%d\n",
+                        unplaced[index]->pid, unplaced[index]->fid, unplaced[index]->frame, unplaced[index]->flags, rect.ulx, rect.uly, rect.lrx, rect.lry);
+                }
+            }
+        }
     }
 
     // The first few big ones (and a few biggest so far) as pictures:

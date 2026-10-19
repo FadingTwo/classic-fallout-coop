@@ -1351,6 +1351,12 @@ static void tileRenderRoof(int fid, int x, int y, Rect* rect, int light)
     tileRect.bottom = y + tileHeight - 1;
 
     if (rectIntersection(&tileRect, rect, &tileRect) == 0) {
+        // CE: co-op: testing, what's drawn in a rect (redraw checks).
+        Rect traced;
+        if (objectTraceDrawsRect() != nullptr && rectIntersection(&tileRect, objectTraceDrawsRect(), &traced) == 0) {
+            debugPrint("COOP HOST:   drew there: roof fid %x %dx%d at %d,%d\n", fid, tileWidth, tileHeight, x, y);
+        }
+
         unsigned char* tileFrmBuffer = artGetFrameData(tileFrm, 0, 0);
         tileFrmBuffer += tileWidth * (tileRect.top - y) + (tileRect.left - x);
 
@@ -1613,6 +1619,15 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
     Art* art = artLock(fid, &cacheEntry);
     if (art == nullptr) {
         return;
+    }
+
+    // CE: co-op: testing, what's drawn in a rect (redraw checks).
+    if (objectTraceDrawsRect() != nullptr) {
+        Rect floorRect = { x, y, x + artGetWidth(art, 0, 0) - 1, y + artGetHeight(art, 0, 0) - 1 };
+        Rect traced;
+        if (rectIntersection(&floorRect, rect, &traced) == 0 && rectIntersection(&traced, objectTraceDrawsRect(), &traced) == 0) {
+            debugPrint("COOP HOST:   drew there: floor fid %x %dx%d at %d,%d\n", fid, floorRect.right - x + 1, floorRect.bottom - y + 1, x, y);
+        }
     }
 
     int elev = gElevation;

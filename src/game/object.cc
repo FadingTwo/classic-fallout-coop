@@ -2213,6 +2213,15 @@ Object* obj_find_first_at(int elevation)
 }
 
 // 0x47D070
+int obj_get_unplaced(Object** objects, int max)
+{
+    int count = 0;
+    for (ObjectListNode* node = floatingObjects; node != NULL && count < max; node = node->next) {
+        objects[count++] = node->obj;
+    }
+    return count;
+}
+
 Object* obj_find_next_at()
 {
     if (find_ptr == NULL) {
@@ -4403,6 +4412,24 @@ static int obj_adjust_light(Object* obj, int a2, Rect* rect)
 
                         if (v12) {
                             adjustLightIntensity(obj->elevation, tile, v28[index]);
+
+                            // CE: co-op: everything on a tile whose light
+                            // changed is redrawn, not only what's before the
+                            // first object stopping the light: one after it
+                            // kept its old light where nothing else redrew
+                            // (a scenery's top in the Followers' room).
+                            if (rect != NULL) {
+                                for (ObjectListNode* node = objectTable[tile]; node != NULL; node = node->next) {
+                                    if (node->obj->elevation > obj->elevation) {
+                                        break;
+                                    }
+                                    if (node->obj->elevation == obj->elevation && (node->obj->flags & OBJECT_HIDDEN) == 0) {
+                                        Rect nodeRect;
+                                        obj_bound(node->obj, &nodeRect);
+                                        rect_min_bound(&objectRect, &nodeRect, &objectRect);
+                                    }
+                                }
+                            }
                         }
                     }
                 }

@@ -71,6 +71,9 @@ Object* obj_find_first();
 Object* obj_find_next();
 Object* obj_find_first_at(int elevation);
 Object* obj_find_next_at();
+// Co-op: the objects on no tile (drawn after the roofs, at screen
+// positions), up to `max`; returns how many.
+int obj_get_unplaced(Object** objects, int max);
 void obj_bound(Object* obj, Rect* rect);
 bool obj_occupied(int tile_num, int elev);
 Object* obj_blocking_at(Object* a1, int tile_num, int elev);
