@@ -26,7 +26,25 @@ client_script=${4:-net_client}
 tamper=
 [ "${5:-}" = "--tamper" ] && tamper=1
 
-port=$((27100 + RANDOM % 500))
+# A free port, reserved (a directory, made atomically) so that runs side
+# by side never pick the same one: they collided now and then ("cannot
+# listen on port"). Ports something listens on are skipped; reservations
+# older than a day (a killed run) are taken over.
+port=
+for attempt in $(seq 1 200); do
+    candidate=$((27100 + RANDOM % 500))
+    lock=/tmp/nettest-port-$candidate
+    find "$lock" -maxdepth 0 -mmin +1440 -exec rmdir {} \; 2>/dev/null
+    if command -v ss >/dev/null && ss -ltn 2>/dev/null | grep -q ":$candidate "; then
+        continue
+    fi
+    if mkdir "$lock" 2>/dev/null; then
+        port=$candidate
+        trap 'rmdir "/tmp/nettest-port-$port" 2>/dev/null' EXIT
+        break
+    fi
+done
+[ -n "$port" ] || { echo "nettest: no free port" >&2; exit 1; }
 
 AUTOTEST_RES=${HOST_RES:-} AUTOTEST_SCRIPT=$host_script "$here/regress.sh" run "$bin" "$out/host" \
     "[coop]enabled=1" "[coop]mode=host" "[coop]port=$port" ${HOST_EXTRA:-} >"$out.host.txt" 2>&1 &

@@ -98,6 +98,10 @@ void lipsTicker()
                 gLipsCurrentPhoneme = gLipsData.phonemes[0];
 
                 if ((gLipsData.flags & LIPS_FLAG_0x01) == 0) {
+                    // CE: co-op: the client's copy stops too.
+                    if (gsound_event_hook != nullptr) {
+                        gsound_event_hook(GSOUND_EVENT_SPEECH_STOP, "", 0, 0, 0);
+                    }
                     _head_marker_current = 0;
                     soundStop(gLipsData.sound);
                     v0 = _head_marker_current;
@@ -126,6 +130,10 @@ void lipsTicker()
                 gLipsCurrentPhoneme = gLipsData.phonemes[0];
 
                 if ((gLipsData.flags & LIPS_FLAG_0x01) == 0) {
+                    // CE: co-op: the client's copy stops too.
+                    if (gsound_event_hook != nullptr) {
+                        gsound_event_hook(GSOUND_EVENT_SPEECH_STOP, "", 0, 0, 0);
+                    }
                     _head_marker_current = 0;
                     soundStop(gLipsData.sound);
                     v0 = _head_marker_current;
@@ -174,8 +182,19 @@ int lipsStart()
 
     _speechStartTime = getTicks();
 
+    // CE: co-op: lets a client hear conversations too (as in Fallout 1 CE
+    // co-op; plain speech goes through speechLoad() already).
+    if (gsound_event_hook != nullptr) {
+        char name[COMPAT_MAX_PATH];
+        snprintf(name, sizeof(name), "%s\\%s", _lips_subdir_name, lips_fix_string(gLipsData.file_name, sizeof(gLipsData.file_name)));
+        gsound_event_hook(GSOUND_EVENT_SPEECH, name, 0, 0, 0);
+    }
+
     if (soundPlay(gLipsData.sound) != 0) {
         debugPrint("Failed play!\n");
+        if (gsound_event_hook != nullptr) {
+            gsound_event_hook(GSOUND_EVENT_SPEECH_STOP, "", 0, 0, 0);
+        }
         _head_marker_current = 0;
 
         soundStop(gLipsData.sound);

@@ -78,7 +78,6 @@ typedef struct ActivePlayerScopeFrame {
 
 static void coop_scope_push(PlayerState* player);
 static void coop_scope_pop();
-static void coop_scope_unwind_to(int depth);
 static void coop_sync_base();
 static void coop_switch_active(PlayerState* player);
 
@@ -532,7 +531,12 @@ void coop_reset()
     coop_barter_merchant = nullptr;
 }
 
-static void coop_scope_unwind_to(int depth)
+int coop_scope_depth()
+{
+    return coop_scope_stack_depth;
+}
+
+void coop_scope_unwind_to(int depth)
 {
     while (coop_scope_stack_depth > depth) {
         coop_scope_pop();

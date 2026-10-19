@@ -1,3 +1,4 @@
+#include "coop.h"
 #include "interpreter.h"
 
 #include <assert.h>
@@ -2635,7 +2636,13 @@ void _interpret(Program* program, int a2)
 
     gInterpreterCurrentProgram = program;
 
+    // CE: co-op: a script error longjmps back here, skipping the destructors
+    // of any ActivePlayerScope entered meanwhile (as in Fallout 1 CE co-op):
+    // the wrong player stayed active.
+    int coopScopeDepth = coop_scope_depth();
+
     if (setjmp(program->env)) {
+        coop_scope_unwind_to(coopScopeDepth);
         gInterpreterCurrentProgram = oldCurrentProgram;
         program->flags |= PROGRAM_FLAG_EXITED | PROGRAM_FLAG_0x04;
         return;

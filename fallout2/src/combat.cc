@@ -4908,6 +4908,12 @@ static void _damage_object(Object* a1, int damage, bool animated, int a4, Object
 
                 if (!scriptOverrides) {
                     _combat_exps += critterGetExp(a1);
+
+                    // CE: co-op: the kill counts for the player who made it;
+                    // kills by companions count for player 1 (as in Fallout 1
+                    // CE co-op).
+                    PlayerState* killer = coop_player_of(whoHitMe);
+                    ActivePlayerScope scope(killer != nullptr ? killer : coop_player(0));
                     killsIncByType(critterGetKillType(a1));
                 }
             }

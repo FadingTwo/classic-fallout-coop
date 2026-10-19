@@ -379,6 +379,16 @@ int lsgSaveGame(int mode)
     _ls_error_code = 0;
     _patches = settings.system.master_patches_path.c_str();
 
+    // CE: co-op: only player 1 saves (as in Fallout 1 CE co-op): another
+    // player in control (on one PC, or their part of a frame) saved with
+    // the players swapped.
+    if (!coop_primary_is_active()) {
+        // displayMonitorAddMessage() writes into the string while wrapping.
+        char message[] = "Only player 1 can save the game.";
+        displayMonitorAddMessage(message);
+        return 0;
+    }
+
     // SFALL: skip slot selection if auto quicksave is enabled
     if (autoQuickSaveSlots) {
         _quick_done = true;

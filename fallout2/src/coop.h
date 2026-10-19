@@ -27,7 +27,7 @@ namespace fallout {
 // active (and `gDude` their critter) for the code inside it.
 
 // The co-op version (shared with Classic Fallout Co-op for Fallout 1).
-#define COOP_VERSION "1.15.3"
+#define COOP_VERSION "1.15.4"
 
 #define COOP_MAX_PLAYERS 4
 
@@ -283,6 +283,12 @@ bool coop_take_character_copy_request();
 // handler); a save without them reads as single player.
 int coop_save(File* stream);
 int coop_load(File* stream);
+
+int coop_scope_depth();
+
+// Restores scopes down to `depth` without running their destructors. Only
+// for code that bypasses C++ unwinding (the script interpreter's longjmp).
+void coop_scope_unwind_to(int depth);
 
 } // namespace fallout
 
