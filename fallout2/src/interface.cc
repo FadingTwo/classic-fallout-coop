@@ -859,6 +859,8 @@ void interfaceBarRefresh()
         interfaceRenderHitPoints(false);
         interfaceRenderArmorClass(false);
         indicatorBarRefresh();
+        // CE: co-op: the monitor of the player whose screen this is.
+        displayMonitorRefresh();
         windowRefresh(gInterfaceBarWindow);
     }
     indicatorBarRefresh();

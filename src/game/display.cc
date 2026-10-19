@@ -1,9 +1,11 @@
 #include "game/display.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "game/art.h"
 #include "game/combat.h"
+#include "game/coop.h"
 #include "game/gmouse.h"
 #include "game/gsound.h"
 #include "game/intface.h"
@@ -56,7 +58,10 @@ static int dn_bid = -1;
 static int up_bid = -1;
 
 // 0x56C38C
-static char disp_str[DISPLAY_MONITOR_LINES_CAPACITY][DISPLAY_MONITOR_LINE_LENGTH];
+//
+// Co-op: one monitor per player: everyone's messages go to all, a player's
+// own (what they look at) only to theirs; each player's screen shows theirs.
+static char disp_strs[COOP_MAX_PLAYERS][DISPLAY_MONITOR_LINES_CAPACITY][DISPLAY_MONITOR_LINE_LENGTH];
 
 // 0x56E2CC
 static unsigned char* disp_buf;
@@ -68,7 +73,7 @@ static int max_disp_ptr;
 static bool display_enabled;
 
 // 0x56E2D8
-static int disp_curr;
+static int disp_currs[COOP_MAX_PLAYERS];
 
 // 0x56E2DC
 static int intface_full_wid;
@@ -77,7 +82,18 @@ static int intface_full_wid;
 static int max_ptr;
 
 // 0x56E2DE4
-static int disp_start;
+static int disp_starts[COOP_MAX_PLAYERS];
+
+// Co-op: the monitor the code below works on, and the one a message goes
+// to alone (-1: everyone's).
+static int disp_ring = 0;
+static int disp_private = -1;
+
+#define disp_str (disp_strs[disp_ring])
+#define disp_curr (disp_currs[disp_ring])
+#define disp_start (disp_starts[disp_ring])
+
+static void display_print_ring(char* str);
 
 // 0x42BBE0
 int display_init()
@@ -88,8 +104,10 @@ int display_init()
 
         max_ptr = DISPLAY_MONITOR_LINES_CAPACITY;
         max_disp_ptr = DISPLAY_MONITOR_HEIGHT / text_height();
-        disp_start = 0;
-        disp_curr = 0;
+        for (int index = 0; index < COOP_MAX_PLAYERS; index++) {
+            disp_starts[index] = 0;
+            disp_currs[index] = 0;
+        }
         text_font(oldFont);
 
         disp_buf = (unsigned char*)mem_malloc(DISPLAY_MONITOR_WIDTH * DISPLAY_MONITOR_HEIGHT);
@@ -196,6 +214,54 @@ void display_print(char* str)
         return;
     }
 
+    if (!isInCombat()) {
+        unsigned int now = get_bk_time();
+        if (elapsed_tocks(now, lastTime) >= DISPLAY_MONITOR_BEEP_DELAY) {
+            lastTime = now;
+            gsound_play_sfx_file("monitor");
+        }
+    }
+
+    // Co-op: to every player's monitor (a copy each: wrapping changes it),
+    // or to one's alone.
+    for (int index = 0; index < COOP_MAX_PLAYERS; index++) {
+        if (disp_private != -1 && index != disp_private) {
+            continue;
+        }
+        char copy[1024];
+        snprintf(copy, sizeof(copy), "%s", str);
+        disp_ring = index;
+        display_print_ring(copy);
+        disp_curr = disp_start;
+    }
+
+    display_redraw();
+}
+
+void display_print_private(int player, char* str)
+{
+    int oldPrivate = disp_private;
+    disp_private = player >= 0 && player < COOP_MAX_PLAYERS ? player : -1;
+    display_print(str);
+    disp_private = oldPrivate;
+}
+
+void display_set_private(int player)
+{
+    disp_private = player >= 0 && player < COOP_MAX_PLAYERS ? player : -1;
+}
+
+const char* display_last_line(int player)
+{
+    if (!disp_init || player < 0 || player >= COOP_MAX_PLAYERS) {
+        return "";
+    }
+    return disp_strs[player][(disp_starts[player] + max_ptr - 1) % max_ptr];
+}
+
+// One player's monitor (disp_ring) takes `str`.
+static void display_print_ring(char* str)
+{
     int oldFont = text_curr();
     text_font(DISPLAY_MONITOR_FONT);
 
@@ -205,14 +271,6 @@ void display_print(char* str)
     knobString[0] = knob;
     knobString[1] = '\0';
     int knobWidth = text_width(knobString);
-
-    if (!isInCombat()) {
-        unsigned int now = get_bk_time();
-        if (elapsed_tocks(now, lastTime) >= DISPLAY_MONITOR_BEEP_DELAY) {
-            lastTime = now;
-            gsound_play_sfx_file("monitor");
-        }
-    }
 
     // TODO: Refactor these two loops.
     char* v1 = NULL;
@@ -234,8 +292,6 @@ void display_print(char* str)
 
             if (v1 == NULL) {
                 text_font(oldFont);
-                disp_curr = disp_start;
-                display_redraw();
                 return;
             }
 
@@ -273,8 +329,6 @@ void display_print(char* str)
     disp_start = (disp_start + 1) % max_ptr;
 
     text_font(oldFont);
-    disp_curr = disp_start;
-    display_redraw();
 }
 
 // 0x42BFF4
@@ -283,12 +337,14 @@ void display_clear()
     int index;
 
     if (disp_init) {
-        for (index = 0; index < max_ptr; index++) {
-            disp_str[index][0] = '\0';
-        }
+        for (disp_ring = 0; disp_ring < COOP_MAX_PLAYERS; disp_ring++) {
+            for (index = 0; index < max_ptr; index++) {
+                disp_str[index][0] = '\0';
+            }
 
-        disp_start = 0;
-        disp_curr = 0;
+            disp_start = 0;
+            disp_curr = 0;
+        }
         display_redraw();
     }
 }
@@ -304,6 +360,9 @@ void display_redraw()
     if (buf == NULL) {
         return;
     }
+
+    // Co-op: the monitor of the player whose screen this is.
+    disp_ring = coop_viewer_index();
 
     buf += intface_full_wid * DISPLAY_MONITOR_Y + DISPLAY_MONITOR_X;
     buf_to_buf(disp_buf,
@@ -335,6 +394,7 @@ void display_redraw()
 // 0x42C138
 void display_scroll_up(int btn, int keyCode)
 {
+    disp_ring = coop_viewer_index();
     if ((max_ptr + disp_curr - 1) % max_ptr != disp_start) {
         disp_curr = (max_ptr + disp_curr - 1) % max_ptr;
         display_redraw();
@@ -344,6 +404,7 @@ void display_scroll_up(int btn, int keyCode)
 // 0x42C164
 void display_scroll_down(int btn, int keyCode)
 {
+    disp_ring = coop_viewer_index();
     if (disp_curr != disp_start) {
         disp_curr = (disp_curr + 1) % max_ptr;
         display_redraw();

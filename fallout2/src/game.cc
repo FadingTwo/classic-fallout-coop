@@ -918,6 +918,12 @@ int gameHandleKey(int eventCode, bool isInCombatMode)
             }
         }
         break;
+    case KEY_F8:
+        // CE: co-op: testing, with [coop]selftest=1.
+        if (coop_selftest_enabled()) {
+            coop_selftest();
+        }
+        break;
     case KEY_SHIFT_F9:
         coop_handle_add_player_key();
         break;

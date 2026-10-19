@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <stack>
 
+#include <SDL.h>
+
 #include "art.h"
 #include "color.h"
 #include "config.h"
@@ -90,6 +92,8 @@ static TileWindowRefreshElevationProc* gTileWindowRefreshElevationProc = tileRef
 static bool gTileEnabled = true;
 
 TileWindowRefreshObserver* gTileWindowRefreshObserver = nullptr;
+
+unsigned long long* gTileRefreshStepTicks = nullptr;
 
 // 0x51D96C
 const int _off_tile[6] = {
@@ -644,6 +648,39 @@ static void tileRefreshGame(Rect* rect, int elevation)
     Rect rectToUpdate;
 
     if (rectIntersection(rect, &gTileWindowRect, &rectToUpdate) == -1) {
+        return;
+    }
+
+    if (gTileRefreshStepTicks != nullptr) {
+        // CE: testing: the time each step takes.
+        unsigned long long* ticks = gTileRefreshStepTicks;
+        Uint64 start = SDL_GetPerformanceCounter();
+        bufferFill(gTileWindowBuffer + rectToUpdate.top * gTileWindowPitch + rectToUpdate.left,
+            rectGetWidth(&rectToUpdate),
+            rectGetHeight(&rectToUpdate),
+            gTileWindowPitch,
+            0);
+        Uint64 now = SDL_GetPerformanceCounter();
+        ticks[0] += now - start;
+        start = now;
+        tileRenderFloorsInRect(&rectToUpdate, elevation);
+        now = SDL_GetPerformanceCounter();
+        ticks[1] += now - start;
+        start = now;
+        _obj_render_pre_roof(&rectToUpdate, elevation);
+        now = SDL_GetPerformanceCounter();
+        ticks[2] += now - start;
+        start = now;
+        tileRenderRoofsInRect(&rectToUpdate, elevation);
+        now = SDL_GetPerformanceCounter();
+        ticks[3] += now - start;
+        start = now;
+        _obj_render_post_roof(&rectToUpdate, elevation);
+        now = SDL_GetPerformanceCounter();
+        ticks[4] += now - start;
+        start = now;
+        gTileWindowRefreshProc(&rectToUpdate);
+        ticks[5] += SDL_GetPerformanceCounter() - start;
         return;
     }
 
@@ -1260,6 +1297,18 @@ void tileRenderRoofsInRect(Rect* rect, int elevation)
         minY = gSquareGridHeight - 1;
     }
 
+    // CE: the rect's far corner can be past the grid at the map's
+    // bottom or right edge (high resolutions): the squares past it were
+    // read from past the table (the last elevation's: whatever memory
+    // follows, drawn as some tile).
+    if (maxX >= gSquareGridWidth) {
+        maxX = gSquareGridWidth - 1;
+    }
+
+    if (maxY >= gSquareGridHeight) {
+        maxY = gSquareGridHeight - 1;
+    }
+
     int light = lightGetAmbientIntensity();
 
     int baseSquareTile = gSquareGridWidth * minY;
@@ -1476,6 +1525,18 @@ void tileRenderFloorsInRect(Rect* rect, int elevation)
 
     if (minX >= gSquareGridHeight) {
         minY = gSquareGridHeight - 1;
+    }
+
+    // CE: the rect's far corner can be past the grid at the map's
+    // bottom or right edge (high resolutions): the squares past it were
+    // read from past the table (the last elevation's: whatever memory
+    // follows, drawn as some tile).
+    if (maxX >= gSquareGridWidth) {
+        maxX = gSquareGridWidth - 1;
+    }
+
+    if (maxY >= gSquareGridHeight) {
+        maxY = gSquareGridHeight - 1;
     }
 
     lightGetAmbientIntensity();

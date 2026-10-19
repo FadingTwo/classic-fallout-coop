@@ -939,6 +939,19 @@ void coop_set_viewer(PlayerState* player)
     coop_viewer = player;
 }
 
+int coop_player_index_of(Object* obj)
+{
+    PlayerState* player = obj != NULL ? coop_player_of(obj) : NULL;
+    return player != NULL ? (int)(player - coop_players) : -1;
+}
+
+int coop_viewer_index()
+{
+    PlayerState* viewer = coop_viewer != NULL ? coop_viewer : coop_controlled_player();
+    int index = viewer != NULL ? (int)(viewer - coop_players) : 0;
+    return index >= 0 && index < COOP_MAX_PLAYERS ? index : 0;
+}
+
 int coop_outline_type(Object* obj)
 {
     if (coop_players_count <= 1 || obj == NULL || (obj->flags & OBJECT_HIDDEN) != 0) {

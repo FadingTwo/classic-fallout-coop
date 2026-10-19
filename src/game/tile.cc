@@ -1233,6 +1233,18 @@ void square_render_roof(Rect* rect, int elevation)
         minY = square_length - 1;
     }
 
+    // CE: the rect's far corner can be past the grid at the map's
+    // bottom or right edge (high resolutions): the squares past it were
+    // read from past the table (the last elevation's: whatever memory
+    // follows, drawn as some tile).
+    if (maxX >= square_width) {
+        maxX = square_width - 1;
+    }
+
+    if (maxY >= square_length) {
+        maxY = square_length - 1;
+    }
+
     int light = light_get_ambient();
 
     int baseSquareTile = square_width * minY;
@@ -1460,6 +1472,18 @@ void square_render_floor(Rect* rect, int elevation)
 
     if (minX >= square_length) {
         minY = square_length - 1;
+    }
+
+    // CE: the rect's far corner can be past the grid at the map's
+    // bottom or right edge (high resolutions): the squares past it were
+    // read from past the table (the last elevation's: whatever memory
+    // follows, drawn as some tile).
+    if (maxX >= square_width) {
+        maxX = square_width - 1;
+    }
+
+    if (maxY >= square_length) {
+        maxY = square_length - 1;
     }
 
     light_get_ambient();

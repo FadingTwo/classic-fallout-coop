@@ -239,6 +239,32 @@ void directDrawFree()
     }
 }
 
+// CE: what changed on the texture's surface since the last present: only
+// that is uploaded (all of a big screen took over a core 60 times a second).
+static SDL_Rect svga_dirty_rect;
+static bool svga_dirty = false;
+static bool svga_dirty_all = true;
+
+// Testing: the time uploads took (performance counter ticks).
+unsigned long long svga_upload_ticks = 0;
+
+static void svga_mark_dirty(const SDL_Rect* rect)
+{
+    if (rect == nullptr) {
+        svga_dirty_all = true;
+        return;
+    }
+    if (rect->w <= 0 || rect->h <= 0) {
+        return;
+    }
+    if (!svga_dirty) {
+        svga_dirty_rect = *rect;
+        svga_dirty = true;
+    } else {
+        SDL_UnionRect(&svga_dirty_rect, rect, &svga_dirty_rect);
+    }
+}
+
 // 0x4CB310
 void directDrawSetPaletteInRange(unsigned char* palette, int start, int count)
 {
@@ -256,6 +282,7 @@ void directDrawSetPaletteInRange(unsigned char* palette, int start, int count)
 
         SDL_SetPaletteColors(gSdlSurface->format->palette, colors, start, count);
         SDL_BlitSurface(gSdlSurface, nullptr, gSdlTextureSurface, nullptr);
+        svga_mark_dirty(nullptr);
     }
 }
 
@@ -274,6 +301,7 @@ void directDrawSetPalette(unsigned char* palette)
 
         SDL_SetPaletteColors(gSdlSurface->format->palette, colors, 0, 256);
         SDL_BlitSurface(gSdlSurface, nullptr, gSdlTextureSurface, nullptr);
+        svga_mark_dirty(nullptr);
     }
 }
 
@@ -315,6 +343,7 @@ void _GNW95_ShowRect(unsigned char* src, int srcPitch, int a3, int srcX, int src
     destRect.y = destY;
     if (!svga_screen_only) {
         SDL_BlitSurface(gSdlSurface, &srcRect, gSdlTextureSurface, &destRect);
+        svga_mark_dirty(&srcRect);
     }
 }
 
@@ -334,6 +363,7 @@ void _GNW95_zero_vid_mem()
     }
 
     SDL_BlitSurface(gSdlSurface, nullptr, gSdlTextureSurface, nullptr);
+    svga_mark_dirty(nullptr);
 }
 
 int screenGetWidth()
@@ -383,6 +413,7 @@ static bool createRenderer(int width, int height)
     if (gSdlTextureSurface == nullptr) {
         return false;
     }
+    svga_mark_dirty(nullptr);
 
     return true;
 }
@@ -421,7 +452,27 @@ void renderPresent()
         svga_present_hook();
     }
 
-    SDL_UpdateTexture(gSdlTexture, nullptr, gSdlTextureSurface->pixels, gSdlTextureSurface->pitch);
+    // CE: only what changed is uploaded; all of it now and then anyway, in
+    // case the texture lost what it had.
+    static unsigned int lastWhole = 0;
+    Uint64 uploadStart = SDL_GetPerformanceCounter();
+    unsigned int now = SDL_GetTicks();
+    if (svga_dirty_all || now - lastWhole >= 1000) {
+        SDL_UpdateTexture(gSdlTexture, nullptr, gSdlTextureSurface->pixels, gSdlTextureSurface->pitch);
+        lastWhole = now;
+    } else if (svga_dirty) {
+        SDL_Rect bounds = { 0, 0, gSdlTextureSurface->w, gSdlTextureSurface->h };
+        SDL_Rect rect;
+        if (SDL_IntersectRect(&svga_dirty_rect, &bounds, &rect)) {
+            const unsigned char* pixels = (const unsigned char*)gSdlTextureSurface->pixels
+                + (size_t)rect.y * gSdlTextureSurface->pitch + (size_t)rect.x * gSdlTextureSurface->format->BytesPerPixel;
+            SDL_UpdateTexture(gSdlTexture, &rect, pixels, gSdlTextureSurface->pitch);
+        }
+    }
+    svga_dirty = false;
+    svga_dirty_all = false;
+    svga_upload_ticks += SDL_GetPerformanceCounter() - uploadStart;
+
     SDL_RenderClear(gSdlRenderer);
     SDL_RenderCopy(gSdlRenderer, gSdlTexture, nullptr, nullptr);
     SDL_RenderPresent(gSdlRenderer);

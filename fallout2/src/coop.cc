@@ -6,14 +6,17 @@
 #include <string.h>
 
 #include <algorithm>
+#include <new>
 
 #include "art.h"
+#include "autotest.h"
 #include "character_editor.h"
 #include "color.h"
 #include "combat.h"
 #include "config.h"
 #include "coop_autotest.h"
 #include "coop_net.h"
+#include "critter.h"
 #include "debug.h"
 #include "display_monitor.h"
 #include "game.h"
@@ -29,6 +32,7 @@
 #include "proto.h"
 #include "proto_instance.h"
 #include "scripts.h"
+#include "skill.h"
 #include "animation.h"
 #include "queue.h"
 #include "stat.h"
@@ -97,6 +101,8 @@ static int coop_scope_stack_depth = 0;
 
 static bool coop_enabled = false;
 
+static bool coop_selftest_on = false;
+
 static unsigned int coop_turn_time_ms = 0;
 
 static CoopTurnHook* coop_turn_hook = nullptr;
@@ -121,6 +127,9 @@ void coop_init()
 {
     int value;
     coop_enabled = configGetInt(&gGameConfig, COOP_CONFIG_KEY, COOP_CONFIG_ENABLED_KEY, &value) && value != 0;
+    coop_selftest_on = coop_enabled
+        && configGetInt(&gGameConfig, COOP_CONFIG_KEY, COOP_CONFIG_SELFTEST_KEY, &value)
+        && value != 0;
 
     if (coop_enabled && configGetInt(&gGameConfig, COOP_CONFIG_KEY, COOP_CONFIG_TURN_TIME_KEY, &value) && value > 0) {
         coop_turn_time_ms = (unsigned int)value * 1000;
@@ -141,7 +150,11 @@ void coop_init()
     }
 
     if (coop_enabled) {
-        debugPrint("\nCOOP: enabled (turn time: %u ms)\n", coop_turn_time_ms);
+        debugPrint("\nCOOP: enabled (selftest: %d, turn time: %u ms)\n", coop_selftest_on, coop_turn_time_ms);
+    }
+
+    if (coop_selftest_on) {
+        autotest_add_check("coop_selftest", coop_selftest);
     }
 
     coop_net_init();
@@ -157,6 +170,11 @@ bool coop_is_enabled()
 void coop_set_enabled(bool enabled)
 {
     coop_enabled = enabled;
+}
+
+bool coop_selftest_enabled()
+{
+    return coop_selftest_on;
 }
 
 int coop_player_count()
@@ -857,6 +875,19 @@ void coop_set_viewer(PlayerState* player)
     coop_viewer = player;
 }
 
+int coop_player_index_of(Object* obj)
+{
+    PlayerState* player = obj != nullptr ? coop_player_of(obj) : nullptr;
+    return player != nullptr ? (int)(player - coop_players) : -1;
+}
+
+int coop_viewer_index()
+{
+    PlayerState* viewer = coop_viewer != nullptr ? coop_viewer : coop_controlled_player();
+    int index = viewer != nullptr ? (int)(viewer - coop_players) : 0;
+    return index >= 0 && index < COOP_MAX_PLAYERS ? index : 0;
+}
+
 int coop_outline_player(Object* obj)
 {
     if (coop_players_count <= 1 || obj == nullptr || (obj->flags & OBJECT_HIDDEN) != 0) {
@@ -1334,6 +1365,202 @@ PlayerState* coop_import_player(const std::vector<unsigned char>& data, std::str
     coop_display_message("%s joins the game with their own character (level %d).", player->name, level);
     debugPrint("\nCOOP: player %d '%s' (level %d) imported from their character file\n", index + 1, player->name, level);
     return player;
+}
+
+// -----------------------------------------------------------------------------
+// Self-test: exercises scope switching against a throwaway copy of the
+// active player. Must leave the game state exactly as it found it.
+
+static int coop_selftest_failures;
+
+// What the game shows of the active player.
+typedef struct CoopSelftestVisible {
+    int perkRanks[PERK_COUNT];
+    bool traits[TRAIT_COUNT];
+    int pcStats[PC_STAT_COUNT];
+    int taggedSkills[NUM_TAGGED_SKILLS];
+    int killCounts[KILL_TYPE_COUNT];
+    char name[DUDE_NAME_MAX_LENGTH + 1];
+    int currentHand;
+} CoopSelftestVisible;
+
+static void coop_selftest_check(bool condition, const char* what)
+{
+    if (!condition) {
+        coop_selftest_failures++;
+        debugPrint("\nCOOP selftest FAILED: %s\n", what);
+    }
+}
+
+static void coop_selftest_read_visible(CoopSelftestVisible* visible)
+{
+    memset(visible, 0, sizeof(*visible));
+
+    for (int perk = 0; perk < PERK_COUNT; perk++) {
+        visible->perkRanks[perk] = perkGetRank(gDude, perk);
+    }
+
+    for (int trait = 0; trait < TRAIT_COUNT; trait++) {
+        visible->traits[trait] = traitIsSelected(trait);
+    }
+
+    for (int pcStat = 0; pcStat < PC_STAT_COUNT; pcStat++) {
+        visible->pcStats[pcStat] = pcGetStat(pcStat);
+    }
+
+    skillsGetTagged(visible->taggedSkills, NUM_TAGGED_SKILLS);
+
+    for (int killType = 0; killType < KILL_TYPE_COUNT; killType++) {
+        visible->killCounts[killType] = killsGetByType(killType);
+    }
+
+    snprintf(visible->name, sizeof(visible->name), "%s", critterGetName(gDude));
+    visible->currentHand = interfaceGetCurrentHand();
+}
+
+// `perks` is false for a shadow player: player 1's perk ranks are in the
+// party member list, where a copy of player 1 does not reach.
+static void coop_selftest_compare_visible(const CoopSelftestVisible* expected, const char* when, bool perks)
+{
+    char what[128];
+    CoopSelftestVisible visible;
+    coop_selftest_read_visible(&visible);
+
+    if (perks) {
+        for (int perk = 0; perk < PERK_COUNT; perk++) {
+            if (visible.perkRanks[perk] != expected->perkRanks[perk]) {
+                snprintf(what, sizeof(what), "%s: perk %d", when, perk);
+                coop_selftest_check(false, what);
+            }
+        }
+    }
+
+    for (int trait = 0; trait < TRAIT_COUNT; trait++) {
+        if (visible.traits[trait] != expected->traits[trait]) {
+            snprintf(what, sizeof(what), "%s: trait %d", when, trait);
+            coop_selftest_check(false, what);
+        }
+    }
+
+    for (int pcStat = 0; pcStat < PC_STAT_COUNT; pcStat++) {
+        if (pcStat == PC_STAT_REPUTATION || pcStat == PC_STAT_KARMA) {
+            continue;
+        }
+
+        if (visible.pcStats[pcStat] != expected->pcStats[pcStat]) {
+            snprintf(what, sizeof(what), "%s: pc stat %d", when, pcStat);
+            coop_selftest_check(false, what);
+        }
+    }
+
+    snprintf(what, sizeof(what), "%s: tagged skills", when);
+    coop_selftest_check(memcmp(visible.taggedSkills, expected->taggedSkills, sizeof(visible.taggedSkills)) == 0, what);
+
+    for (int killType = 0; killType < KILL_TYPE_COUNT; killType++) {
+        if (visible.killCounts[killType] != expected->killCounts[killType]) {
+            snprintf(what, sizeof(what), "%s: kill count %d", when, killType);
+            coop_selftest_check(false, what);
+        }
+    }
+
+    snprintf(what, sizeof(what), "%s: name", when);
+    coop_selftest_check(strcmp(visible.name, expected->name) == 0, what);
+
+    snprintf(what, sizeof(what), "%s: current hand", when);
+    coop_selftest_check(visible.currentHand == expected->currentHand, what);
+}
+
+int coop_selftest()
+{
+    coop_selftest_failures = 0;
+
+    if (gDude == nullptr) {
+        return 0;
+    }
+
+    int depth = coop_scope_depth();
+    Object* dude = gDude;
+    PlayerState* original = coop_active_player();
+
+    PlayerState before;
+    memcpy(&before, original, sizeof(before));
+
+    CoopSelftestVisible visible;
+    coop_selftest_read_visible(&visible);
+
+    // Shadow player: a copy of the active one, sharing its critter.
+    PlayerState shadow;
+    memcpy(&shadow, original, sizeof(shadow));
+    shadow.obj = gDude;
+
+    coop_selftest_check(coop_player_of(gDude) == original, "player_of(gDude)");
+    coop_selftest_check(coop_player_of(nullptr) == nullptr, "player_of(nullptr)");
+
+    int karma = pcGetStat(PC_STAT_KARMA);
+
+    {
+        ActivePlayerScope scope(&shadow);
+        coop_selftest_check(coop_active_player() == &shadow, "scope activates player");
+        coop_selftest_check(gDude == dude, "gDude follows player");
+        coop_selftest_compare_visible(&visible, "inside scope", false);
+
+        // Writes must land in the shadow only...
+        pcSetStat(PC_STAT_UNSPENT_SKILL_POINTS, pcGetStat(PC_STAT_UNSPENT_SKILL_POINTS) + 7);
+        killsIncByType(0);
+        dudeSetName("coop-selftest");
+
+        // ...except karma, which is shared.
+        pcSetStat(PC_STAT_KARMA, karma + 1);
+
+        {
+            ActivePlayerScope nestedSame(&shadow);
+            coop_selftest_check(coop_active_player() == &shadow, "nested same player");
+        }
+        coop_selftest_check(coop_active_player() == &shadow, "after nested same player");
+
+        {
+            ActivePlayerScope nestedOther(original);
+            coop_selftest_check(coop_active_player() == original, "nested other player");
+            coop_selftest_compare_visible(&visible, "nested other player", true);
+        }
+        coop_selftest_check(coop_active_player() == &shadow, "after nested other player");
+        coop_selftest_check(strcmp(critterGetName(gDude), "coop-selftest") == 0, "shadow keeps own writes");
+    }
+
+    coop_selftest_check(coop_active_player() == original, "scope restores player");
+    coop_selftest_check(gDude == dude, "scope restores gDude");
+    coop_selftest_check(pcGetStat(PC_STAT_KARMA) == karma + 1, "karma is shared");
+    pcSetStat(PC_STAT_KARMA, karma);
+
+    coop_selftest_compare_visible(&visible, "after scope", true);
+
+    // Simulate the interpreter's longjmp: scopes whose destructors never run.
+    alignas(ActivePlayerScope) unsigned char storage[2][sizeof(ActivePlayerScope)];
+    new (storage[0]) ActivePlayerScope(&shadow);
+    new (storage[1]) ActivePlayerScope(original);
+    coop_scope_unwind_to(depth);
+    coop_selftest_check(coop_active_player() == original, "unwind restores player");
+    coop_selftest_check(gDude == dude, "unwind restores gDude");
+    coop_selftest_check(coop_scope_depth() == depth, "unwind restores depth");
+
+    // The first scope ever entered records player 1's critter, and leaving
+    // the active role stores the addiction globals and the look; nothing
+    // else may change.
+    before.obj = original->obj;
+    memcpy(before.addictions, original->addictions, sizeof(before.addictions));
+    before.vaultGuyNum = original->vaultGuyNum;
+    coop_selftest_check(memcmp(original, &before, sizeof(before)) == 0, "player state untouched");
+
+    char message[80];
+    if (coop_selftest_failures == 0) {
+        snprintf(message, sizeof(message), "Co-op selftest: OK");
+    } else {
+        snprintf(message, sizeof(message), "Co-op selftest: %d FAILED (see debug log)", coop_selftest_failures);
+    }
+    debugPrint("\n%s\n", message);
+    displayMonitorAddMessage(message);
+
+    return coop_selftest_failures;
 }
 
 } // namespace fallout

@@ -44,6 +44,7 @@
 #include "game/gmovie.h"
 #include "game/gsound.h"
 #include "game/scripts.h"
+#include "game/display.h"
 #include "game/intface.h"
 #include "game/inventry.h"
 #include "game/item.h"
@@ -166,7 +167,9 @@ static int coop_autotest_credits(AutotestNewGameProc* newGame);
 static int coop_autotest_lobby_find(AutotestNewGameProc* newGame);
 static int coop_autotest_explode_exit(AutotestNewGameProc* newGame);
 static int coop_autotest_map_entry(AutotestNewGameProc* newGame);
+static int coop_autotest_map_edges(AutotestNewGameProc* newGame);
 static int coop_autotest_egg(AutotestNewGameProc* newGame);
+static int coop_autotest_monitor(AutotestNewGameProc* newGame);
 static int coop_autotest_p2_moves(AutotestNewGameProc* newGame);
 static int coop_autotest_combat_far(AutotestNewGameProc* newGame);
 static int coop_autotest_net_death_host(AutotestNewGameProc* newGame);
@@ -240,7 +243,9 @@ void coop_autotest_register()
     autotest_add_script("lobby_find", coop_autotest_lobby_find);
     autotest_add_script("explode_exit", coop_autotest_explode_exit);
     autotest_add_script("map_entry", coop_autotest_map_entry);
+    autotest_add_script("map_edges", coop_autotest_map_edges);
     autotest_add_script("coop_egg", coop_autotest_egg);
+    autotest_add_script("coop_monitor", coop_autotest_monitor);
     autotest_add_script("coop_p2_moves", coop_autotest_p2_moves);
     autotest_add_script("coop_combat_far", coop_autotest_combat_far);
     autotest_add_script("net_death_host", coop_autotest_net_death_host);
@@ -5589,6 +5594,68 @@ static int coop_autotest_lobby_find(AutotestNewGameProc* newGame)
 // (see-through walls) stays with player 1, at their place within the hex.
 // It moved off player 1 by every step player 2 took (their tile changes
 // leave the egg to player 1, their steps within a hex moved it).
+// Each player's own monitor: everyone's messages on all, what a player
+// looks at only on theirs.
+static int coop_autotest_monitor(AutotestNewGameProc* newGame)
+{
+    if (!coop_is_enabled()) {
+        autotest_fail("needs [coop]enabled=1");
+        return -1;
+    }
+
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    PlayerState* p1 = coop_player(0);
+    PlayerState* p2 = coop_add_player("premade\\stealth.gcd");
+    if (p2 == NULL) {
+        autotest_fail("coop_add_player failed");
+        return -1;
+    }
+    Object* p1obj = p1->obj;
+    Object* p2obj = p2->obj;
+
+    char shared[] = "Everyone's message";
+    display_print(shared);
+    autotest_log("everyone's: player 1 '%s', player 2 '%s'", display_last_line(0), display_last_line(1));
+    if (strstr(display_last_line(0), shared) == NULL || strstr(display_last_line(1), shared) == NULL) {
+        autotest_fail("everyone's message not on both monitors");
+    }
+
+    // Player 2 looks at player 1: only player 2's monitor.
+    {
+        ActivePlayerScope scope(p2);
+        obj_look_at(p2obj, p1obj);
+    }
+    std::string p1Line = display_last_line(0);
+    std::string p2Line = display_last_line(1);
+    autotest_log("player 2 looked: player 1 '%s', player 2 '%s'", p1Line.c_str(), p2Line.c_str());
+    if (strstr(p1Line.c_str(), shared) == NULL) {
+        autotest_fail("player 2's look reached player 1's monitor");
+    }
+    if (strstr(p2Line.c_str(), object_name(p1obj)) == NULL) {
+        autotest_fail("player 2's look not on their monitor");
+    }
+
+    // Player 1 examines player 2: only player 1's monitor.
+    obj_examine(p1obj, p2obj);
+    autotest_log("player 1 examined: player 1 '%s', player 2 '%s'", display_last_line(0), display_last_line(1));
+    if (strcmp(display_last_line(1), p2Line.c_str()) != 0) {
+        autotest_fail("player 1's examine reached player 2's monitor");
+    }
+    if (strcmp(display_last_line(0), p1Line.c_str()) == 0) {
+        autotest_fail("player 1's examine not on their monitor");
+    }
+
+    // Each screen shows its player's monitor.
+    coop_set_viewer(p2);
+    intface_redraw();
+    coop_set_viewer(NULL);
+    intface_redraw();
+    return 0;
+}
+
 static int coop_autotest_egg(AutotestNewGameProc* newGame)
 {
     if (!coop_is_enabled()) {
@@ -5649,6 +5716,82 @@ static int coop_autotest_egg(AutotestNewGameProc* newGame)
 // redraw does. USEDCAR.MAP's start can't be centered on (a scroll blocker), and the map
 // was never drawn: the last one stayed on screen with bits of the new one
 // (single player too).
+// The camera at the map's corners and edges, the floors and roofs of every
+// elevation drawn (under AddressSanitizer: nothing read past the squares'
+// table; at high resolutions the window's far corner is past the grid).
+static int coop_autotest_map_edges(AutotestNewGameProc* newGame)
+{
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    const char* list = getenv("COOP_AUTOTEST_MAPS");
+    std::string rest = list != NULL ? list : "JUNKENT.MAP,HUBDWNTN.MAP";
+    std::vector<std::string> maps;
+    size_t comma;
+    while ((comma = rest.find(',')) != std::string::npos) {
+        maps.push_back(rest.substr(0, comma));
+        rest = rest.substr(comma + 1);
+    }
+    maps.push_back(rest);
+
+    int width = win_width(display_win);
+    int height = win_height(display_win);
+    // Corners and edges' middles (column, row), each approached from the
+    // edge until the camera may go there (the map's border).
+    const int targets[8][2] = {
+        { 0, 0 }, { HEX_GRID_WIDTH - 1, 0 }, { 0, HEX_GRID_HEIGHT - 1 }, { HEX_GRID_WIDTH - 1, HEX_GRID_HEIGHT - 1 },
+        { HEX_GRID_WIDTH / 2, 0 }, { 0, HEX_GRID_HEIGHT / 2 }, { HEX_GRID_WIDTH - 1, HEX_GRID_HEIGHT / 2 }, { HEX_GRID_WIDTH / 2, HEX_GRID_HEIGHT - 1 },
+    };
+    for (const std::string& name : maps) {
+        int index = map_match_map_name(name.c_str());
+        if (index == -1) {
+            autotest_fail("no map %s", name.c_str());
+            continue;
+        }
+
+        MapTransition transition;
+        transition.map = index;
+        transition.elevation = 0;
+        transition.tile = -1;
+        transition.rotation = 0;
+        map_leave_map(&transition);
+        map_check_state();
+
+        int playerTile = obj_dude->tile;
+        int past = 0;
+        for (const auto& target : targets) {
+            int tile = -1;
+            int set = -1;
+            for (int step = 0; step <= 50 && set != 0; step++) {
+                int column = target[0] + (HEX_GRID_WIDTH / 2 - target[0]) * step / 50;
+                int row = target[1] + (HEX_GRID_HEIGHT / 2 - target[1]) * step / 50;
+                tile = row * HEX_GRID_WIDTH + column;
+                set = tile_set_center(tile, TILE_SET_CENTER_FLAG_IGNORE_SCROLL_RESTRICTIONS);
+            }
+            for (int elevation = 0; elevation < ELEVATION_COUNT; elevation++) {
+                // How far past the grid the window's corners reach.
+                const int corners[4][2] = { { 0, 0 }, { width - 1, 0 }, { 0, height - 1 }, { width - 1, height - 1 } };
+                for (const auto& corner : corners) {
+                    int x;
+                    int y;
+                    square_xy(corner[0], corner[1], elevation, &x, &y);
+                    if (x >= SQUARE_GRID_WIDTH || y >= SQUARE_GRID_HEIGHT) {
+                        past++;
+                    }
+                }
+                Rect rect = { 0, 0, width - 1, height - 1 };
+                square_render_floor(&rect, elevation);
+                square_render_roof(&rect, elevation);
+            }
+        }
+        tile_set_center(playerTile, TILE_SET_CENTER_FLAG_IGNORE_SCROLL_RESTRICTIONS);
+        tile_refresh_display();
+        autotest_log("%s: %dx%d, window corners past the squares' grid %d times", name.c_str(), width, height, past);
+    }
+    return 0;
+}
+
 static int coop_autotest_map_entry(AutotestNewGameProc* newGame)
 {
     if (!autotest_new_game(newGame, "premade\\combat.gcd")) {

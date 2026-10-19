@@ -27,7 +27,7 @@ namespace fallout {
 // active (and `gDude` their critter) for the code inside it.
 
 // The co-op version (shared with Classic Fallout Co-op for Fallout 1).
-#define COOP_VERSION "1.15.5"
+#define COOP_VERSION "1.16"
 
 #define COOP_MAX_PLAYERS 4
 
@@ -46,6 +46,8 @@ namespace fallout {
 #define COOP_CONFIG_KEY "coop"
 #define COOP_CONFIG_ENABLED_KEY "enabled"
 #define COOP_CONFIG_TURN_TIME_KEY "turn_time"
+// Testing: the scope self-test runs with the autotests' checks and on F8.
+#define COOP_CONFIG_SELFTEST_KEY "selftest"
 #define COOP_CONFIG_SERVER_KEY "server"
 #define COOP_CONFIG_KNOCKOUT_KEY "knockout"
 #define COOP_CONFIG_TALK_KEY "talk"
@@ -129,6 +131,7 @@ public:
 void coop_init();
 bool coop_is_enabled();
 void coop_set_enabled(bool enabled);
+bool coop_selftest_enabled();
 
 // The player whose data the per-player globals currently refer to.
 inline PlayerState* coop_active_player()
@@ -253,6 +256,11 @@ bool coop_character_info(const std::vector<unsigned char>& data, std::string* na
 // The player whose view is being drawn: the controlled player, except
 // while the co-op host renders player 2's view (nullptr = controlled).
 void coop_set_viewer(PlayerState* player);
+// The viewer's index (0: player 1): whose screen is drawn now.
+int coop_viewer_index();
+// The index (0: player 1) of the player whose character `obj` is; -1 for
+// anything else.
+int coop_player_index_of(Object* obj);
 
 // Outline colors, chosen by each player for their own screen: player 1's
 // from [coop] outline_player1/outline_player2, player 2's sent by their
@@ -289,6 +297,10 @@ int coop_scope_depth();
 // Restores scopes down to `depth` without running their destructors. Only
 // for code that bypasses C++ unwinding (the script interpreter's longjmp).
 void coop_scope_unwind_to(int depth);
+
+// Testing: exercises scope switching against a throwaway copy of the active
+// player. Returns the number of failed checks.
+int coop_selftest();
 
 } // namespace fallout
 

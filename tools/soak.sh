@@ -132,12 +132,15 @@ while true; do
     # mean the host thrashes its caches, slow for real players too.
     heap=$(grep -ac "Could not allocate block" "$dir/host/debug.log" 2>/dev/null)
     pictures=$(grep -ac "differs from the host's" "$dir/host/debug.log" 2>/dev/null)
+    # The players' windows checked against the whole picture (they draw
+    # only what changed).
+    screens=$(cat "$dir"/client*/debug.log 2>/dev/null | grep -ac "our screen differs")
     # The most pixels a picture from the last one or a restored view
     # differed from a full redraw by (a few: the engine draws a part a
     # pixel differently here and there than a whole, in single player too).
     drawn=$(grep -aoh "([0-9]* pixels at most)" "$dir/host/debug.log" 2>/dev/null | tr -dc '0-9\n' | sort -n | tail -1)
     status=PASS
-    if [[ "$host" != *"PASS"* || "$client" != *"PASS"* || "$asan" != "0" || "${pictures:-0}" != "0" || "${drawn:-0}" -gt ${SOAK_DRAWN_MAX:-100} ]]; then
+    if [[ "$host" != *"PASS"* || "$client" != *"PASS"* || "$asan" != "0" || "${pictures:-0}" != "0" || "${screens:-0}" != "0" || "${drawn:-0}" -gt ${SOAK_DRAWN_MAX:-100} ]]; then
         status=FAIL
     fi
     # Players 3 and 4's clients (tour4) count too: a hung one has no result.
@@ -153,7 +156,7 @@ while true; do
     [ "$how" = slow ] && line="$line ${rate}B/s"
     [ $heapCheck = 1 ] && line="$line heapcheck"
     [ $viewCheck = 1 ] && line="$line viewcheck"
-    echo "$(date '+%F %T') $line $hostRes/$clientRes seed $seed: $status (${maps:-$what}, ${seconds}s, asan errors $asan, heap warnings ${heap:-0}, wrong pictures ${pictures:-0}$([ $viewCheck = 1 ] && echo ", redraw differences ${drawn:-0} px at most"))" >>"$out/summary.log"
+    echo "$(date '+%F %T') $line $hostRes/$clientRes seed $seed: $status (${maps:-$what}, ${seconds}s, asan errors $asan, heap warnings ${heap:-0}, wrong pictures ${pictures:-0}$([ "${screens:-0}" != 0 ] && echo ", wrong screens $screens")$([ $viewCheck = 1 ] && echo ", redraw differences ${drawn:-0} px at most"))" >>"$out/summary.log"
     if [ $status = FAIL ]; then
         grep -h "FAIL" "$dir"/*/autotest/result.txt 2>/dev/null | head -5 | sed 's/^/    /' >>"$out/summary.log"
         grep -h "HEAP CHECK" "$dir"/*/stdout.log 2>/dev/null | head -3 | sed 's/^/    /' >>"$out/summary.log"

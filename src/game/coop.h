@@ -19,7 +19,7 @@ namespace fallout {
 #define COOP_MAX_PLAYERS 4
 
 // Co-op version, for the update check and bug reports.
-#define COOP_VERSION "1.15.5"
+#define COOP_VERSION "1.16"
 
 // fallout.cfg [coop] server=http://host[:port] - where UPDATE looks for
 // new versions (<server>/fallout-coop/latest.txt) and REPORT BUG sends
@@ -247,6 +247,11 @@ int coop_viewer_outline_color(int player);
 // The player whose view is being drawn: the controlled player, except
 // while the co-op host renders player 2's view (NULL = controlled player).
 void coop_set_viewer(PlayerState* player);
+// The viewer's index (0: player 1): whose screen is drawn now.
+int coop_viewer_index();
+// The index (0: player 1) of the player whose character `obj` is; -1 for
+// anything else.
+int coop_player_index_of(Object* obj);
 
 // True if any player character has one of the `results` flags (DAM_*).
 bool coop_any_player_has(int results);

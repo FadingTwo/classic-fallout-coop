@@ -6,6 +6,7 @@
 
 #include "game/anim.h"
 #include "game/combat.h"
+#include "game/coop.h"
 #include "game/critter.h"
 #include "game/display.h"
 #include "game/game.h"
@@ -152,7 +153,11 @@ int obj_new_sid_inst(Object* obj, int scriptType, int a3)
 // 0x48A1FC
 int obj_look_at(Object* a1, Object* a2)
 {
-    return obj_look_at_func(a1, a2, display_print);
+    // CE: co-op: on the looking player's own monitor (each player has one).
+    display_set_private(coop_player_count() > 1 ? coop_player_index_of(a1) : -1);
+    int rc = obj_look_at_func(a1, a2, display_print);
+    display_set_private(-1);
+    return rc;
 }
 
 // 0x48A20C
@@ -211,7 +216,11 @@ int obj_look_at_func(Object* a1, Object* a2, void (*a3)(char* string))
 // 0x48A338
 int obj_examine(Object* a1, Object* a2)
 {
-    return obj_examine_func(a1, a2, display_print);
+    // CE: co-op: on the looking player's own monitor (each player has one).
+    display_set_private(coop_player_count() > 1 ? coop_player_index_of(a1) : -1);
+    int rc = obj_examine_func(a1, a2, display_print);
+    display_set_private(-1);
+    return rc;
 }
 
 // Performs examine (reading description) action and passes resulting text

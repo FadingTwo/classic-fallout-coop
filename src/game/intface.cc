@@ -1054,6 +1054,8 @@ void intface_redraw()
         intface_update_hit_points(false);
         intface_update_ac(false);
         refresh_box_bar_win();
+        // Co-op: the monitor of the player whose screen this is.
+        display_redraw();
         win_draw(interfaceWindow);
     }
     refresh_box_bar_win();

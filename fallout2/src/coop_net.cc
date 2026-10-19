@@ -1,6 +1,7 @@
 #include "coop_net.h"
 
 #include <stdio.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -2352,6 +2353,14 @@ int coop_net_client_run()
     bool hostLeft = false;
     bool hostSaidBye = false;
     unsigned int lastPresent = 0;
+    // Testing: our window checked against the whole picture now and then.
+    unsigned int screensDrawn = 0;
+    unsigned int screensChecked = 0;
+    unsigned int screensWrong = 0;
+    // Where the time goes (debug log): pictures read, drawn, shown.
+    unsigned long long readTicks = 0;
+    unsigned long long drawTicks = 0;
+    unsigned long long presentTicks = 0;
     while (!hostLeft) {
         sharedFpsLimiter.mark();
 
@@ -2408,7 +2417,13 @@ int coop_net_client_run()
         coop_connection_flush(&connection);
         coop_connection_receive(&connection);
 
+        Uint64 readStart = SDL_GetPerformanceCounter();
         bool redraw = false;
+        // The picture's rows that changed (all: a new size or palette), so
+        // only those are drawn and uploaded.
+        int changedFirst = INT_MAX;
+        int changedLast = -1;
+        bool changedAll = false;
         CoopMessage message;
         while (coop_connection_next(&connection, &message)) {
             if (message.type == COOP_NET_MSG_FRAME_PACKED) {
@@ -2457,6 +2472,7 @@ int coop_net_client_run()
                             memset(windowBuffer, colorTable[0], (size_t)windowWidth * windowHeight);
                             debug_printf("COOP NET: frames %dx%d shown at %dx%d\n", width, height, drawWidth, drawHeight);
                         }
+                        changedAll = true;
                     }
 
                     if ((flags & 1) != 0) {
@@ -2468,6 +2484,7 @@ int coop_net_client_run()
                             }
                             setSystemPalette(palette);
                         }
+                        changedAll = true;
                     }
 
                     // The camera moved: the map part of our copy moves the
@@ -2483,6 +2500,8 @@ int coop_net_client_run()
                         shift.height = reader.u16();
                         if (reader.ok()) {
                             coop_net_shift_frame(frame.data(), frameWidth, frameHeight, shift);
+                            changedFirst = std::min(changedFirst, (int)shift.y);
+                            changedLast = std::max(changedLast, (int)shift.y + (int)shift.height - 1);
                         }
                     }
 
@@ -2496,6 +2515,10 @@ int coop_net_client_run()
                             break;
                         }
                         memcpy(frame.data() + index, pixels, count);
+                        if (count != 0 && frameWidth != 0) {
+                            changedFirst = std::min(changedFirst, (int)(index / frameWidth));
+                            changedLast = std::max(changedLast, (int)((index + count - 1) / frameWidth));
+                        }
                         index += count;
                     }
 
@@ -2505,6 +2528,7 @@ int coop_net_client_run()
             case COOP_NET_MSG_STATUS:
                 status = reader.str();
                 redraw = true;
+                changedAll = true;
                 break;
             case COOP_NET_MSG_SOUND:
                 if (true) {
@@ -2576,10 +2600,24 @@ int coop_net_client_run()
             hostLeft = true;
         }
 
+        Uint64 drawStart = SDL_GetPerformanceCounter();
+        readTicks += drawStart - readStart;
         if (redraw && frameWidth != 0) {
             int width = drawX + drawWidth;
             int height = drawY + drawHeight;
-            for (int row = 0; row < drawHeight; row++) {
+            // Only the rows showing what changed (and the status line's).
+            int rowFirst = 0;
+            int rowLast = drawHeight - 1;
+            if (!changedAll) {
+                if (changedLast >= 0) {
+                    rowFirst = std::max(changedFirst * drawHeight / frameHeight - 1, 0);
+                    rowLast = std::min((changedLast + 1) * drawHeight / frameHeight + 1, drawHeight - 1);
+                } else {
+                    rowFirst = 1;
+                    rowLast = 0;
+                }
+            }
+            for (int row = rowFirst; row <= rowLast; row++) {
                 unsigned char* dest = windowBuffer + (size_t)(drawY + row) * windowWidth + drawX;
                 const unsigned char* src = frame.data() + (size_t)(row * frameHeight / drawHeight) * frameWidth;
                 if (drawWidth == frameWidth) {
@@ -2602,20 +2640,60 @@ int coop_net_client_run()
                 text_font(oldFont);
             }
 
-            win_draw(window);
+            if (changedAll) {
+                win_draw(window);
+            } else if (rowFirst <= rowLast) {
+                Rect rect = { 0, drawY + rowFirst, windowWidth - 1, drawY + rowLast };
+                if (!status.empty()) {
+                    // Drawn again over the picture's top.
+                    rect.top = 0;
+                    rect.bottom = std::max(rect.bottom, 13);
+                }
+                win_draw_rect(window, &rect);
+            }
+
+            // Testing: now and then, our window against the whole picture
+            // drawn (only the changed rows are drawn).
+            if (coop_net_frame_check && (++screensDrawn % 30) == 0) {
+                screensChecked++;
+                int wrongRows = 0;
+                for (int row = status.empty() ? 0 : 14; row < drawHeight; row++) {
+                    const unsigned char* src = frame.data() + (size_t)(row * frameHeight / drawHeight) * frameWidth;
+                    const unsigned char* shown = windowBuffer + (size_t)(drawY + row) * windowWidth + drawX;
+                    for (int column = 0; column < drawWidth; column++) {
+                        if (shown[column] != src[drawWidth == frameWidth ? column : drawColumns[column]]) {
+                            wrongRows++;
+                            break;
+                        }
+                    }
+                }
+                if (wrongRows != 0) {
+                    screensWrong++;
+                    debug_printf("\nCOOP NET: our screen differs from the picture in %d rows\n", wrongRows);
+                }
+            }
         }
 
         // Only a new picture needs presenting (each present uploads the
         // whole window, 60 times a second: over a core on a big screen);
         // otherwise ten times a second, in case the window was covered.
+        Uint64 presentStart = SDL_GetPerformanceCounter();
+        drawTicks += presentStart - drawStart;
         if (redraw || elapsed_time(lastPresent) >= 100) {
             renderPresent();
             lastPresent = get_time();
         }
+        presentTicks += SDL_GetPerformanceCounter() - presentStart;
         sharedFpsLimiter.throttle();
     }
 
     debug_printf("\nCOOP NET: host left (%d sounds played)\n", soundsPlayed);
+    if (coop_net_frame_check) {
+        debug_printf("\nCOOP NET: %u screens checked, %u wrong\n", screensChecked, screensWrong);
+    }
+    Uint64 frequency = SDL_GetPerformanceFrequency();
+    debug_printf("\nCOOP NET: player's time: reading %llu ms, drawing %llu ms, showing %llu ms (uploading %llu ms)\n",
+        readTicks * 1000 / frequency, drawTicks * 1000 / frequency, presentTicks * 1000 / frequency, svga_upload_ticks * 1000 / frequency);
     coop_net_cpu_report("player");
     if (!coop_client_exit_requested) {
         // A goodbye from the host, or the connection broke (network, or the

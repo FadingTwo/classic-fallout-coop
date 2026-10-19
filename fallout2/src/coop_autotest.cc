@@ -17,6 +17,7 @@
 
 #include "autotest.h"
 #include "combat.h"
+#include "config.h"
 #include "coop.h"
 #include "coop_compat.h"
 #include "coop_host.h"
@@ -24,7 +25,10 @@
 #include "coop_lobby.h"
 #include "coop_menu.h"
 #include "coop_net.h"
+#include "credits.h"
 #include "critter.h"
+#include "db.h"
+#include "display_monitor.h"
 #include "endgame.h"
 #include "main.h"
 #include "fps_limiter.h"
@@ -33,6 +37,7 @@
 #include "game_vars.h"
 #include "inject.h"
 #include "input.h"
+#include "interface.h"
 #include "kb.h"
 #include "item.h"
 #include "loadsave.h"
@@ -50,10 +55,13 @@
 #include "proto.h"
 #include "random.h"
 #include "proto_instance.h"
+#include "memory.h"
+#include "sound_effects_list.h"
 #include "queue.h"
 #include "scripts.h"
 #include "skill.h"
 #include "sound.h"
+#include "sound_decoder.h"
 #include "svga.h"
 #include "stat.h"
 #include "tile.h"
@@ -132,7 +140,9 @@ static int coop_autotest_poison(AutotestNewGameProc* newGame);
 static int coop_autotest_lobby_find(AutotestNewGameProc* newGame);
 static int coop_autotest_explode_exit(AutotestNewGameProc* newGame);
 static int coop_autotest_map_entry(AutotestNewGameProc* newGame);
+static int coop_autotest_map_edges(AutotestNewGameProc* newGame);
 static int coop_autotest_egg(AutotestNewGameProc* newGame);
+static int coop_autotest_monitor(AutotestNewGameProc* newGame);
 static int coop_autotest_net_death_host(AutotestNewGameProc* newGame);
 static int coop_autotest_net_worldmap_host(AutotestNewGameProc* newGame);
 static int coop_autotest_net_ending_host(AutotestNewGameProc* newGame);
@@ -147,6 +157,18 @@ static int coop_autotest_p2_moves(AutotestNewGameProc* newGame);
 static int coop_autotest_combat_far(AutotestNewGameProc* newGame);
 static void coop_autotest_compare_lookups(PlayerState* player, const char* when);
 static bool coop_autotest_files_equal_except(const char* path1, const char* path2, const char* skipPrefix);
+static int coop_autotest_map_time(AutotestNewGameProc* newGame);
+static int coop_autotest_pack(AutotestNewGameProc* newGame);
+static int coop_autotest_story_kill(AutotestNewGameProc* newGame);
+static void coop_autotest_log_story(const char* when);
+static bool coop_autotest_frames_until(unsigned int ms, bool (*done)());
+static int coop_autotest_object_find(AutotestNewGameProc* newGame);
+static int coop_autotest_config_brackets(AutotestNewGameProc* newGame);
+static int coop_autotest_acm_fmt31(AutotestNewGameProc* newGame);
+static int coop_autotest_sfx_sizes(AutotestNewGameProc* newGame);
+static int coop_autotest_db_sfx(AutotestNewGameProc* newGame);
+static int coop_autotest_draw_bench(AutotestNewGameProc* newGame);
+static int coop_autotest_credits(AutotestNewGameProc* newGame);
 
 void coop_autotest_register()
 {
@@ -188,7 +210,9 @@ void coop_autotest_register()
     autotest_add_script("lobby_find", coop_autotest_lobby_find);
     autotest_add_script("explode_exit", coop_autotest_explode_exit);
     autotest_add_script("map_entry", coop_autotest_map_entry);
+    autotest_add_script("map_edges", coop_autotest_map_edges);
     autotest_add_script("coop_egg", coop_autotest_egg);
+    autotest_add_script("coop_monitor", coop_autotest_monitor);
     autotest_add_script("net_death_host", coop_autotest_net_death_host);
     autotest_add_script("net_worldmap_host", coop_autotest_net_worldmap_host);
     autotest_add_script("net_ending_host", coop_autotest_net_ending_host);
@@ -201,6 +225,16 @@ void coop_autotest_register()
     autotest_add_script("coop_interact", coop_autotest_interact);
     autotest_add_script("coop_p2_moves", coop_autotest_p2_moves);
     autotest_add_script("coop_combat_far", coop_autotest_combat_far);
+    autotest_add_script("map_time", coop_autotest_map_time);
+    autotest_add_script("pack", coop_autotest_pack);
+    autotest_add_script("story_kill", coop_autotest_story_kill);
+    autotest_add_script("object_find", coop_autotest_object_find);
+    autotest_add_script("config_brackets", coop_autotest_config_brackets);
+    autotest_add_script("acm_fmt31", coop_autotest_acm_fmt31);
+    autotest_add_script("sfx_sizes", coop_autotest_sfx_sizes);
+    autotest_add_script("db_sfx", coop_autotest_db_sfx);
+    autotest_add_script("draw_bench", coop_autotest_draw_bench);
+    autotest_add_script("credits", coop_autotest_credits);
 }
 
 // Player 2 is created next to player 1 without touching player 1, keeps
@@ -4082,6 +4116,68 @@ static int coop_autotest_lobby_find(AutotestNewGameProc* newGame)
 // Player 2 walks in their scope, as on their turn in a fight: the egg
 // (see-through walls) stays with player 1, at their place within the hex
 // (as in Fallout 1 CE co-op).
+// Each player's own monitor: everyone's messages on all, what a player
+// looks at only on theirs.
+static int coop_autotest_monitor(AutotestNewGameProc* newGame)
+{
+    if (!coop_is_enabled()) {
+        autotest_fail("needs [coop]enabled=1");
+        return -1;
+    }
+
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    PlayerState* p1 = coop_player(0);
+    PlayerState* p2 = coop_add_player("premade\\stealth.gcd");
+    if (p2 == nullptr) {
+        autotest_fail("coop_add_player failed");
+        return -1;
+    }
+    Object* p1obj = p1->obj;
+    Object* p2obj = p2->obj;
+
+    char shared[] = "Everyone's message";
+    displayMonitorAddMessage(shared);
+    autotest_log("everyone's: player 1 '%s', player 2 '%s'", displayMonitorLastLine(0), displayMonitorLastLine(1));
+    if (strstr(displayMonitorLastLine(0), shared) == nullptr || strstr(displayMonitorLastLine(1), shared) == nullptr) {
+        autotest_fail("everyone's message not on both monitors");
+    }
+
+    // Player 2 looks at player 1: only player 2's monitor.
+    {
+        ActivePlayerScope scope(p2);
+        _obj_look_at(p2obj, p1obj);
+    }
+    std::string p1Line = displayMonitorLastLine(0);
+    std::string p2Line = displayMonitorLastLine(1);
+    autotest_log("player 2 looked: player 1 '%s', player 2 '%s'", p1Line.c_str(), p2Line.c_str());
+    if (strstr(p1Line.c_str(), shared) == nullptr) {
+        autotest_fail("player 2's look reached player 1's monitor");
+    }
+    if (strstr(p2Line.c_str(), objectGetName(p1obj)) == nullptr) {
+        autotest_fail("player 2's look not on their monitor");
+    }
+
+    // Player 1 examines player 2: only player 1's monitor.
+    _obj_examine(p1obj, p2obj);
+    autotest_log("player 1 examined: player 1 '%s', player 2 '%s'", displayMonitorLastLine(0), displayMonitorLastLine(1));
+    if (strcmp(displayMonitorLastLine(1), p2Line.c_str()) != 0) {
+        autotest_fail("player 1's examine reached player 2's monitor");
+    }
+    if (strcmp(displayMonitorLastLine(0), p1Line.c_str()) == 0) {
+        autotest_fail("player 1's examine not on their monitor");
+    }
+
+    // Each screen shows its player's monitor.
+    coop_set_viewer(p2);
+    interfaceBarRefresh();
+    coop_set_viewer(nullptr);
+    interfaceBarRefresh();
+    return 0;
+}
+
 static int coop_autotest_egg(AutotestNewGameProc* newGame)
 {
     if (!coop_is_enabled()) {
@@ -4201,6 +4297,81 @@ static int coop_autotest_map_entry(AutotestNewGameProc* newGame)
     // whole.)
     if (worst > 100) {
         autotest_fail("a map was not drawn when entered (%d pixels differ)", worst);
+    }
+    return 0;
+}
+
+// The camera at the map's corners and edges, the floors and roofs of every
+// elevation drawn (under AddressSanitizer: nothing read past the squares'
+// table; at high resolutions the window's far corner is past the grid).
+static int coop_autotest_map_edges(AutotestNewGameProc* newGame)
+{
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    const char* list = getenv("COOP_AUTOTEST_MAPS");
+    std::string rest = list != nullptr ? list : "arcaves.map,arvillag.map";
+    std::vector<std::string> maps;
+    size_t comma;
+    while ((comma = rest.find(',')) != std::string::npos) {
+        maps.push_back(rest.substr(0, comma));
+        rest = rest.substr(comma + 1);
+    }
+    maps.push_back(rest);
+
+    int width = windowGetWidth(gIsoWindow);
+    int height = windowGetHeight(gIsoWindow);
+    // Corners and edges' middles (column, row), each approached from the
+    // edge until the camera may go there (the map's border).
+    const int targets[8][2] = {
+        { 0, 0 }, { HEX_GRID_WIDTH - 1, 0 }, { 0, HEX_GRID_HEIGHT - 1 }, { HEX_GRID_WIDTH - 1, HEX_GRID_HEIGHT - 1 },
+        { HEX_GRID_WIDTH / 2, 0 }, { 0, HEX_GRID_HEIGHT / 2 }, { HEX_GRID_WIDTH - 1, HEX_GRID_HEIGHT / 2 }, { HEX_GRID_WIDTH / 2, HEX_GRID_HEIGHT - 1 },
+    };
+    for (const std::string& name : maps) {
+        int index = coop_autotest_map_index(name.c_str());
+        if (index == -1) {
+            autotest_fail("no map %s", name.c_str());
+            continue;
+        }
+
+        MapTransition transition;
+        memset(&transition, 0, sizeof(transition));
+        transition.map = index;
+        transition.tile = -1;
+        mapSetTransition(&transition);
+        mapHandleTransition();
+
+        int playerTile = gDude->tile;
+        int past = 0;
+        for (const auto& target : targets) {
+            int tile = -1;
+            int set = -1;
+            for (int step = 0; step <= 50 && set != 0; step++) {
+                int column = target[0] + (HEX_GRID_WIDTH / 2 - target[0]) * step / 50;
+                int row = target[1] + (HEX_GRID_HEIGHT / 2 - target[1]) * step / 50;
+                tile = row * HEX_GRID_WIDTH + column;
+                set = tileSetCenter(tile, TILE_SET_CENTER_FLAG_IGNORE_SCROLL_RESTRICTIONS);
+            }
+            for (int elevation = 0; elevation < ELEVATION_COUNT; elevation++) {
+                // How far past the grid the window's corners reach.
+                const int corners[4][2] = { { 0, 0 }, { width - 1, 0 }, { 0, height - 1 }, { width - 1, height - 1 } };
+                for (const auto& corner : corners) {
+                    int x;
+                    int y;
+                    squareTileScreenToCoord(corner[0], corner[1], elevation, &x, &y);
+                    if (x >= SQUARE_GRID_WIDTH || y >= SQUARE_GRID_HEIGHT) {
+                        past++;
+                    }
+                }
+                Rect rect = { 0, 0, width - 1, height - 1 };
+                tileRenderFloorsInRect(&rect, elevation);
+                tileRenderRoofsInRect(&rect, elevation);
+            }
+        }
+        tileSetCenter(playerTile, TILE_SET_CENTER_FLAG_IGNORE_SCROLL_RESTRICTIONS);
+        tileWindowRefresh();
+        autotest_log("%s: %dx%d, window corners past the squares' grid %d times", name.c_str(), width, height, past);
     }
     return 0;
 }
@@ -5135,6 +5306,484 @@ static int coop_autotest_net_worldmap_host(AutotestNewGameProc* newGame)
     }
     takeScreenshot();
     coop_host_exit();
+    return 0;
+}
+
+// How long a map change takes (COOP_AUTOTEST_MAP, default denbus1.map),
+// without co-op: to compare screen sizes and builds.
+static int coop_autotest_map_time(AutotestNewGameProc* newGame)
+{
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    const char* name = getenv("COOP_AUTOTEST_MAP") != nullptr ? getenv("COOP_AUTOTEST_MAP") : "denbus1.map";
+    int index = coop_autotest_map_index(name);
+    if (index == -1) {
+        autotest_fail("no map %s", name);
+        return -1;
+    }
+
+    MapTransition transition;
+    memset(&transition, 0, sizeof(transition));
+    transition.map = index;
+    transition.tile = -1;
+    unsigned int start = getTicks();
+    mapSetTransition(&transition);
+    mapHandleTransition();
+    autotest_log("%s loaded in %u ms (screen %dx%d)", gMapHeader.name, getTicksSince(start), screenGetWidth(), screenGetHeight());
+    return 0;
+}
+
+// Frame packing comes back exactly: random, empty, flat, patterns, and
+// the real screen of a map.
+static int coop_autotest_pack(AutotestNewGameProc* newGame)
+{
+    std::vector<unsigned char> data;
+    unsigned int seed = 12345;
+    auto check = [&](const char* what) {
+        int packed = coop_net_pack_selftest(data.data(), data.size());
+        autotest_log("pack %s: %zu -> %d bytes", what, data.size(), packed);
+        if (packed < 0) {
+            autotest_fail("packing %s did not come back the same", what);
+        }
+    };
+
+    data.clear();
+    check("nothing");
+    data.assign(1, 7);
+    check("one byte");
+    data.assign(5, 9);
+    check("five bytes");
+    data.assign(1000000, 0);
+    check("a million zeros");
+    data.resize(300000);
+    for (unsigned char& byte : data) {
+        seed = seed * 1103515245 + 12345;
+        byte = (unsigned char)(seed >> 16);
+    }
+    check("random");
+    for (size_t index = 0; index < data.size(); index++) {
+        data[index] = (unsigned char)((index % 37) * 3 + (index / 5000));
+    }
+    check("pattern");
+    for (int round = 0; round < 50; round++) {
+        size_t size = 1 + (seed >> 8) % 70000;
+        data.resize(size);
+        for (unsigned char& byte : data) {
+            seed = seed * 1103515245 + 12345;
+            byte = (unsigned char)((seed >> 24) % 4);
+        }
+        if (coop_net_pack_selftest(data.data(), data.size()) < 0) {
+            autotest_fail("packing a few-values buffer of %zu bytes did not come back the same", size);
+        }
+    }
+
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+    tileWindowRefresh();
+    data.assign((const unsigned char*)gSdlSurface->pixels, (const unsigned char*)gSdlSurface->pixels + (size_t)gSdlSurface->pitch * gSdlSurface->h);
+    check("the screen");
+    return 0;
+}
+
+static void coop_autotest_log_story(const char* when)
+{
+    autotest_log("story %s: found_geck %d return_geck %d frank_dead %d reactor %d countdown %d timer %d alarm %d",
+        when, gameGetGlobalVar(GVAR_VAULT13_FOUND_GECK), gameGetGlobalVar(GVAR_ARROYO_RETURN_GECK),
+        gameGetGlobalVar(GVAR_ENCLAVE_FRANK_DEAD), gameGetGlobalVar(GVAR_ENCLAVE_REACTOR),
+        gameGetGlobalVar(GVAR_ENCLAVE_COUNTDOWN), gameGetGlobalVar(GVAR_ENCLAVE_TIMER), gameGetGlobalVar(GVAR_ENCLAVE_ALARM));
+}
+
+// Single player (or with [coop]enabled=1 and player 2 added: co-op): on
+// COOP_AUTOTEST_MAP, the critter named COOP_AUTOTEST_KILL dies as in a fight
+// (its death script, player 1 as the killer), then the game runs; the
+// story flags before and after, to compare the two.
+static int coop_autotest_story_kill(AutotestNewGameProc* newGame)
+{
+    const char* mapName = getenv("COOP_AUTOTEST_MAP");
+    const char* killName = getenv("COOP_AUTOTEST_KILL");
+    if (mapName == nullptr || killName == nullptr) {
+        autotest_fail("needs COOP_AUTOTEST_MAP and COOP_AUTOTEST_KILL");
+        return -1;
+    }
+
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+    if (coop_is_enabled() && coop_add_player("premade\\stealth.gcd") == nullptr) {
+        autotest_fail("coop_add_player failed");
+        return -1;
+    }
+
+    int index = coop_autotest_map_index(mapName);
+    if (index == -1) {
+        autotest_fail("no map %s", mapName);
+        return -1;
+    }
+
+    MapTransition transition;
+    memset(&transition, 0, sizeof(transition));
+    transition.map = index;
+    transition.tile = -1;
+    mapSetTransition(&transition);
+    mapHandleTransition();
+    coop_autotest_log_story("before");
+
+    Object* victim = nullptr;
+    for (Object* obj = objectFindFirst(); obj != nullptr && victim == nullptr; obj = objectFindNext()) {
+        if (PID_TYPE(obj->pid) == OBJ_TYPE_CRITTER && !critterIsDead(obj) && strcmp(critterGetName(obj), killName) == 0) {
+            victim = obj;
+        }
+    }
+    if (victim == nullptr) {
+        autotest_fail("nobody to kill");
+        return -1;
+    }
+
+    // Players' turns in the fight that follows pass by themselves.
+    coop_set_turn_hook(coop_autotest_pass_turn);
+    autotest_log("killing %s (pid %x, script %d)", critterGetName(victim), victim->pid, victim->sid);
+    critterKill(victim, -1, true);
+    if (victim->sid != -1) {
+        scriptSetObjects(victim->sid, gDude, nullptr);
+        scriptExecProc(victim->sid, SCRIPT_PROC_DESTROY);
+    }
+    coop_autotest_frames_until(15000, nullptr);
+    coop_set_turn_hook(nullptr);
+    coop_autotest_log_story("after");
+    autotest_log("players alive: %d, quit %d", critterIsDead(gDude) ? 0 : 1, _game_user_wants_to_quit);
+    return 0;
+}
+
+// Going through a map's objects meets each once, all of them and per
+// elevation (Fallout 1 CE went through the first hex with objects twice).
+static int coop_autotest_object_find(AutotestNewGameProc* newGame)
+{
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    std::vector<Object*> seen;
+    int twice = 0;
+    for (Object* obj = objectFindFirst(); obj != nullptr; obj = objectFindNext()) {
+        if (std::find(seen.begin(), seen.end(), obj) != seen.end()) {
+            twice++;
+        } else {
+            seen.push_back(obj);
+        }
+    }
+
+    int twiceAt = 0;
+    int countAt = 0;
+    for (int elevation = 0; elevation < ELEVATION_COUNT; elevation++) {
+        std::vector<Object*> seenAt;
+        for (Object* obj = objectFindFirstAtElevation(elevation); obj != nullptr; obj = objectFindNextAtElevation()) {
+            if (std::find(seenAt.begin(), seenAt.end(), obj) != seenAt.end()) {
+                twiceAt++;
+            } else {
+                seenAt.push_back(obj);
+                countAt++;
+            }
+        }
+    }
+
+    autotest_log("%s: %d objects, %d met twice; per elevation %d objects, %d met twice", gMapHeader.name, (int)seen.size(), twice,
+        countAt, twiceAt);
+    if (twice != 0 || twiceAt != 0) {
+        autotest_fail("objects were met twice");
+    }
+    return 0;
+}
+
+// A config file whose values have brackets (an IPv6 address, a name):
+// they stay values in their section.
+static int coop_autotest_config_brackets(AutotestNewGameProc* newGame)
+{
+    (void)newGame;
+
+    const char* path = "autotest/brackets.cfg";
+    FILE* stream = fopen(path, "wt");
+    if (stream == nullptr) {
+        autotest_fail("cannot write %s", path);
+        return -1;
+    }
+    fputs("[coop]\nhost=[2001:db8::1]:27015\nname=Bob [GER]\nport=27016\n  [sound]\nmusic_volume=12\n", stream);
+    fclose(stream);
+
+    Config config;
+    configInit(&config);
+    bool loaded = configRead(&config, path, false);
+    char* host = nullptr;
+    char* name = nullptr;
+    char* port = nullptr;
+    char* volume = nullptr;
+    configGetString(&config, "coop", "host", &host);
+    configGetString(&config, "coop", "name", &name);
+    configGetString(&config, "coop", "port", &port);
+    configGetString(&config, "sound", "music_volume", &volume);
+    autotest_log("loaded %d: host %s, name %s, port %s, sound music_volume %s", loaded ? 1 : 0,
+        host != nullptr ? host : "-", name != nullptr ? name : "-", port != nullptr ? port : "-", volume != nullptr ? volume : "-");
+    if (host == nullptr || strcmp(host, "[2001:db8::1]:27015") != 0 || name == nullptr || strcmp(name, "Bob [GER]") != 0
+        || port == nullptr || strcmp(port, "27016") != 0 || volume == nullptr || strcmp(volume, "12") != 0) {
+        autotest_fail("values with brackets broke the config file");
+    }
+    configFree(&config);
+    return 0;
+}
+
+// A sound in ACM band format 31 (as some Russian localizations' speech):
+// its samples, 16 bits each, come out as they went in.
+struct CoopAutotestMemoryReader {
+    const std::vector<unsigned char>* bytes;
+    size_t at;
+};
+
+static int coop_autotest_memory_read(void* data, void* buffer, unsigned int size)
+{
+    CoopAutotestMemoryReader* reader = static_cast<CoopAutotestMemoryReader*>(data);
+    size_t count = std::min((size_t)size, reader->bytes->size() - reader->at);
+    memcpy(buffer, reader->bytes->data() + reader->at, count);
+    reader->at += count;
+    return (int)count;
+}
+
+static int coop_autotest_acm_fmt31(AutotestNewGameProc* newGame)
+{
+    (void)newGame;
+
+    // The bits least significant first, as the decoder reads them.
+    std::vector<unsigned char> bytes;
+    unsigned long long pending = 0;
+    int pendingBits = 0;
+    auto put = [&](unsigned int value, int bits) {
+        pending |= (unsigned long long)(value & ((1u << bits) - 1)) << pendingBits;
+        pendingBits += bits;
+        while (pendingBits >= 8) {
+            bytes.push_back((unsigned char)(pending & 0xFF));
+            pending >>= 8;
+            pendingBits -= 8;
+        }
+    };
+
+    const short samples[] = { 1000, -1000, 32767, -32768, 0, 123, -123, 4242 };
+    const int count = (int)(sizeof(samples) / sizeof(samples[0]));
+    const int levels = 2;
+    put(0x032897, 24); // ACM
+    put(1, 8); // version
+    put(count, 16); // samples in the file
+    put(0, 16);
+    put(1, 16); // channels
+    put(22050, 16); // rate
+    put(levels, 4); // 4 subbands ...
+    put(count >> levels, 12); // ... of 2 samples each
+    put(0, 4); // the block's scale
+    put(0, 16);
+    put(31, 5); // the format of the first band: the whole block
+    for (short sample : samples) {
+        put((unsigned short)sample, 16);
+    }
+    put(0, 8);
+    bytes.resize(bytes.size() + 64, 0);
+
+    CoopAutotestMemoryReader reader = { &bytes, 0 };
+    int channels;
+    int rate;
+    int sampleCount;
+    SoundDecoder* decoder = soundDecoderInit(coop_autotest_memory_read, &reader, &channels, &rate, &sampleCount);
+    if (decoder == nullptr) {
+        autotest_fail("the decoder did not open the sound");
+        return -1;
+    }
+
+    short out[16];
+    memset(out, 0x55, sizeof(out));
+    size_t read = soundDecoderDecode(decoder, out, sizeof(out));
+    soundDecoderFree(decoder);
+
+    autotest_log("%d channel(s) at %d Hz, %d samples; read %zu bytes: %d %d %d %d %d %d %d %d", channels, rate, sampleCount, read,
+        out[0], out[1], out[2], out[3], out[4], out[5], out[6], out[7]);
+    if (read != (size_t)count * 2 || memcmp(out, samples, sizeof(samples)) != 0) {
+        autotest_fail("format 31 samples did not come out as they went in");
+    }
+    return 0;
+}
+
+static void coop_autotest_db_progress()
+{
+}
+
+// How many bytes past the end of `path` (`size` bytes) reading it wrote,
+// with guard bytes after a buffer of its size; -1 if it cannot be read.
+static int coop_autotest_db_overrun(const char* path, int size)
+{
+    const int guard = 4096;
+    std::vector<unsigned char> buffer(size + guard, 0xA5);
+    if (dbGetFileContents(path, buffer.data()) != 0) {
+        return -1;
+    }
+
+    for (int at = guard - 1; at >= 0; at--) {
+        if (buffer[size + at] != 0xA5) {
+            return at + 1;
+        }
+    }
+    return 0;
+}
+
+// Every sound effect read into a buffer of exactly its size, guard bytes
+// after it: none may be written past (Fallout 1 CE's sound cache heap was
+// found damaged after reads with a progress callback set, as while a map
+// loads).
+static int coop_autotest_sfx_sizes(AutotestNewGameProc* newGame)
+{
+    (void)newGame;
+
+    // The game's own list of them (sound\sfx\sndlist.lst; listing the
+    // folder finds none in the archive).
+    int checked = 0;
+    // Twice: as usual, and with a progress callback, as while a map loads.
+    for (int pass = 0; pass < 2; pass++) {
+        if (pass == 1) {
+            fileSetReadProgressHandler(coop_autotest_db_progress, 1024);
+        }
+        for (int tag = 2; soundEffectsListIsValidTag(tag); tag += 2) {
+            char* path;
+            if (soundEffectsListGetFilePath(tag, &path) != SFXL_OK) {
+                continue;
+            }
+            int size;
+            if (dbGetFileSize(path, &size) != 0 || size <= 0) {
+                autotest_log("%s: no size", path);
+                internal_free(path);
+                continue;
+            }
+            int over = coop_autotest_db_overrun(path, size);
+            if (over == -1) {
+                autotest_log("%s: cannot read", path);
+            } else {
+                if (over != 0) {
+                    autotest_fail("%s (%d bytes listed) wrote %d bytes past its size", path, size, over);
+                }
+                checked++;
+            }
+            internal_free(path);
+        }
+    }
+    fileSetReadProgressHandler(nullptr, 0);
+    autotest_log("%d sound effect reads checked", checked);
+    if (checked == 0) {
+        autotest_fail("no sound effects read");
+    }
+    return 0;
+}
+
+// Every file matching COOP_AUTOTEST_DB_PATTERN (default the sound effects)
+// read from the game's data into a buffer of its listed size: nothing may
+// be written past it.
+static int coop_autotest_db_sfx(AutotestNewGameProc* newGame)
+{
+    (void)newGame;
+
+    const char* pattern = getenv("COOP_AUTOTEST_DB_PATTERN") != nullptr ? getenv("COOP_AUTOTEST_DB_PATTERN") : "sound\\sfx\\*.acm";
+    const char* slash = strrchr(pattern, '\\');
+    int folderLength = slash != nullptr ? (int)(slash - pattern + 1) : 0;
+    char** names;
+    int count = fileNameListInit(pattern, &names, 0, 0);
+    int bad = 0;
+    for (int index = 0; index < count; index++) {
+        char path[COMPAT_MAX_PATH];
+        snprintf(path, sizeof(path), "%.*s%s", folderLength, pattern, names[index]);
+        int size;
+        if (dbGetFileSize(path, &size) != 0) {
+            autotest_log("%s: no entry", path);
+            continue;
+        }
+        int over = coop_autotest_db_overrun(path, size);
+        if (over > 0) {
+            bad++;
+            autotest_log("%s: %d bytes and %d bytes written past them", path, size, over);
+        }
+    }
+    autotest_log("%d files read, %d wrote past their size", count, bad);
+    if (bad != 0) {
+        autotest_fail("files are written past their size");
+    }
+    if (count != 0) {
+        fileNameListFree(&names, 0);
+    }
+    return 0;
+}
+
+// How long one full redraw of the map and the interface takes at this
+// screen size: what the host pays for each other player's view every frame
+// (COOP_AUTOTEST_BENCH_MAP, default denbus1.map).
+static int coop_autotest_draw_bench(AutotestNewGameProc* newGame)
+{
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    const char* name = getenv("COOP_AUTOTEST_BENCH_MAP") != nullptr ? getenv("COOP_AUTOTEST_BENCH_MAP") : "denbus1.map";
+    int index = coop_autotest_map_index(name);
+    if (index == -1) {
+        autotest_fail("no map %s", name);
+        return -1;
+    }
+
+    MapTransition transition;
+    memset(&transition, 0, sizeof(transition));
+    transition.map = index;
+    transition.tile = -1;
+    mapSetTransition(&transition);
+    mapHandleTransition();
+
+    for (int round = 0; round < 3; round++) {
+        unsigned int start = getTicks();
+        int count = 0;
+        while (count < 20 || getTicksSince(start) < 2000) {
+            tileWindowRefresh();
+            interfaceBarRefresh();
+            count++;
+        }
+        unsigned int elapsed = getTicksSince(start);
+        autotest_log("draw: %u us per full redraw at %dx%d (%d redraws)",
+            (unsigned int)((unsigned long long)elapsed * 1000 / count), screenGetWidth(), screenGetHeight(), count);
+    }
+
+    // Where the time goes.
+    unsigned long long ticks[TILE_REFRESH_STEPS] = { 0 };
+    gTileRefreshStepTicks = ticks;
+    int count = 0;
+    unsigned int start = getTicks();
+    while (count < 20 || getTicksSince(start) < 2000) {
+        tileWindowRefresh();
+        count++;
+    }
+    gTileRefreshStepTicks = nullptr;
+    double perUs = (double)SDL_GetPerformanceFrequency() / 1000000.0;
+    autotest_log("draw steps (us per redraw): clear %.0f, floor %.0f, objects %.0f, roofs %.0f, objects over roofs %.0f, to the screen %.0f",
+        ticks[0] / perUs / count, ticks[1] / perUs / count, ticks[2] / perUs / count, ticks[3] / perUs / count, ticks[4] / perUs / count, ticks[5] / perUs / count);
+    return 0;
+}
+
+static void coop_autotest_screenshot_every_2s()
+{
+    inject_wait(120);
+    inject_call(coop_autotest_screenshot);
+    inject_call(coop_autotest_screenshot_every_2s);
+}
+
+// The credits from the main menu, with a screenshot every two seconds
+// (the co-op lines come at the end).
+static int coop_autotest_credits(AutotestNewGameProc* newGame)
+{
+    (void)newGame;
+
+    inject_call(coop_autotest_screenshot_every_2s);
+    creditsOpen("credits.txt", -1, false);
+    autotest_log("credits done");
     return 0;
 }
 

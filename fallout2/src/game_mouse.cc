@@ -730,11 +730,9 @@ void gameMouseRefresh()
 
                     if (pointedObject != gGameMousePointedObject) {
                         gGameMousePointedObject = pointedObject;
-                        // CE: co-op: not for the other players (online):
-                        // the message window is everyone's.
-                        if (!coop_host_in_other_part()) {
-                            _obj_look_at(gDude, gGameMousePointedObject);
-                        }
+                        // CE: co-op: for the other players too (online),
+                        // each on their own monitor (_obj_look_at()).
+                        _obj_look_at(gDude, gGameMousePointedObject);
                     }
                 }
             } else if (gGameMouseMode == GAME_MOUSE_MODE_CROSSHAIR) {

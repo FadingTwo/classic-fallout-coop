@@ -52,6 +52,9 @@ extern void (*svga_present_hook)();
 // CE: co-op: while set, what is drawn reaches the screen surface only, not
 // what is shown (the host draws another player's picture to send it).
 extern bool svga_screen_only;
+// Testing: the time uploads to the graphics card took (performance counter
+// ticks).
+extern unsigned long long svga_upload_ticks;
 
 } // namespace fallout
 

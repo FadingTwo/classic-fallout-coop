@@ -30,6 +30,12 @@ void tileWindowRefresh();
 // coordinates of the camera at the time), `whole` when all of it.
 typedef void(TileWindowRefreshObserver)(Rect* rect, int elevation, bool whole);
 extern TileWindowRefreshObserver* gTileWindowRefreshObserver;
+
+// CE: testing: when set, each map redraw adds the time (performance
+// counter ticks) of its steps: clearing, floor, objects under the roofs,
+// roofs, objects over them, and copying to the screen.
+#define TILE_REFRESH_STEPS 6
+extern unsigned long long* gTileRefreshStepTicks;
 int tileSetCenter(int tile, int flags);
 void tile_toggle_roof(bool refresh);
 int tileRoofIsVisible();

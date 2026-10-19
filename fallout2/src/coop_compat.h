@@ -138,6 +138,7 @@ inline int tile_set_center(int tile, int flags) { return tileSetCenter(tile, fla
 inline int win_add(int x, int y, int width, int height, int color, int flags) { return windowCreate(x, y, width, height, color, flags); }
 inline void win_delete(int win) { windowDestroy(win); }
 inline void win_draw(int win) { windowRefresh(win); }
+inline void win_draw_rect(int win, const Rect* rect) { windowRefreshRect(win, rect); }
 inline unsigned char* win_get_buf(int win) { return windowGetBuffer(win); }
 
 } // namespace fallout

@@ -721,11 +721,9 @@ void gmouse_bk_process()
 
                     if (target != last_object) {
                         last_object = target;
-                        // CE: co-op: not for the other players (online):
-                        // the message window is everyone's.
-                        if (!coop_host_in_other_part()) {
-                            obj_look_at(obj_dude, last_object);
-                        }
+                        // CE: co-op: for the other players too (online),
+                        // each on their own monitor (obj_look_at()).
+                        obj_look_at(obj_dude, last_object);
                     }
                 }
             } else if (gmouse_3d_current_mode == GAME_MOUSE_MODE_CROSSHAIR) {

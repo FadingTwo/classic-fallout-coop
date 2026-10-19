@@ -9,6 +9,7 @@
 #include "art.h"
 #include "color.h"
 #include "combat.h"
+#include "coop.h"
 #include "critter.h"
 #include "debug.h"
 #include "display_monitor.h"
@@ -172,7 +173,11 @@ int _obj_new_sid_inst(Object* obj, int scriptType, int scriptIndex)
 // 0x49AC3C
 int _obj_look_at(Object* a1, Object* a2)
 {
-    return _obj_look_at_func(a1, a2, displayMonitorAddMessage);
+    // CE: co-op: on the looking player's own monitor (each player has one).
+    displayMonitorSetPrivate(coop_player_count() > 1 ? coop_player_index_of(a1) : -1);
+    int rc = _obj_look_at_func(a1, a2, displayMonitorAddMessage);
+    displayMonitorSetPrivate(-1);
+    return rc;
 }
 
 // 0x49AC4C
@@ -230,7 +235,11 @@ int _obj_look_at_func(Object* a1, Object* a2, void (*a3)(char* string))
 // 0x49AD78
 int _obj_examine(Object* a1, Object* a2)
 {
-    return _obj_examine_func(a1, a2, displayMonitorAddMessage);
+    // CE: co-op: on the looking player's own monitor (each player has one).
+    displayMonitorSetPrivate(coop_player_count() > 1 ? coop_player_index_of(a1) : -1);
+    int rc = _obj_examine_func(a1, a2, displayMonitorAddMessage);
+    displayMonitorSetPrivate(-1);
+    return rc;
 }
 
 // Performs examine (reading description) action and passes resulting text

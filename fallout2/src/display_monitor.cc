@@ -1,5 +1,6 @@
 #include "display_monitor.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include <fstream>
@@ -7,6 +8,7 @@
 #include "art.h"
 #include "color.h"
 #include "combat.h"
+#include "coop.h"
 #include "draw.h"
 #include "game_mouse.h"
 #include "game_sound.h"
@@ -40,7 +42,6 @@ namespace fallout {
 #define DISPLAY_MONITOR_BEEP_DELAY (500U)
 
 static void display_clear();
-static void displayMonitorRefresh();
 static void displayMonitorScrollUpOnMouseDown(int btn, int keyCode);
 static void displayMonitorScrollDownOnMouseDown(int btn, int keyCode);
 static void displayMonitorScrollUpOnMouseEnter(int btn, int keyCode);
@@ -68,7 +69,10 @@ static int gDisplayMonitorScrollDownButton = -1;
 static int gDisplayMonitorScrollUpButton = -1;
 
 // 0x56DBFC
-static char gDisplayMonitorLines[DISPLAY_MONITOR_LINES_CAPACITY][DISPLAY_MONITOR_LINE_LENGTH];
+// CE: co-op: one monitor per player: everyone's messages go to all, a
+// player's own (what they look at) only to theirs; each player's screen
+// shows theirs.
+static char gDisplayMonitorLinesOf[COOP_MAX_PLAYERS][DISPLAY_MONITOR_LINES_CAPACITY][DISPLAY_MONITOR_LINE_LENGTH];
 
 // 0x56FB3C
 static unsigned char* gDisplayMonitorBackgroundFrmData;
@@ -80,7 +84,7 @@ static int _max_disp;
 static bool gDisplayMonitorEnabled;
 
 // 0x56FB48
-static int _disp_curr;
+static int _disp_currs[COOP_MAX_PLAYERS];
 
 // 0x56FB4C
 static int _intface_full_width;
@@ -89,7 +93,18 @@ static int _intface_full_width;
 static int gDisplayMonitorLinesCapacity;
 
 // 0x56FB54
-static int _disp_start;
+static int _disp_starts[COOP_MAX_PLAYERS];
+
+// CE: co-op: the monitor the code below works on, and the one a message
+// goes to alone (-1: everyone's).
+static int gDisplayMonitorRing = 0;
+static int gDisplayMonitorPrivate = -1;
+
+#define gDisplayMonitorLines (gDisplayMonitorLinesOf[gDisplayMonitorRing])
+#define _disp_curr (_disp_currs[gDisplayMonitorRing])
+#define _disp_start (_disp_starts[gDisplayMonitorRing])
+
+static void displayMonitorAddMessageToRing(char* str);
 
 // 0x56FB58
 static unsigned int gDisplayMonitorLastBeepTimestamp;
@@ -113,8 +128,10 @@ int displayMonitorInit()
 
         gDisplayMonitorLinesCapacity = DISPLAY_MONITOR_LINES_CAPACITY;
         _max_disp = DISPLAY_MONITOR_HEIGHT / fontGetLineHeight();
-        _disp_start = 0;
-        _disp_curr = 0;
+        for (int index = 0; index < COOP_MAX_PLAYERS; index++) {
+            _disp_starts[index] = 0;
+            _disp_currs[index] = 0;
+        }
         fontSetCurrent(oldFont);
 
         gDisplayMonitorBackgroundFrmData = (unsigned char*)internal_malloc(DISPLAY_MONITOR_WIDTH * DISPLAY_MONITOR_HEIGHT);
@@ -238,6 +255,46 @@ void displayMonitorAddMessage(char* str)
     // SFALL
     consoleFileAddMessage(str);
 
+    if (!isInCombat()) {
+        unsigned int now = _get_bk_time();
+        if (getTicksBetween(now, gDisplayMonitorLastBeepTimestamp) >= DISPLAY_MONITOR_BEEP_DELAY) {
+            gDisplayMonitorLastBeepTimestamp = now;
+            soundPlayFile("monitor");
+        }
+    }
+
+    // CE: co-op: to every player's monitor (a copy each: wrapping changes
+    // it), or to one's alone.
+    for (int index = 0; index < COOP_MAX_PLAYERS; index++) {
+        if (gDisplayMonitorPrivate != -1 && index != gDisplayMonitorPrivate) {
+            continue;
+        }
+        char copy[1024];
+        snprintf(copy, sizeof(copy), "%s", str);
+        gDisplayMonitorRing = index;
+        displayMonitorAddMessageToRing(copy);
+        _disp_curr = _disp_start;
+    }
+
+    displayMonitorRefresh();
+}
+
+void displayMonitorSetPrivate(int player)
+{
+    gDisplayMonitorPrivate = player >= 0 && player < COOP_MAX_PLAYERS ? player : -1;
+}
+
+const char* displayMonitorLastLine(int player)
+{
+    if (!gDisplayMonitorInitialized || player < 0 || player >= COOP_MAX_PLAYERS) {
+        return "";
+    }
+    return gDisplayMonitorLinesOf[player][(_disp_starts[player] + gDisplayMonitorLinesCapacity - 1) % gDisplayMonitorLinesCapacity];
+}
+
+// CE: co-op: one player's monitor (gDisplayMonitorRing) takes `str`.
+static void displayMonitorAddMessageToRing(char* str)
+{
     int oldFont = fontGetCurrent();
     fontSetCurrent(DISPLAY_MONITOR_FONT);
 
@@ -247,14 +304,6 @@ void displayMonitorAddMessage(char* str)
     knobString[0] = knob;
     knobString[1] = '\0';
     int knobWidth = fontGetStringWidth(knobString);
-
-    if (!isInCombat()) {
-        unsigned int now = _get_bk_time();
-        if (getTicksBetween(now, gDisplayMonitorLastBeepTimestamp) >= DISPLAY_MONITOR_BEEP_DELAY) {
-            gDisplayMonitorLastBeepTimestamp = now;
-            soundPlayFile("monitor");
-        }
-    }
 
     // TODO: Refactor these two loops.
     char* v1 = nullptr;
@@ -276,8 +325,6 @@ void displayMonitorAddMessage(char* str)
 
             if (v1 == nullptr) {
                 fontSetCurrent(oldFont);
-                _disp_curr = _disp_start;
-                displayMonitorRefresh();
                 return;
             }
 
@@ -317,8 +364,6 @@ void displayMonitorAddMessage(char* str)
     _disp_start = (_disp_start + 1) % gDisplayMonitorLinesCapacity;
 
     fontSetCurrent(oldFont);
-    _disp_curr = _disp_start;
-    displayMonitorRefresh();
 }
 
 // NOTE: Inlined.
@@ -329,18 +374,20 @@ static void display_clear()
     int index;
 
     if (gDisplayMonitorInitialized) {
-        for (index = 0; index < gDisplayMonitorLinesCapacity; index++) {
-            gDisplayMonitorLines[index][0] = '\0';
-        }
+        for (gDisplayMonitorRing = 0; gDisplayMonitorRing < COOP_MAX_PLAYERS; gDisplayMonitorRing++) {
+            for (index = 0; index < gDisplayMonitorLinesCapacity; index++) {
+                gDisplayMonitorLines[index][0] = '\0';
+            }
 
-        _disp_start = 0;
-        _disp_curr = 0;
+            _disp_start = 0;
+            _disp_curr = 0;
+        }
         displayMonitorRefresh();
     }
 }
 
 // 0x431A78
-static void displayMonitorRefresh()
+void displayMonitorRefresh()
 {
     if (!gDisplayMonitorInitialized) {
         return;
@@ -350,6 +397,9 @@ static void displayMonitorRefresh()
     if (buf == nullptr) {
         return;
     }
+
+    // CE: co-op: the monitor of the player whose screen this is.
+    gDisplayMonitorRing = coop_viewer_index();
 
     buf += _intface_full_width * DISPLAY_MONITOR_Y + DISPLAY_MONITOR_X;
     blitBufferToBuffer(gDisplayMonitorBackgroundFrmData,
@@ -381,6 +431,7 @@ static void displayMonitorRefresh()
 // 0x431B70
 static void displayMonitorScrollUpOnMouseDown(int btn, int keyCode)
 {
+    gDisplayMonitorRing = coop_viewer_index();
     if ((gDisplayMonitorLinesCapacity + _disp_curr - 1) % gDisplayMonitorLinesCapacity != _disp_start) {
         _disp_curr = (gDisplayMonitorLinesCapacity + _disp_curr - 1) % gDisplayMonitorLinesCapacity;
         displayMonitorRefresh();
@@ -390,6 +441,7 @@ static void displayMonitorScrollUpOnMouseDown(int btn, int keyCode)
 // 0x431B9C
 static void displayMonitorScrollDownOnMouseDown(int btn, int keyCode)
 {
+    gDisplayMonitorRing = coop_viewer_index();
     if (_disp_curr != _disp_start) {
         _disp_curr = (_disp_curr + 1) % gDisplayMonitorLinesCapacity;
         displayMonitorRefresh();
