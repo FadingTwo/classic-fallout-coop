@@ -366,6 +366,11 @@ PlayerState* coop_add_player(const char* premadePath)
     memset(player, 0, sizeof(*player));
     player->obj = obj;
     player->vaultGuyNum = _art_vault_guy_num;
+    // The bar's hands start as the game starts player 1's (intface_init_items):
+    // with no item yet, the first update takes the attack (punch, or the
+    // weapon's), not the zeroed action (use), which drew an empty button.
+    player->hands[HAND_LEFT].item = (Object*)-1;
+    player->hands[HAND_RIGHT].item = (Object*)-1;
     coop_players_count++;
 
     {

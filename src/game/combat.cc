@@ -2261,6 +2261,11 @@ static int combat_turn(Object* a1, bool a2)
 
         if (a1 == obj_dude) {
             kb_clear();
+            // Co-op: the bar shows this player's hands (it still showed the
+            // previous player's weapon on everyone's screen).
+            if (coop_player_count() > 1) {
+                intface_update_items(false);
+            }
             intface_update_ac(true);
             combat_free_move = 2 * perk_level(PERK_BONUS_MOVE);
             intface_update_move_points(obj_dude->data.critter.combat.ap, combat_free_move);

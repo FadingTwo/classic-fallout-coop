@@ -3260,6 +3260,11 @@ static int _combat_turn(Object* obj, bool a2)
     } else {
         if (obj == gDude) {
             keyboardReset();
+            // Co-op: the bar shows this player's hands (it still showed the
+            // previous player's weapon on everyone's screen).
+            if (coop_player_count() > 1) {
+                interfaceUpdateItems(false, INTERFACE_ITEM_ACTION_DEFAULT, INTERFACE_ITEM_ACTION_DEFAULT);
+            }
             interfaceRenderArmorClass(true);
             _combat_free_move = 2 * perkGetRank(gDude, PERK_BONUS_MOVE);
             interfaceRenderActionPoints(gDude->data.critter.combat.ap, _combat_free_move);

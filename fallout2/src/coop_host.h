@@ -34,6 +34,8 @@ void coop_host_frame();
 // and how many parts they had (a part waits while their client can't take
 // a frame).
 int coop_host_view_center(int slot);
+// The cursor of player `slot` + 1's view (-1 before they had one).
+int coop_host_view_cursor(int slot);
 unsigned int coop_host_view_parts(int slot);
 // Testing: how many of their parts ended with their 3D cursor showing what
 // is under it (the mouse rested there).

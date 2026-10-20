@@ -2206,13 +2206,20 @@ void gmouse_3d_save_hover(GmouseHoverState* state)
     state->pickHotY = gmouse_3d_pick_frame_hot_y;
     state->toHitFrame.assign(gmouse_3d_to_hit_frame_data, gmouse_3d_to_hit_frame_data + gmouse_3d_to_hit_frame_size);
     state->hexFrame.assign(gmouse_3d_hex_frame_data, gmouse_3d_hex_frame_data + gmouse_3d_hex_frame_size);
+    state->scrollBackCursor = gmouse_bk_last_cursor;
 }
 
 // The cursor's objects take the saved looks without a redraw: the view
 // that comes is drawn anyway, and the cursor moves to its mouse with one.
 void gmouse_3d_load_hover(const GmouseHoverState* state)
 {
-    if (!gmouse_initialized || !gmouse_3d_initialized || !state->saved) {
+    if (!gmouse_initialized || !gmouse_3d_initialized) {
+        return;
+    }
+
+    gmouse_bk_last_cursor = state->scrollBackCursor;
+
+    if (!state->saved) {
         return;
     }
 

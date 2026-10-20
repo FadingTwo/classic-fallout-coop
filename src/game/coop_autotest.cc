@@ -41,6 +41,7 @@
 #include "game/gdialog.h"
 #include "int/sound.h"
 #include "plib/db/db.h"
+#include "game/gmouse.h"
 #include "game/gmovie.h"
 #include "game/gsound.h"
 #include "game/scripts.h"
@@ -2948,6 +2949,9 @@ static int coop_autotest_net_play_host(AutotestNewGameProc* newGame)
     int farFrames = 0;
     unsigned int farParts = 0;
     bool cameraChecked = false;
+    // Player 2's cursor while they scroll at the screen's edge, and after.
+    bool scrolled = false;
+    int p2Cursor = -1;
     const int chatKeys[] = { KEY_LOWERCASE_T, 'W', 'a', 'r', ' ', 'n', 'e', 'v', 'e', 'r', ' ', 'c', 'h', 'a', 'n', 'g', 'e', 's', KEY_RETURN };
     int chatKey = 0;
     unsigned int start = get_time();
@@ -2975,6 +2979,10 @@ static int coop_autotest_net_play_host(AutotestNewGameProc* newGame)
 
         if (coop_player_count() > 1) {
             Object* p2 = coop_player(1)->obj;
+            if (coop_host_view_cursor(1) != -1) {
+                p2Cursor = coop_host_view_cursor(1);
+                scrolled = scrolled || (p2Cursor >= MOUSE_CURSOR_SCROLL_NW && p2Cursor <= MOUSE_CURSOR_SCROLL_W_INVALID);
+            }
             if (startTile == -1) {
                 startTile = p2->tile;
                 autotest_log("player 2 '%s' joined at tile %d, look %d", coop_player(1)->name, startTile, coop_player(1)->look);
@@ -3039,6 +3047,14 @@ static int coop_autotest_net_play_host(AutotestNewGameProc* newGame)
     // Their mouse rested on the map (while they chatted): their 3D cursor
     // showed what's under it, as player 1's does.
     autotest_log("player 2's cursor showed what's under it in %u of %u parts", coop_host_view_hover_parts(1), coop_host_view_parts(1));
+
+    // Their scroll arrow went when their mouse left the edge.
+    autotest_log("player 2 scrolled at the screen's edge: %d; their cursor at the end %d", scrolled ? 1 : 0, p2Cursor);
+    if (startTile != -1 && !scrolled) {
+        autotest_fail("player 2's mouse at the screen's edge didn't scroll");
+    } else if (p2Cursor >= MOUSE_CURSOR_SCROLL_NW && p2Cursor <= MOUSE_CURSOR_SCROLL_W_INVALID) {
+        autotest_fail("player 2's cursor stayed a scroll arrow (%d)", p2Cursor);
+    }
     if (startTile != -1 && coop_host_view_hover_parts(1) == 0) {
         autotest_fail("player 2's cursor never showed what's under it");
     }
@@ -3115,6 +3131,15 @@ static int coop_autotest_net_play_client(AutotestNewGameProc* newGame)
     inject_call(coop_autotest_screenshot);
     inject_key(KEY_ESCAPE);
     inject_wait(360);
+
+    // Last (the camera check is done): their mouse at the left edge a while
+    // (the map scrolls), then back on the map. Their cursor must not stay a
+    // scroll arrow (the host checks).
+    inject_set_mouse_transform(coop_autotest_mouse_transform);
+    inject_mouse(0, 300, 0);
+    inject_wait(60);
+    inject_mouse(320 | COOP_AUTOTEST_CENTERED, 200, 0);
+    inject_wait(90);
     inject_call(coop_net_client_request_exit);
 
     coop_net_set_client_exit_hook(coop_autotest_net_client_exit);
@@ -3362,6 +3387,12 @@ static int coop_autotest_combat(AutotestNewGameProc* newGame)
         p2Xp = stat_pc_get(PC_STAT_EXPERIENCE);
     }
 
+    // Player 1 holds a knife, player 2 nothing: each turn's bar must show
+    // that player's hands (count_turn checks).
+    const char* knife[] = { "Knife" };
+    coop_autotest_equip(p1, knife, 1, HAND_RIGHT);
+    intface_update_items(false);
+
     coop_autotest_enemy = enemy;
     memset(coop_autotest_turns, 0, sizeof(coop_autotest_turns));
     coop_autotest_turns_total = 0;
@@ -3440,6 +3471,13 @@ static int coop_autotest_combat(AutotestNewGameProc* newGame)
 static void coop_autotest_count_turn(Object* player)
 {
     PlayerState* state = coop_player_of(player);
+
+    // The bar shows this player's hands, not the previous player's weapon.
+    Object* shown = NULL;
+    intface_get_current_item(&shown);
+    if (shown != NULL && shown != inven_right_hand(player) && shown != inven_left_hand(player)) {
+        autotest_fail("%s's turn: the bar shows another player's %s", critter_name(player), object_name(shown));
+    }
     for (int index = 0; index < coop_player_count(); index++) {
         if (coop_player(index) == state) {
             coop_autotest_turns[index]++;

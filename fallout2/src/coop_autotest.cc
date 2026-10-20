@@ -38,6 +38,7 @@
 #include "inject.h"
 #include "input.h"
 #include "interface.h"
+#include "inventory.h"
 #include "kb.h"
 #include "item.h"
 #include "loadsave.h"
@@ -907,6 +908,18 @@ static int coop_autotest_combat(AutotestNewGameProc* newGame)
         p2Xp = pcGetStat(PC_STAT_EXPERIENCE);
     }
 
+    // Player 1 holds a knife, player 2 nothing: each turn's bar must show
+    // that player's hands (count_turn checks).
+    Object* knife;
+    if (objectCreateWithPid(&knife, 4) == 0) {
+        if (itemAdd(p1->obj, knife, 1) == 0) {
+            _inven_wield(p1->obj, knife, HAND_RIGHT);
+        } else {
+            objectDestroy(knife, nullptr);
+        }
+    }
+    interfaceUpdateItems(false, INTERFACE_ITEM_ACTION_DEFAULT, INTERFACE_ITEM_ACTION_DEFAULT);
+
     coop_autotest_enemy = enemy;
     memset(coop_autotest_turns, 0, sizeof(coop_autotest_turns));
     coop_autotest_turns_total = 0;
@@ -985,6 +998,22 @@ static int coop_autotest_combat(AutotestNewGameProc* newGame)
 static void coop_autotest_count_turn(Object* player)
 {
     PlayerState* state = coop_player_of(player);
+
+    // The bar shows this player's hands, not the previous player's weapon.
+    Object* shown = nullptr;
+    interfaceGetActiveItem(&shown);
+    if (shown != nullptr && shown != critterGetItem1(player) && shown != critterGetItem2(player)) {
+        autotest_fail("%s's turn: the bar shows another player's %s", critterGetName(player), objectGetName(shown));
+    }
+
+    // Empty hands offer their attack (punch or kick), not a blank button.
+    int leftAction;
+    int rightAction;
+    interfaceGetItemActions(&leftAction, &rightAction);
+    int action = interfaceGetCurrentHand() == HAND_LEFT ? leftAction : rightAction;
+    if (shown == nullptr && action == INTERFACE_ITEM_ACTION_USE) {
+        autotest_fail("%s's turn: the bar's empty hand shows no attack", critterGetName(player));
+    }
     for (int index = 0; index < coop_player_count(); index++) {
         if (coop_player(index) == state) {
             coop_autotest_turns[index]++;
@@ -1504,6 +1533,9 @@ static int coop_autotest_net_play_host(AutotestNewGameProc* newGame)
     int farFrames = 0;
     unsigned int farParts = 0;
     bool cameraChecked = false;
+    // Player 2's cursor while they scroll at the screen's edge, and after.
+    bool scrolled = false;
+    int p2Cursor = -1;
     const int chatKeys[] = { KEY_LOWERCASE_T, 'W', 'a', 'r', ' ', 'n', 'e', 'v', 'e', 'r', ' ', 'c', 'h', 'a', 'n', 'g', 'e', 's', KEY_RETURN };
     int chatKey = 0;
     unsigned int start = get_time();
@@ -1531,6 +1563,10 @@ static int coop_autotest_net_play_host(AutotestNewGameProc* newGame)
 
         if (coop_player_count() > 1) {
             Object* p2 = coop_player(1)->obj;
+            if (coop_host_view_cursor(1) != -1) {
+                p2Cursor = coop_host_view_cursor(1);
+                scrolled = scrolled || (p2Cursor >= MOUSE_CURSOR_SCROLL_NW && p2Cursor <= MOUSE_CURSOR_SCROLL_W_INVALID);
+            }
             if (startTile == -1) {
                 startTile = p2->tile;
                 autotest_log("player 2 '%s' joined at tile %d", coop_player(1)->name, startTile);
@@ -1595,6 +1631,14 @@ static int coop_autotest_net_play_host(AutotestNewGameProc* newGame)
     // Their mouse rested on the map (while they chatted): their 3D cursor
     // showed what's under it, as player 1's does.
     autotest_log("player 2's cursor showed what's under it in %u of %u parts", coop_host_view_hover_parts(1), coop_host_view_parts(1));
+
+    // Their scroll arrow went when their mouse left the edge.
+    autotest_log("player 2 scrolled at the screen's edge: %d; their cursor at the end %d", scrolled ? 1 : 0, p2Cursor);
+    if (startTile != -1 && !scrolled) {
+        autotest_fail("player 2's mouse at the screen's edge didn't scroll");
+    } else if (p2Cursor >= MOUSE_CURSOR_SCROLL_NW && p2Cursor <= MOUSE_CURSOR_SCROLL_W_INVALID) {
+        autotest_fail("player 2's cursor stayed a scroll arrow (%d)", p2Cursor);
+    }
     if (startTile != -1 && coop_host_view_hover_parts(1) == 0) {
         autotest_fail("player 2's cursor never showed what's under it");
     }
@@ -1668,6 +1712,15 @@ static int coop_autotest_net_play_client(AutotestNewGameProc* newGame)
     inject_call(coop_autotest_screenshot);
     inject_key(KEY_ESCAPE);
     inject_wait(360);
+
+    // Last (the camera check is done): their mouse at the left edge a while
+    // (the map scrolls), then back on the map. Their cursor must not stay a
+    // scroll arrow (the host checks).
+    inject_set_mouse_transform(coop_autotest_mouse_transform);
+    inject_mouse(0, 300, 0);
+    inject_wait(60);
+    inject_mouse(320 | COOP_AUTOTEST_CENTERED, 200, 0);
+    inject_wait(90);
     inject_call(coop_net_client_request_exit);
 
     coop_net_set_client_exit_hook(coop_autotest_net_client_exit);

@@ -2215,13 +2215,20 @@ void gameMouseSaveHover(GameMouseHoverState* state)
     state->pickHotY = _gmouse_3d_pick_frame_hot_y;
     state->hitFrame.assign(gGameMouseActionHitFrmData, gGameMouseActionHitFrmData + gGameMouseActionHitFrmDataSize);
     state->hexFrame.assign(gGameMouseHexCursorFrmData, gGameMouseHexCursorFrmData + gGameMouseHexCursorDataSize);
+    state->scrollBackCursor = _gmouse_bk_last_cursor;
 }
 
 // The cursor's objects take the saved looks without a redraw: the view
 // that comes is drawn anyway, and the cursor moves to its mouse with one.
 void gameMouseLoadHover(const GameMouseHoverState* state)
 {
-    if (!gGameMouseInitialized || !gGameMouseObjectsInitialized || !state->saved) {
+    if (!gGameMouseInitialized || !gGameMouseObjectsInitialized) {
+        return;
+    }
+
+    _gmouse_bk_last_cursor = state->scrollBackCursor;
+
+    if (!state->saved) {
         return;
     }
 

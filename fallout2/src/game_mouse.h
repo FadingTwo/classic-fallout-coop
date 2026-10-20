@@ -123,6 +123,10 @@ typedef struct GameMouseHoverState {
     int pickHotY = 0;
     std::vector<unsigned char> hitFrame;
     std::vector<unsigned char> hexFrame;
+    // The cursor to put back when edge scrolling ends (one per player: with
+    // one for all, another player's view took it and player 2's scroll
+    // arrow stayed after scrolling).
+    int scrollBackCursor = -1;
 } GameMouseHoverState;
 
 void gameMouseSaveHover(GameMouseHoverState* state);

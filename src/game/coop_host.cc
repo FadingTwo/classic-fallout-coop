@@ -1420,6 +1420,11 @@ static void coop_host_send_character_copy(int slot, bool requested)
     }
 }
 
+int coop_host_view_cursor(int slot)
+{
+    return slot >= 0 && slot < COOP_MAX_PLAYERS && coop_host_views[slot].initialized ? coop_host_views[slot].cursor : -1;
+}
+
 int coop_host_view_center(int slot)
 {
     return slot >= 0 && slot < COOP_MAX_PLAYERS ? coop_host_view_centers[slot] : -1;
