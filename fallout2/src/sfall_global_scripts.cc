@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "db.h"
+#include "debug.h"
 #include "input.h"
 #include "platform_compat.h"
 #include "scripts.h"
@@ -46,18 +47,17 @@ bool sfall_gl_scr_init()
             *end = '\0';
         }
 
-        char drive[COMPAT_MAX_DRIVE];
-        char dir[COMPAT_MAX_DIR];
-        compat_splitpath(curr, drive, dir, nullptr, nullptr);
+        // The folder is everything up to the last separator: mods write
+        // "scripts\gl*.int", and outside Windows compat_splitpath only knows '/'.
+        std::string dir { curr };
+        size_t separator = dir.find_last_of("\\/");
+        dir = separator != std::string::npos ? dir.substr(0, separator + 1) : std::string {};
 
         char** files;
         int filesLength = fileNameListInit(curr, &files, 0, 0);
         if (filesLength != 0) {
             for (int index = 0; index < filesLength; index++) {
-                char path[COMPAT_MAX_PATH];
-                compat_makepath(path, drive, dir, files[index], nullptr);
-
-                state->paths.push_back(std::string { path });
+                state->paths.push_back(dir + files[index]);
             }
 
             fileNameListFree(&files, 0);
@@ -96,6 +96,15 @@ void sfall_gl_scr_exit()
 void sfall_gl_scr_exec_start_proc()
 {
     for (auto& path : state->paths) {
+        // A script that cannot be read is left out: the interpreter stops the
+        // whole game on a file it cannot open.
+        File* stream = fileOpen(path.c_str(), "rb");
+        if (stream == nullptr) {
+            debugPrint("Global script %s could not be read\n", path.c_str());
+            continue;
+        }
+        fileClose(stream);
+
         Program* program = programCreateByPath(path.c_str());
         if (program != nullptr) {
             GlobalScript scr;

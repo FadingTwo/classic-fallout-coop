@@ -1969,12 +1969,15 @@ static void coop_autotest_talk_check()
 }
 
 // A background process (runs in every input loop, dialogs too): answers a
-// conversation (first option a few times, then Escape).
+// conversation (first option a few times, then Escape). Also one a script
+// started itself (start_gdialog from a critter's script, as Fallout: Nevada's
+// do), which isn't "active" as one begun by talking is.
 static void coop_autotest_answer_dialogs()
 {
     static int presses = 0;
     static unsigned int last = 0;
-    if (_gdialogActive() && getTicksSince(last) > 1000 && !inject_pending()) {
+    bool talking = _gdialogActive() || GameMode::isInGameMode(GameMode::kDialog);
+    if (talking && getTicksSince(last) > 1000 && !inject_pending()) {
         inject_key(++presses % 4 == 0 ? KEY_ESCAPE : '1');
         last = getTicks();
     }

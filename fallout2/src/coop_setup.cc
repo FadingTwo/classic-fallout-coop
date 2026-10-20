@@ -1,5 +1,6 @@
 #include "coop_setup.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -686,17 +687,386 @@ static bool setup_sonora_install(const char* configPath)
     return result;
 }
 
+// -----------------------------------------------------------------------------
+// Fallout: Nevada: installed by its makers' installer (over Fallout 2), then
+// played in its folder
+
+// Whether `dir` holds Fallout: Nevada: its patches and sfall's settings
+// naming it.
+static bool setup_is_nevada(const fs::path& dir)
+{
+    fs::path patch;
+    fs::path ini;
+    if (!setup_find(dir, "patch000.dat", &patch) || !setup_find(dir, "ddraw.ini", &ini)) {
+        return false;
+    }
+    FILE* stream = compat_fopen(ini.string().c_str(), "rb");
+    if (stream == NULL) {
+        return false;
+    }
+    std::string text;
+    char buffer[4096];
+    size_t read;
+    while ((read = fread(buffer, 1, sizeof(buffer), stream)) > 0) {
+        text.append(buffer, read);
+    }
+    fclose(stream);
+    for (char& ch : text) {
+        ch = (char)tolower((unsigned char)ch);
+    }
+    return text.find("versionstring=fallout: nevada") != std::string::npos;
+}
+
+// Nevada folders in and under the Fallout 2 installations found (its
+// installer puts it in a folder of Fallout 2's).
+static std::vector<SetupInstall> setup_find_nevadas(const std::vector<SetupInstall>& fallout2s)
+{
+    std::vector<SetupInstall> found;
+    for (const SetupInstall& install : fallout2s) {
+        std::vector<fs::path> dirs = { fs::u8path(install.path) };
+        std::error_code error;
+        for (fs::directory_iterator it(fs::u8path(install.path), error); !error && it != fs::directory_iterator(); it.increment(error)) {
+            if (it->is_directory(error)) {
+                dirs.push_back(it->path());
+                std::error_code inner;
+                for (fs::directory_iterator sub(it->path(), inner); !inner && sub != fs::directory_iterator(); sub.increment(inner)) {
+                    if (sub->is_directory(inner)) {
+                        dirs.push_back(sub->path());
+                    }
+                }
+            }
+        }
+        for (const fs::path& dir : dirs) {
+            if (setup_is_nevada(dir)) {
+                SetupInstall nevada;
+                nevada.path = dir.string();
+                nevada.label = install.label;
+                bool known = false;
+                for (const SetupInstall& other : found) {
+                    known = known || other.path == nevada.path;
+                }
+                if (!known) {
+                    found.push_back(nevada);
+                }
+            }
+        }
+    }
+    return found;
+}
+
+// The settings file a folder's ddraw.ini names (sfall's ConfigFile), else
+// fallout2.cfg.
+static std::string setup_config_file_name(const std::string& ddrawPath)
+{
+    Config ddraw;
+    std::string name = DEFAULT_GAME_CONFIG_FILE_NAME;
+    if (config_init(&ddraw)) {
+        char* value;
+        if (config_load(&ddraw, ddrawPath.c_str(), false) && config_get_string(&ddraw, "Misc", "ConfigFile", &value) && value[0] != '\0') {
+            name = value;
+        }
+        config_exit(&ddraw);
+    }
+    return name;
+}
+
+// In Nevada's folder now: its settings must find Fallout 2's master.dat and
+// critter.dat (its own patches and data stay as they are).
+static bool setup_nevada_point_at_fallout2(const std::vector<SetupInstall>& fallout2s)
+{
+    std::string configPath = setup_config_file_name("ddraw.ini");
+    Config config;
+    if (!config_init(&config)) {
+        return false;
+    }
+    config_load(&config, configPath.c_str(), false);
+    char* master;
+    char* critter;
+    std::string masterPath = config_get_string(&config, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_MASTER_DAT_KEY, &master) ? master : "master.dat";
+    std::string critterPath = config_get_string(&config, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_CRITTER_DAT_KEY, &critter) ? critter : "critter.dat";
+    std::error_code error;
+    if (fs::exists(fs::u8path(masterPath), error) && fs::exists(fs::u8path(critterPath), error)) {
+        config_exit(&config);
+        return true;
+    }
+
+    // The Fallout 2 it was installed in, else one found.
+    std::vector<fs::path> candidates;
+    fs::path here = fs::current_path(error);
+    candidates.push_back(here.parent_path());
+    candidates.push_back(here.parent_path().parent_path());
+    for (const SetupInstall& install : fallout2s) {
+        candidates.push_back(fs::u8path(install.path));
+    }
+    bool ok = false;
+    for (const fs::path& dir : candidates) {
+        fs::path masterFile;
+        fs::path critterFile;
+        if (!dir.empty() && setup_find(dir, "master.dat", &masterFile) && setup_find(dir, "critter.dat", &critterFile) && setup_is_fallout2(dir)) {
+            config_set_string(&config, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_MASTER_DAT_KEY, masterFile.string().c_str());
+            config_set_string(&config, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_CRITTER_DAT_KEY, critterFile.string().c_str());
+            ok = config_save(&config, configPath.c_str(), false);
+            break;
+        }
+    }
+    config_exit(&config);
+    return ok;
+}
+
+// Where Nevada is: remembered in nevada.txt here, else picked on a screen.
+// Then the game runs in its folder. False: quit.
+static bool setup_nevada_enter()
+{
+    const char* rememberFile = "nevada.txt";
+    std::string remembered;
+    FILE* stream = fopen(rememberFile, "rt");
+    if (stream != NULL) {
+        char line[COMPAT_MAX_PATH];
+        if (fgets(line, sizeof(line), stream) != NULL) {
+            line[strcspn(line, "\r\n")] = '\0';
+            remembered = line;
+        }
+        fclose(stream);
+    }
+
+    std::vector<SetupInstall> fallout2s = setup_find_installs();
+    std::error_code error;
+    fs::path chosen;
+    if (!remembered.empty() && setup_is_nevada(fs::u8path(remembered))) {
+        chosen = fs::u8path(remembered);
+    } else {
+        std::vector<SetupInstall> nevadas = setup_find_nevadas(fallout2s);
+        if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) {
+            return false;
+        }
+        SetupScreen* screen = new SetupScreen();
+        screen->window = SDL_CreateWindow("Fallout: Nevada - Setup", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, SETUP_WIDTH * 3 / 2, SETUP_HEIGHT * 3 / 2, SDL_WINDOW_RESIZABLE);
+        screen->renderer = screen->window != NULL ? SDL_CreateRenderer(screen->window, -1, 0) : NULL;
+        if (screen->renderer == NULL) {
+            if (screen->window != NULL) {
+                SDL_DestroyWindow(screen->window);
+            }
+            delete screen;
+            SDL_QuitSubSystem(SDL_INIT_VIDEO);
+            return false;
+        }
+        SDL_RenderSetLogicalSize(screen->renderer, SETUP_WIDTH, SETUP_HEIGHT);
+        screen->texture = SDL_CreateTexture(screen->renderer, SDL_PIXELFORMAT_RGB888, SDL_TEXTUREACCESS_STREAMING, SETUP_WIDTH, SETUP_HEIGHT);
+
+        const char* screenshot = getenv("FALLOUT_SETUP_SCREENSHOT");
+        const char* choose = getenv("FALLOUT_SETUP_CHOOSE");
+        int typeIndex = (int)nevadas.size();
+        int quitIndex = typeIndex + 1;
+        int selected = 0;
+        bool typing = false;
+        std::string typed;
+        std::string message;
+        bool done = false;
+        int frame = 0;
+        const int listTop = SETUP_MARGIN + 9 * SETUP_LINE;
+
+        while (!done) {
+            int confirm = -1;
+            SDL_Event event;
+            while (SDL_PollEvent(&event)) {
+                switch (event.type) {
+                case SDL_QUIT:
+                    done = true;
+                    break;
+                case SDL_MOUSEMOTION:
+                case SDL_MOUSEBUTTONDOWN:
+                    if (!typing) {
+                        int y = event.type == SDL_MOUSEMOTION ? event.motion.y : event.button.y;
+                        int line = (y - listTop) / SETUP_LINE;
+                        if (y >= listTop && line >= 0 && line <= quitIndex) {
+                            selected = line;
+                            if (event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_LEFT) {
+                                confirm = line;
+                            }
+                        }
+                    }
+                    break;
+                case SDL_TEXTINPUT:
+                    if (typing) {
+                        typed += event.text.text;
+                    }
+                    break;
+                case SDL_KEYDOWN:
+                    if (typing) {
+                        SDL_Keycode key = event.key.keysym.sym;
+                        if (key == SDLK_BACKSPACE && !typed.empty()) {
+                            typed.pop_back();
+                        } else if (key == SDLK_v && (event.key.keysym.mod & KMOD_CTRL) != 0) {
+                            char* clipboard = SDL_GetClipboardText();
+                            if (clipboard != NULL) {
+                                typed += clipboard;
+                                SDL_free(clipboard);
+                            }
+                        } else if (key == SDLK_RETURN || key == SDLK_KP_ENTER) {
+                            confirm = typeIndex;
+                        } else if (key == SDLK_ESCAPE) {
+                            typing = false;
+                            SDL_StopTextInput();
+                        }
+                    } else {
+                        switch (event.key.keysym.sym) {
+                        case SDLK_UP:
+                            selected = (selected + quitIndex) % (quitIndex + 1);
+                            break;
+                        case SDLK_DOWN:
+                            selected = (selected + 1) % (quitIndex + 1);
+                            break;
+                        case SDLK_RETURN:
+                        case SDLK_KP_ENTER:
+                            confirm = selected;
+                            break;
+                        case SDLK_ESCAPE:
+                            confirm = quitIndex;
+                            break;
+                        }
+                    }
+                    break;
+                }
+            }
+
+            if (frame == 1 && choose != NULL) {
+                confirm = atoi(choose);
+            }
+
+            if (confirm != -1) {
+                if (confirm == quitIndex) {
+                    done = true;
+                } else if (confirm == typeIndex && !typing) {
+                    typing = true;
+                    SDL_StartTextInput();
+                    message.clear();
+                } else {
+                    std::string path = confirm == typeIndex ? typed : nevadas[confirm].path;
+                    while (!path.empty() && (path.back() == ' ' || path.back() == '\n' || path.back() == '\r' || path.back() == '"')) {
+                        path.pop_back();
+                    }
+                    while (!path.empty() && (path.front() == ' ' || path.front() == '"')) {
+                        path.erase(path.begin());
+                    }
+                    if (path.empty() || !fs::is_directory(fs::u8path(path), error)) {
+                        message = "! That folder does not exist.";
+                    } else if (!setup_is_nevada(fs::u8path(path))) {
+                        message = "! No Fallout: Nevada in that folder (PATCH000.DAT).";
+                    } else {
+                        chosen = fs::u8path(path);
+                        done = true;
+                    }
+                }
+            }
+
+            setup_clear(screen);
+            setup_fill(screen, 0, 0, SETUP_WIDTH, SETUP_LINE + 6, SETUP_GREEN);
+            setup_text(screen, SETUP_MARGIN, 4, "VAULT-TEC FALLOUT: NEVADA SETUP", 0x041A08);
+            setup_text(screen, SETUP_WIDTH - SETUP_MARGIN - (int)strlen("CO-OP v" COOP_VERSION) * COOP_SETUP_FONT_WIDTH, 4, "CO-OP v" COOP_VERSION, 0x041A08);
+            int y = SETUP_MARGIN + 2 * SETUP_LINE;
+            const char* about[] = {
+                nevadas.empty() ? "Fallout: Nevada was not found." : "Where is Fallout: Nevada installed?",
+                "A free game on the Fallout 2 engine by the Nevada Band.",
+                "Install it first with its makers' installer (it needs",
+                "Fallout 2), from: fnevada.bgforge.net",
+                "Then pick its folder here (the one with PATCH000.DAT).",
+            };
+            for (const char* line : about) {
+                setup_text(screen, SETUP_MARGIN, y, line, line == about[0] ? SETUP_GREEN : SETUP_DIM);
+                y += SETUP_LINE;
+            }
+
+            y = listTop;
+            for (int index = 0; index <= quitIndex; index++, y += SETUP_LINE) {
+                std::string line;
+                if (index < typeIndex) {
+                    line = setup_shorten(setup_display_path(nevadas[index].path), 56);
+                } else if (index == typeIndex) {
+                    line = "[ TYPE OR PASTE A PATH ]";
+                } else {
+                    line = "[ QUIT ]";
+                }
+                bool highlight = index == selected && !(typing && index != typeIndex);
+                if (highlight) {
+                    setup_fill(screen, SETUP_MARGIN - 6, y - 1, SETUP_WIDTH - 2 * SETUP_MARGIN + 12, SETUP_LINE - 1, SETUP_GREEN);
+                    setup_text(screen, SETUP_MARGIN, y, ("> " + line).c_str(), 0x041A08, 58);
+                } else {
+                    setup_text(screen, SETUP_MARGIN, y, ("  " + line).c_str(), SETUP_GREEN, 58);
+                }
+            }
+            if (typing) {
+                y += SETUP_LINE;
+                setup_text(screen, SETUP_MARGIN, y, "PATH:", SETUP_GREEN);
+                std::string shown = setup_shorten(typed, 52);
+                int width = setup_text(screen, SETUP_MARGIN + 6 * COOP_SETUP_FONT_WIDTH, y, shown.c_str(), SETUP_GREEN);
+                if ((SDL_GetTicks() / 400) % 2 == 0) {
+                    setup_fill(screen, SETUP_MARGIN + 6 * COOP_SETUP_FONT_WIDTH + width + 1, y + 2, COOP_SETUP_FONT_WIDTH - 2, COOP_SETUP_FONT_HEIGHT - 4, SETUP_GREEN);
+                }
+            }
+            if (!message.empty()) {
+                setup_text(screen, SETUP_MARGIN, SETUP_HEIGHT - SETUP_MARGIN - 3 * SETUP_LINE, message.c_str(), SETUP_GREEN, 58);
+            }
+            setup_text(screen, SETUP_MARGIN, SETUP_HEIGHT - SETUP_MARGIN - SETUP_LINE,
+                typing ? "Enter: use this folder   Ctrl+V: paste   Esc: back" : "Up/Down or mouse: choose   Enter: confirm   Esc: quit", SETUP_DIM);
+            setup_present(screen);
+            if (frame == 0 && screenshot != NULL) {
+                setup_save_screenshot(screen, screenshot);
+            }
+            frame++;
+            SDL_Delay(16);
+        }
+
+        SDL_StopTextInput();
+        SDL_DestroyTexture(screen->texture);
+        SDL_DestroyRenderer(screen->renderer);
+        SDL_DestroyWindow(screen->window);
+        delete screen;
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
+
+        if (chosen.empty()) {
+            return false;
+        }
+        stream = fopen(rememberFile, "wt");
+        if (stream != NULL) {
+            fprintf(stream, "%s\n", chosen.string().c_str());
+            fclose(stream);
+        }
+    }
+
+    fs::current_path(chosen, error);
+    if (error) {
+        return false;
+    }
+    if (!setup_nevada_point_at_fallout2(fallout2s)) {
+        fprintf(stderr, "Fallout: Nevada setup: Fallout 2 (master.dat, critter.dat) was not found.\n");
+    }
+    return true;
+}
+
 bool coop_setup_ensure_game_data(int argc, char** argv)
 {
-    // fallout2.cfg, found the way gameConfigInit() finds it.
+    // Started for Fallout: Nevada (the launcher's choice): the game runs in
+    // the folder its makers' installer put it in.
+    for (int index = 1; index < argc; index++) {
+        if (strcmp(argv[index], "--nevada") == 0) {
+            if (!setup_nevada_enter()) {
+                return false;
+            }
+            break;
+        }
+    }
+
+    // fallout2.cfg (or the file ddraw.ini names), found the way
+    // gameConfigInit() finds it.
     char configPath[COMPAT_MAX_PATH];
     char* sep = argc > 0 ? strrchr(argv[0], '\\') : NULL;
     if (sep != NULL) {
         *sep = '\0';
-        snprintf(configPath, sizeof(configPath), "%s\\%s", argv[0], DEFAULT_GAME_CONFIG_FILE_NAME);
+        std::string ddrawPath = std::string(argv[0]) + "\\ddraw.ini";
+        snprintf(configPath, sizeof(configPath), "%s\\%s", argv[0], setup_config_file_name(ddrawPath).c_str());
         *sep = '\\';
     } else {
-        strcpy(configPath, DEFAULT_GAME_CONFIG_FILE_NAME);
+        snprintf(configPath, sizeof(configPath), "%s", setup_config_file_name("ddraw.ini").c_str());
     }
 
     Config config;

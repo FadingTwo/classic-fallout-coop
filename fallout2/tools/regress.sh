@@ -64,6 +64,15 @@ cmd_run() {
     sound=$(find_file "$FALLOUT_DATA" sound)
     [ -n "$patch" ] && ln -s "$patch" "$out/patch000.dat"
     [ -n "$sound" ] && ln -s "$sound" "$out/sound"
+    # A mod's own files next to the game's (FALLOUT_DATA_EXTRA, e.g. Fallout:
+    # Nevada's "Patch001.dat ddraw.ini Nevada.cfg mods"): settings copied, the
+    # rest linked.
+    for extra in ${FALLOUT_DATA_EXTRA:-}; do
+        case "$extra" in
+        *.ini | *.cfg) cp "$FALLOUT_DATA/$extra" "$out/$extra" ;;
+        *) ln -s "$FALLOUT_DATA/$extra" "$out/$extra" ;;
+        esac
+    done
     cp -r "$data" "$out/data"
     rm -rf "$out/data/SAVEGAME" "$out/data/savegame"
     if [ -n "${AUTOTEST_SAVES:-}" ]; then

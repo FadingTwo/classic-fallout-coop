@@ -2047,6 +2047,12 @@ int _obj_inven_free(Inventory* inventory)
     for (int index = 0; index < inventory->length; index++) {
         InventoryItem* inventoryItem = &(inventory->items[index]);
 
+        // CE: a map that could not be read leaves slots without an item
+        // (its objects only partly read): nothing to remove there.
+        if (inventoryItem->item == nullptr) {
+            continue;
+        }
+
         ObjectListNode* node;
         // NOTE: Uninline.
         objectListNodeCreate(&node);

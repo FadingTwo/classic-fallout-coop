@@ -167,7 +167,8 @@ bool coop_net_can_send_frame();
 // "fallout1" or "fallout2": which game this is, for the co-op server (its
 // relay and listing keep the two apart) and the game search.
 const char* coop_net_game_name();
-// "Fallout 1", "Fallout 2" or "Fallout: Sonora", for people.
+// "Fallout 1", "Fallout 2", "Fallout: Sonora" or "Fallout: Nevada", for
+// people.
 const char* coop_net_game_title();
 
 // Host: a sound for the client to play (GSOUND_EVENT_*, see gsound.h).

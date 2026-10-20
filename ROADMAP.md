@@ -29,16 +29,17 @@ view, and an optional harder setting (HARDER when hosting) where enemies
 hold out longer the more players there are. New in 1.13: please report
 what breaks.
 
-## 4. Big Fallout 2 mods (later)
+## 4. Big Fallout 2 mods
 
 Total conversions made by other teams on the Fallout 2 engine:
 
-- **Fallout: Sonora**
-- **Fallout: Nevada**
-- **Olympus 2077**
+- **Fallout: Sonora**: playable since 1.17 (the launcher downloads it)
+- **Fallout: Nevada**: playable since 1.18 (installed with its makers'
+  installer; the launcher finds it)
+- **Olympus 2077** (later)
 
-They rely on sfall, an extension of the original Fallout 2 engine that
-Fallout 2 CE only partly supports. So they come after Fallout 2 co-op works,
-and need sfall support first. You will still need the mod itself from its
+Others rely more on sfall, an extension of the original Fallout 2 engine
+that Fallout 2 CE only partly supports, so they come one at a time. You
+will still need the mod itself from its
 makers; nothing of theirs is included here. This project is not affiliated
 with them.

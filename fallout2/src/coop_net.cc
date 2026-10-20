@@ -66,22 +66,28 @@ namespace fallout {
 // join a Fallout 2 game.
 #define COOP_NET_GAME 2
 
-// Fallout: Sonora, played on this engine with its own data: a game of its
-// own (3) that Fallout 2 players can't join, nor the other way.
+// Fallout: Sonora (3) and Fallout: Nevada (4), played on this engine with
+// their own data: games of their own that Fallout 2 players can't join, nor
+// the other way.
 #define COOP_NET_GAME_SONORA 3
+#define COOP_NET_GAME_NEVADA 4
 
-// Which game we say we are: this one (Fallout: Sonora when its data says
-// so), or ([coop]test_game=1, 2 or 3, for tests) another.
+// Which game we say we are: this one (Fallout: Sonora or Fallout: Nevada
+// when its data says so), or ([coop]test_game=1 to 4, for tests) another.
 static int coop_net_game_id()
 {
     int value;
-    if (config_get_value(&game_config, COOP_CONFIG_KEY, "test_game", &value) && value >= 1 && value <= 3) {
+    if (config_get_value(&game_config, COOP_CONFIG_KEY, "test_game", &value) && value >= 1 && value <= 4) {
         return value;
     }
     char* version;
     if (configGetString(&gSfallConfig, SFALL_CONFIG_MISC_KEY, SFALL_CONFIG_VERSION_STRING, &version)
         && compat_strnicmp(version, "FALLOUT SONORA", 14) == 0) {
         return COOP_NET_GAME_SONORA;
+    }
+    if (configGetString(&gSfallConfig, SFALL_CONFIG_MISC_KEY, SFALL_CONFIG_VERSION_STRING, &version)
+        && compat_strnicmp(version, "FALLOUT: NEVADA", 15) == 0) {
+        return COOP_NET_GAME_NEVADA;
     }
     return COOP_NET_GAME;
 }
@@ -122,13 +128,13 @@ static bool coop_net_version_older(const std::string& a, const std::string& b)
 const char* coop_net_game_name()
 {
     int game = coop_net_game_id();
-    return game == 1 ? "fallout1" : game == COOP_NET_GAME_SONORA ? "sonora" : "fallout2";
+    return game == 1 ? "fallout1" : game == COOP_NET_GAME_SONORA ? "sonora" : game == COOP_NET_GAME_NEVADA ? "nevada" : "fallout2";
 }
 
 const char* coop_net_game_title()
 {
     int game = coop_net_game_id();
-    return game == 1 ? "Fallout 1" : game == COOP_NET_GAME_SONORA ? "Fallout: Sonora" : "Fallout 2";
+    return game == 1 ? "Fallout 1" : game == COOP_NET_GAME_SONORA ? "Fallout: Sonora" : game == COOP_NET_GAME_NEVADA ? "Fallout: Nevada" : "Fallout 2";
 }
 
 // Messages: u32 length (of type + payload), u8 type, payload.

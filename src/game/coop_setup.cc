@@ -492,6 +492,10 @@ int coop_setup_choose_game(int argc, char** argv)
 
     fs::path sonora = base / "sonora";
     bool sonoraInstalled = fs::exists(sonora / "master.dat", error);
+    // Fallout: Nevada: installed by its makers' installer; this folder only
+    // remembers where (nevada.txt).
+    fs::path nevada = base / "nevada";
+    bool nevadaKnown = fs::exists(nevada / "nevada.txt", error);
 
     // The last choice, in fallout.cfg.
     std::string configPath = (base / GAME_CONFIG_FILE_NAME).string();
@@ -517,11 +521,12 @@ int coop_setup_choose_game(int argc, char** argv)
             SDL_RenderSetLogicalSize(screen->renderer, SETUP_WIDTH, SETUP_HEIGHT);
             screen->texture = SDL_CreateTexture(screen->renderer, SDL_PIXELFORMAT_RGB888, SDL_TEXTUREACCESS_STREAMING, SETUP_WIDTH, SETUP_HEIGHT);
 
-            const char* entries[] = { "FALLOUT", "FALLOUT 2", sonoraInstalled ? "FALLOUT: SONORA" : "FALLOUT: SONORA  (free, downloads 1.7 GB)", "[ QUIT ]" };
-            const int count = 4;
-            const int quitIndex = 3;
+            const char* entries[] = { "FALLOUT", "FALLOUT 2", sonoraInstalled ? "FALLOUT: SONORA" : "FALLOUT: SONORA  (free, downloads 1.7 GB)",
+                nevadaKnown ? "FALLOUT: NEVADA" : "FALLOUT: NEVADA  (needs its installer and Fallout 2)", "[ QUIT ]" };
+            const int count = 5;
+            const int quitIndex = 4;
             const int listTop = SETUP_MARGIN + 5 * SETUP_LINE;
-            int selected = last >= 1 && last <= 3 ? last - 1 : 0;
+            int selected = last >= 1 && last <= 4 ? last - 1 : 0;
             const char* screenshot = getenv("FALLOUT_SETUP_SCREENSHOT");
             int frame = 0;
 
@@ -563,6 +568,9 @@ int coop_setup_choose_game(int argc, char** argv)
                         case SDLK_3:
                             confirm = 2;
                             break;
+                        case SDLK_4:
+                            confirm = 3;
+                            break;
                         case SDLK_RETURN:
                         case SDLK_KP_ENTER:
                             confirm = selected;
@@ -594,7 +602,7 @@ int coop_setup_choose_game(int argc, char** argv)
                         setup_text(screen, SETUP_MARGIN, y, (std::string("  ") + entries[index]).c_str(), SETUP_GREEN);
                     }
                 }
-                setup_text(screen, SETUP_MARGIN, SETUP_HEIGHT - SETUP_MARGIN - SETUP_LINE, "1-3, Up/Down or mouse: choose   Enter: start   Esc: quit", SETUP_DIM);
+                setup_text(screen, SETUP_MARGIN, SETUP_HEIGHT - SETUP_MARGIN - SETUP_LINE, "1-4, Up/Down or mouse: choose   Enter: start   Esc: quit", SETUP_DIM);
                 setup_present(screen);
 
                 if (frame == 0 && screenshot != NULL) {
@@ -641,6 +649,15 @@ int coop_setup_choose_game(int argc, char** argv)
     if (choice == 3) {
         fs::create_directories(sonora, error);
         if (setup_start_fallout2(fallout2, argc, argv, sonora, "--sonora")) {
+            return 0;
+        }
+    }
+
+    // Fallout: Nevada: Fallout 2's program finds it (or asks where it is)
+    // and plays it in its folder.
+    if (choice == 4) {
+        fs::create_directories(nevada, error);
+        if (setup_start_fallout2(fallout2, argc, argv, nevada, "--nevada")) {
             return 0;
         }
     }

@@ -44,7 +44,8 @@ in `fallout2.cfg`. It plays like Fallout 1 co-op, with these differences:
   suit), or like their armor.
 - Your companions (Sulik, Vic...) follow player 1's orders as usual.
 
-Everyone plays the same game (Fallout 1, Fallout 2 or Fallout: Sonora); since 1.13.3 its
+Everyone plays the same game (Fallout 1, Fallout 2, Fallout: Sonora or
+Fallout: Nevada); since 1.13.3 its
 release, language or patches may differ (the game runs on player 1's
 computer; those players join as a new character). Fallout 2 co-op is
 new: please report what breaks (MULTIPLAYER, REPORT BUG).
@@ -68,6 +69,24 @@ for the game goes to them; this mod only plays it.
 Sonora is a game of its own for co-op: Sonora players only find and join
 Sonora games, and the other way round. Everyone needs Sonora installed
 the same way (the launcher does it). Its saves stay in its own folder.
+
+## Fallout: Nevada
+
+[Fallout: Nevada](https://fnevada.bgforge.net/) is a free game on the
+Fallout 2 engine by the Nevada Band (Black Designer, FoN, Nobody's Nail
+Machine, Master); its Extended Edition is by Pyran, on Foxx's Fixed
+Edition. It needs Fallout 2. Install Fallout: Nevada Extended Edition
+2.0.3.4 with its makers' own installer (inside or next to your Fallout 2
+folder), then pick FALLOUT: NEVADA in the launcher. It looks for Nevada in
+and under the Fallout 2 folders it finds, or asks where it is once (the
+folder with PATCH000.DAT), and remembers it. The game runs in Nevada's
+folder; if Nevada's settings can't find Fallout 2's MASTER.DAT and
+CRITTER.DAT, they are pointed at your Fallout 2. Nothing of Nevada is
+copied or included here. All credit for the game goes to its makers; this
+mod only plays it.
+
+Nevada is a game of its own for co-op: Nevada players only find and join
+Nevada games. Everyone needs the same Nevada installed.
 
 ## Rules
 

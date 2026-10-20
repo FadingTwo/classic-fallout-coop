@@ -91,13 +91,14 @@ int falloutMain(int argc, char** argv)
     coop_update_init(argc, argv);
     coop_update_cleanup();
 
-    // CE: started by the launcher for a game folder (Fallout: Sonora): the
+    // CE: started by the launcher for a game folder (Fallout: Sonora, Fallout:
+    // Nevada): the
     // settings files (fallout2.cfg, ddraw.ini...) are those of the folder it
     // runs in. Windows passes the program's full path, which made them be
     // read next to the program instead: Fallout 2's.
     static char programName[] = "fallout2-ce";
     for (int index = 1; index < argc; index++) {
-        if (strcmp(argv[index], "--sonora") == 0) {
+        if (strcmp(argv[index], "--sonora") == 0 || strcmp(argv[index], "--nevada") == 0) {
             argv[0] = programName;
             break;
         }
