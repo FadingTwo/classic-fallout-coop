@@ -271,6 +271,21 @@ static char* programGetCurrentProcedureName(Program* program)
     }
 }
 
+// CE: a variable of the program's stack, by position. Past its end (a mod's
+// broken script) the script stops with an error in the log, as on other
+// errors: the vector's own check threw and stopped the whole game.
+static ProgramValue& programStackValueAt(Program* program, size_t pos)
+{
+    if (pos >= program->stackValues->size()) {
+        programFatalError("variable %d past the stack's %d", (int)pos, (int)program->stackValues->size());
+        // (Only without a current program, which runs none.)
+        static ProgramValue none;
+        none = ProgramValue();
+        return none;
+    }
+    return (*program->stackValues)[pos];
+}
+
 // 0x467290
 static opcode_t stackReadInt16(unsigned char* data, int pos)
 {
@@ -838,13 +853,13 @@ static void opStore(Program* program)
     ProgramValue value = programStackPopValue(program);
     size_t pos = program->framePointer + addr;
 
-    ProgramValue oldValue = program->stackValues->at(pos);
+    ProgramValue oldValue = programStackValueAt(program, pos);
 
     if (oldValue.opcode == VALUE_TYPE_DYNAMIC_STRING) {
         _interpretDecStringRef(program, oldValue.opcode, oldValue.integerValue);
     }
 
-    program->stackValues->at(pos) = value;
+    programStackValueAt(program, pos) = value;
 
     if (value.opcode == VALUE_TYPE_DYNAMIC_STRING) {
         // NOTE: Uninline.
@@ -858,7 +873,7 @@ static void opFetch(Program* program)
 {
     int addr = programStackPopInteger(program);
 
-    ProgramValue value = program->stackValues->at(program->framePointer + addr);
+    ProgramValue value = programStackValueAt(program, program->framePointer + addr);
     programStackPushValue(program, value);
 }
 
@@ -2211,7 +2226,7 @@ static void opFetchGlobalVariable(Program* program)
 {
     int addr = programStackPopInteger(program);
 
-    ProgramValue value = program->stackValues->at(program->basePointer + addr);
+    ProgramValue value = programStackValueAt(program, program->basePointer + addr);
     programStackPushValue(program, value);
 }
 
@@ -2221,12 +2236,12 @@ static void opStoreGlobalVariable(Program* program)
     int addr = programStackPopInteger(program);
     ProgramValue value = programStackPopValue(program);
 
-    ProgramValue oldValue = program->stackValues->at(program->basePointer + addr);
+    ProgramValue oldValue = programStackValueAt(program, program->basePointer + addr);
     if (oldValue.opcode == VALUE_TYPE_DYNAMIC_STRING) {
         _interpretDecStringRef(program, oldValue.opcode, oldValue.integerValue);
     }
 
-    program->stackValues->at(program->basePointer + addr) = value;
+    programStackValueAt(program, program->basePointer + addr) = value;
 
     if (value.opcode == VALUE_TYPE_DYNAMIC_STRING) {
         // NOTE: Uninline.

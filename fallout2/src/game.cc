@@ -1397,7 +1397,18 @@ static int gameDbInit()
     configGetString(&gSfallConfig, SFALL_CONFIG_MISC_KEY, SFALL_CONFIG_PATCH_FILE, &path_file_name_template);
     if (path_file_name_template == nullptr || *path_file_name_template == '\0') {
         path_file_name_template = "patch%03d.dat";
+
+        // CE: Fallout 1.5: Resurrection's own program (fores.exe) has the
+        // game load fores.dat in place of patch000.dat.
+        char* version;
+        if (configGetString(&gSfallConfig, SFALL_CONFIG_MISC_KEY, SFALL_CONFIG_VERSION_STRING, &version)
+            && compat_strnicmp(version, "FO1.5:RESURRECTION", 18) == 0) {
+            path_file_name_template = "fores.dat";
+        }
     }
+
+    // A name without a number is one file, opened once.
+    int patch_count = strchr(path_file_name_template, '%') != nullptr ? 1000 : 1;
 
     // CE: patch files are looked for next to master.dat too (the co-op
     // package runs from its own folder, not the game's).
@@ -1405,7 +1416,7 @@ static int gameDbInit()
     size_t masterSlash = masterDir.find_last_of("/\\");
     masterDir = masterSlash != std::string::npos ? masterDir.substr(0, masterSlash + 1) : std::string();
 
-    for (patch_index = 0; patch_index < 1000; patch_index++) {
+    for (patch_index = 0; patch_index < patch_count; patch_index++) {
         snprintf(filename, sizeof(filename), path_file_name_template, patch_index);
 
         if (compat_access(filename, 0) == 0) {

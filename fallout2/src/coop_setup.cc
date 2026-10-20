@@ -413,22 +413,41 @@ static void setup_save_screenshot(SetupScreen* screen, const char* path)
 #define SONORA_FOLDER "Fallout_Sonora_1_16_E/"
 #define SONORA_DOWNLOAD "sonora-download.zip"
 
+struct ModDownload;
+
 // What a background job (download, check, unpack) has done so far.
-typedef struct SonoraJob {
+typedef struct ModJob {
+    const ModDownload* mod;
     std::atomic<int> stage; // 0 idle, 1 downloading, 2 checking, 3 unpacking, 4 done, 5 failed
     std::atomic<unsigned long long> done;
     std::atomic<unsigned long long> total;
     std::atomic<bool> cancel;
     std::string error;
-} SonoraJob;
+} ModJob;
 
-static bool sonora_progress(void* data, unsigned long long done, unsigned long long total)
+static bool mod_progress(void* data, unsigned long long done, unsigned long long total)
 {
-    SonoraJob* job = (SonoraJob*)data;
+    ModJob* job = (ModJob*)data;
     job->done = done;
     job->total = total;
     return !job->cancel;
 }
+
+// A story mod the launcher downloads from its makers' release: where, what
+// to check, how it is unpacked here and made ready, and what its screen says.
+typedef struct ModDownload {
+    const char* name; // "Fallout: Sonora"
+    const char* header; // the screen's title bar
+    const char* url;
+    const char* urlEnv; // replaces the URL in tests
+    const char* sha256;
+    const char* sha256Env;
+    const char* downloadFile;
+    const char* const* about;
+    int aboutCount;
+    bool (*unpack)(ModJob* job);
+    bool (*finish)(const char* configPath, std::string* error);
+} ModDownload;
 
 // The game's files: its archives and loose data (not F.I.S.S.I.O.N.'s
 // programs, nor macOS' extras).
@@ -443,47 +462,90 @@ static bool sonora_wanted(const std::string& name)
         || name.compare(0, 5, "data/") == 0;
 }
 
-static int sonora_run(void* data)
+static int mod_run(void* data)
 {
-    SonoraJob* job = (SonoraJob*)data;
-    const char* url = getenv("FALLOUT_SONORA_URL") != NULL ? getenv("FALLOUT_SONORA_URL") : SONORA_URL;
-    const char* hash = getenv("FALLOUT_SONORA_SHA256") != NULL ? getenv("FALLOUT_SONORA_SHA256") : SONORA_SHA256;
+    ModJob* job = (ModJob*)data;
+    const ModDownload* mod = job->mod;
+    const char* url = getenv(mod->urlEnv) != NULL ? getenv(mod->urlEnv) : mod->url;
+    const char* hash = getenv(mod->sha256Env) != NULL ? getenv(mod->sha256Env) : mod->sha256;
 
     job->done = 0;
     job->total = 0;
     job->stage = 1;
-    if (!coop_http_download(url, SONORA_DOWNLOAD, sonora_progress, job, &job->error)) {
+    if (!coop_http_download(url, mod->downloadFile, mod_progress, job, &job->error)) {
         job->stage = 5;
         return 0;
     }
 
     job->done = 0;
     job->stage = 2;
-    std::string got = coop_update_sha256_file(SONORA_DOWNLOAD, sonora_progress, job);
+    std::string got = coop_update_sha256_file(mod->downloadFile, mod_progress, job);
     if (got != hash) {
         job->error = job->cancel ? "Cancelled." : "The download is not the expected file (its check failed). Try again.";
-        remove(SONORA_DOWNLOAD);
+        remove(mod->downloadFile);
         job->stage = 5;
         return 0;
     }
 
     job->done = 0;
     job->stage = 3;
-    bool ok = coop_zip_extract(SONORA_DOWNLOAD, SONORA_FOLDER, ".", sonora_wanted, sonora_progress, job, &job->error);
-    remove(SONORA_DOWNLOAD);
+    bool ok = mod->unpack(job);
+    remove(mod->downloadFile);
     job->stage = ok ? 4 : 5;
     return 0;
 }
 
-// The install screen; true once Sonora is here.
-static bool setup_sonora_install(const char* configPath)
+static bool sonora_unpack(ModJob* job)
+{
+    return coop_zip_extract(SONORA_DOWNLOAD, SONORA_FOLDER, ".", sonora_wanted, mod_progress, job, &job->error);
+}
+
+static bool sonora_finish(const char* configPath, std::string* error)
+{
+    if (!setup_write_config(configPath, fs::current_path())) {
+        *error = "Could not write fallout2.cfg here.";
+        return false;
+    }
+    return true;
+}
+
+static const char* const kSonoraAbout[] = {
+    "Fallout: Sonora is not installed here yet.",
+    "",
+    "A free game on the Fallout 2 engine by the Nevada",
+    "Band; English version by cambragol. It is",
+    "downloaded from their release on GitHub:",
+    "  github.com/cambragol/Fallout-Sonora-English",
+    "Version 1.16.4E, " SONORA_SIZE_TEXT " to download, as much on disk.",
+    "Its terms: free, not for sale; for players over 18.",
+    "Nothing else on this computer is changed.",
+};
+
+static const ModDownload kSonora = {
+    "Fallout: Sonora",
+    "VAULT-TEC FALLOUT: SONORA SETUP",
+    SONORA_URL,
+    "FALLOUT_SONORA_URL",
+    SONORA_SHA256,
+    "FALLOUT_SONORA_SHA256",
+    SONORA_DOWNLOAD,
+    kSonoraAbout,
+    (int)(sizeof(kSonoraAbout) / sizeof(kSonoraAbout[0])),
+    sonora_unpack,
+    sonora_finish,
+};
+
+// The install screen of a story mod the launcher downloads; true once it is
+// here.
+static bool setup_mod_install(const ModDownload* mod, const char* configPath)
 {
     if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) {
         return false;
     }
 
     SetupScreen* screen = new SetupScreen();
-    screen->window = SDL_CreateWindow("Fallout: Sonora - Setup", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, SETUP_WIDTH * 3 / 2, SETUP_HEIGHT * 3 / 2, SDL_WINDOW_RESIZABLE);
+    std::string windowTitle = std::string(mod->name) + " - Setup";
+    screen->window = SDL_CreateWindow(windowTitle.c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, SETUP_WIDTH * 3 / 2, SETUP_HEIGHT * 3 / 2, SDL_WINDOW_RESIZABLE);
     screen->renderer = screen->window != NULL ? SDL_CreateRenderer(screen->window, -1, 0) : NULL;
     if (screen->renderer == NULL) {
         if (screen->window != NULL) {
@@ -506,7 +568,8 @@ static bool setup_sonora_install(const char* configPath)
     bool result = false;
     bool done = false;
     int frame = 0;
-    SonoraJob job;
+    ModJob job;
+    job.mod = mod;
     job.stage = 0;
     job.done = 0;
     job.total = 0;
@@ -579,7 +642,7 @@ static bool setup_sonora_install(const char* configPath)
                 job.cancel = false;
                 job.error.clear();
                 job.stage = 1;
-                worker = SDL_CreateThread(sonora_run, "sonora", &job);
+                worker = SDL_CreateThread(mod_run, "mod download", &job);
             }
         }
 
@@ -588,11 +651,12 @@ static bool setup_sonora_install(const char* configPath)
                 SDL_WaitThread(worker, NULL);
                 worker = NULL;
             }
-            if (setup_write_config(configPath, fs::current_path())) {
-                message = "Fallout: Sonora is installed. Starting...";
+            std::string error;
+            if (mod->finish(configPath, &error)) {
+                message = std::string(mod->name) + " is installed. Starting...";
                 result = true;
             } else {
-                message = "Could not write fallout2.cfg here.";
+                message = "! " + error;
                 job.stage = 5;
             }
             done = result;
@@ -600,7 +664,7 @@ static bool setup_sonora_install(const char* configPath)
             SDL_WaitThread(worker, NULL);
             worker = NULL;
             message = "! " + job.error;
-            fprintf(stderr, "Fallout: Sonora setup: %s\n", job.error.c_str());
+            fprintf(stderr, "%s setup: %s\n", mod->name, job.error.c_str());
             // (Tests choose by themselves: they stop here.)
             if (choose != NULL) {
                 done = true;
@@ -610,23 +674,12 @@ static bool setup_sonora_install(const char* configPath)
         // Draw.
         setup_clear(screen);
         setup_fill(screen, 0, 0, SETUP_WIDTH, SETUP_LINE + 6, SETUP_GREEN);
-        setup_text(screen, SETUP_MARGIN, 4, "VAULT-TEC FALLOUT: SONORA SETUP", 0x041A08);
+        setup_text(screen, SETUP_MARGIN, 4, mod->header, 0x041A08);
         setup_text(screen, SETUP_WIDTH - SETUP_MARGIN - (int)strlen("CO-OP v" COOP_VERSION) * COOP_SETUP_FONT_WIDTH, 4, "CO-OP v" COOP_VERSION, 0x041A08);
 
         int y = SETUP_MARGIN + 2 * SETUP_LINE;
-        const char* about[] = {
-            "Fallout: Sonora is not installed here yet.",
-            "",
-            "A free game on the Fallout 2 engine by the Nevada",
-            "Band; English version by cambragol. It is",
-            "downloaded from their release on GitHub:",
-            "  github.com/cambragol/Fallout-Sonora-English",
-            "Version 1.16.4E, " SONORA_SIZE_TEXT " to download, as much on disk.",
-            "Its terms: free, not for sale; for players over 18.",
-            "Nothing else on this computer is changed.",
-        };
-        for (const char* line : about) {
-            setup_text(screen, SETUP_MARGIN, y, line, line == about[0] ? SETUP_GREEN : SETUP_DIM);
+        for (int index = 0; index < mod->aboutCount; index++) {
+            setup_text(screen, SETUP_MARGIN, y, mod->about[index], index == 0 ? SETUP_GREEN : SETUP_DIM);
             y += SETUP_LINE;
         }
 
@@ -1043,6 +1096,196 @@ static bool setup_nevada_enter()
     return true;
 }
 
+// -----------------------------------------------------------------------------
+// Fallout 1.5: Resurrection: its makers' installer puts it in a folder of
+// Fallout 2's (played there); or the launcher downloads their release and
+// unpacks it into its own folder next to the co-op files, pointed at Fallout
+// 2's data (nothing of Fallout 2's is changed)
+
+#define RESURRECTION_URL "https://bitbucket.org/resurrection/fallout-resurrection/downloads/FoRes_EN_1_5.zip"
+#define RESURRECTION_SHA256 "7857d1f5cb870035e05ff8d08a784dc7796c7cc09988f1ca86debd711f9edc02"
+#define RESURRECTION_DOWNLOAD "resurrection-download.zip"
+
+// Whether `dir` holds Resurrection: its fores.dat and sfall's settings
+// naming it.
+static bool setup_is_resurrection(const fs::path& dir)
+{
+    fs::path dat;
+    fs::path ini;
+    if (!setup_find(dir, "fores.dat", &dat) || !setup_find(dir, "ddraw.ini", &ini)) {
+        return false;
+    }
+    FILE* stream = compat_fopen(ini.string().c_str(), "rb");
+    if (stream == NULL) {
+        return false;
+    }
+    std::string text;
+    char buffer[4096];
+    size_t read;
+    while ((read = fread(buffer, 1, sizeof(buffer), stream)) > 0) {
+        text.append(buffer, read);
+    }
+    fclose(stream);
+    for (char& ch : text) {
+        ch = (char)tolower((unsigned char)ch);
+    }
+    return text.find("versionstring=fo1.5:resurrection") != std::string::npos;
+}
+
+// The game's files, not its Windows programs (fores.exe and its copy of
+// Fallout 2's, sfall's and the high resolution patch's DLLs, the
+// configuration program).
+static bool resurrection_wanted(const std::string& name)
+{
+    std::string lower = name;
+    for (char& ch : lower) {
+        ch = (char)tolower((unsigned char)ch);
+    }
+    size_t dot = lower.rfind('.');
+    std::string extension = dot != std::string::npos ? lower.substr(dot) : std::string();
+    return extension != ".exe" && extension != ".dll" && lower != "fallout2";
+}
+
+static bool resurrection_unpack(ModJob* job)
+{
+    return coop_zip_extract(RESURRECTION_DOWNLOAD, "Resurrection/", ".", resurrection_wanted, mod_progress, job, &job->error)
+        && coop_zip_extract(RESURRECTION_DOWNLOAD, "sound/", "sound", NULL, mod_progress, job, &job->error);
+}
+
+// Fallout 2's master.dat, critter.dat and music: the ones the package plays
+// Fallout 2 with (its fallout2.cfg, a folder up), else an installation found.
+static bool setup_fallout2_files(fs::path* master, fs::path* critter, std::string* music)
+{
+    std::error_code error;
+    std::vector<fs::path> dirs;
+    Config config;
+    if (config_init(&config)) {
+        char* value;
+        if (config_load(&config, "../" DEFAULT_GAME_CONFIG_FILE_NAME, false)
+            && config_get_string(&config, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_MASTER_DAT_KEY, &value)) {
+            fs::path path = fs::u8path(value);
+            if (path.is_relative()) {
+                path = fs::path("..") / path;
+            }
+            dirs.push_back(fs::absolute(path, error).parent_path());
+        }
+        config_exit(&config);
+    }
+    for (const SetupInstall& install : setup_find_installs()) {
+        dirs.push_back(fs::u8path(install.path));
+    }
+
+    for (const fs::path& dir : dirs) {
+        if (!dir.empty() && setup_is_install(dir)) {
+            setup_find(dir, "master.dat", master);
+            setup_find(dir, "critter.dat", critter);
+            fs::path sound;
+            fs::path found;
+            fs::path data;
+            music->clear();
+            if ((setup_find(dir, "sound", &sound) && setup_find(sound, "music", &found))
+                || (setup_find(dir, "data", &data) && setup_find(data, "sound", &sound) && setup_find(sound, "music", &found))) {
+                *music = found.string() + std::string(1, (char)fs::path::preferred_separator);
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+// Unpacked here: its settings (fores.cfg) find Fallout 2's files, and its own
+// music here first.
+static bool resurrection_finish(const char* configPath, std::string* error)
+{
+    (void)configPath;
+    fs::path master;
+    fs::path critter;
+    std::string music;
+    if (!setup_fallout2_files(&master, &critter, &music)) {
+        *error = "Fallout 2 was not found; Resurrection needs it.";
+        return false;
+    }
+
+    std::string ownMusic = std::string("sound") + (char)fs::path::preferred_separator + "music" + (char)fs::path::preferred_separator;
+    Config config;
+    if (!config_init(&config)) {
+        *error = "Could not write fores.cfg here.";
+        return false;
+    }
+    config_load(&config, "fores.cfg", false);
+    config_set_string(&config, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_MASTER_DAT_KEY, master.string().c_str());
+    config_set_string(&config, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_CRITTER_DAT_KEY, critter.string().c_str());
+    config_set_string(&config, GAME_CONFIG_SOUND_KEY, GAME_CONFIG_MUSIC_PATH1_KEY, ownMusic.c_str());
+    config_set_string(&config, GAME_CONFIG_SOUND_KEY, GAME_CONFIG_MUSIC_PATH2_KEY, music.empty() ? ownMusic.c_str() : music.c_str());
+    bool saved = config_save(&config, "fores.cfg", false);
+    config_exit(&config);
+    if (!saved) {
+        *error = "Could not write fores.cfg here.";
+    }
+    return saved;
+}
+
+static const char* const kResurrectionAbout[] = {
+    "Fallout 1.5: Resurrection is not installed here yet.",
+    "",
+    "A free game on the Fallout 2 engine by a team of",
+    "fans from the Czech Republic; it needs Fallout 2.",
+    "It is downloaded from their release:",
+    "  bitbucket.org/resurrection/fallout-resurrection",
+    "Version 1.5 (English), 340 MB to download, 460 MB on",
+    "disk, next to these co-op files. Nothing of Fallout 2's",
+    "is changed. (Installed with their own installer, it is",
+    "found and played there instead.)",
+};
+
+static const ModDownload kResurrection = {
+    "Fallout 1.5: Resurrection",
+    "VAULT-TEC FALLOUT 1.5: RESURRECTION SETUP",
+    RESURRECTION_URL,
+    "FALLOUT_RESURRECTION_URL",
+    RESURRECTION_SHA256,
+    "FALLOUT_RESURRECTION_SHA256",
+    RESURRECTION_DOWNLOAD,
+    kResurrectionAbout,
+    (int)(sizeof(kResurrectionAbout) / sizeof(kResurrectionAbout[0])),
+    resurrection_unpack,
+    resurrection_finish,
+};
+
+// Started for Resurrection (in its folder next to the co-op files): when
+// it isn't unpacked here, one its makers' installer put in a Fallout 2
+// folder (two levels down at most) is played there.
+static void setup_resurrection_enter()
+{
+    std::error_code error;
+    if (setup_is_resurrection(fs::current_path(error))) {
+        return;
+    }
+
+    for (const SetupInstall& install : setup_find_installs()) {
+        std::vector<fs::path> dirs;
+        for (fs::directory_iterator it(fs::u8path(install.path), error); !error && it != fs::directory_iterator(); it.increment(error)) {
+            if (it->is_directory(error)) {
+                dirs.push_back(it->path());
+                std::error_code inner;
+                for (fs::directory_iterator sub(it->path(), inner); !inner && sub != fs::directory_iterator(); sub.increment(inner)) {
+                    if (sub->is_directory(inner)) {
+                        dirs.push_back(sub->path());
+                    }
+                }
+            }
+        }
+        for (const fs::path& dir : dirs) {
+            if (setup_is_resurrection(dir)) {
+                fs::current_path(dir, error);
+                if (!error) {
+                    return;
+                }
+            }
+        }
+    }
+}
+
 bool coop_setup_ensure_game_data(int argc, char** argv)
 {
     // Started for Fallout: Nevada (the launcher's choice): the game runs in
@@ -1052,6 +1295,10 @@ bool coop_setup_ensure_game_data(int argc, char** argv)
             if (!setup_nevada_enter()) {
                 return false;
             }
+            break;
+        }
+        if (strcmp(argv[index], "--resurrection") == 0) {
+            setup_resurrection_enter();
             break;
         }
     }
@@ -1102,7 +1349,10 @@ bool coop_setup_ensure_game_data(int argc, char** argv)
     // installs it.
     for (int index = 1; index < argc; index++) {
         if (strcmp(argv[index], "--sonora") == 0) {
-            return setup_sonora_install(configPath);
+            return setup_mod_install(&kSonora, configPath);
+        }
+        if (strcmp(argv[index], "--resurrection") == 0) {
+            return setup_mod_install(&kResurrection, configPath);
         }
     }
 

@@ -28,6 +28,7 @@
 #include "int/export.h"
 #include "int/window.h"
 #include "platform_compat.h"
+#include "plib/db/db.h"
 #include "plib/gnw/debug.h"
 #include "plib/gnw/gnw.h"
 #include "plib/gnw/input.h"
@@ -617,6 +618,16 @@ Program* loadProgram(const char* name)
     strcat(path, script_path_base);
     strcat(path, name);
     strcat(path, ".int");
+
+    // CE: a script the game's files don't have is left out (a map can name
+    // one that was never shipped): the interpreter stopped the game on a
+    // file it could not open.
+    DB_FILE* stream = db_fopen(path, "rb");
+    if (stream == NULL) {
+        debug_printf("\nScript %s could not be read", path);
+        return NULL;
+    }
+    db_fclose(stream);
 
     return allocateProgram(path);
 }

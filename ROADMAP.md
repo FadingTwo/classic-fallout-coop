@@ -36,6 +36,8 @@ Total conversions made by other teams on the Fallout 2 engine:
 - **Fallout: Sonora**: playable since 1.17 (the launcher downloads it)
 - **Fallout: Nevada**: playable since 1.18 (installed with its makers'
   installer; the launcher finds it)
+- **Fallout 1.5: Resurrection**: playable since 1.19 (the launcher
+  downloads it, or finds its installer's copy)
 - **Olympus 2207** (later)
 
 Others rely more on sfall, an extension of the original Fallout 2 engine

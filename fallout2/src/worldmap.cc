@@ -1345,11 +1345,14 @@ static int wmConfigInit()
 
                     char* subtileProps;
                     if (!configGetString(&config, section, key, &subtileProps)) {
+                        // CE: say which (the message box shows nowhere in a test run).
+                        debugPrint("\nwmConfigInit::Error loading tiles: [%s] has no %s", section, key);
                         showMesageBox("\nwmConfigInit::Error loading tiles!");
                         exit(1);
                     }
 
                     if (wmParseSubTileInfo(tile, row, column, subtileProps) == -1) {
+                        debugPrint("\nwmConfigInit::Error loading tiles: [%s] %s = %s", section, key, subtileProps);
                         showMesageBox("\nwmConfigInit::Error loading tiles!");
                         exit(1);
                     }
@@ -2535,7 +2538,9 @@ static int wmAreaInit()
 
     configFree(&cfg);
 
-    if (wmMaxAreaNum != CITY_COUNT) {
+    // SFALL: a mod has as many cities as its city.txt lists (Fallout 1.5:
+    // Resurrection has 32); Fallout 2's own count stopped those games.
+    if (wmMaxAreaNum == 0) {
         showMesageBox("\nwmAreaInit::Error loading Cities!");
         exit(1);
     }
@@ -2828,12 +2833,23 @@ bool wmMapIdxIsSaveable(int mapIdx)
 // 0x4BFA64
 bool wmMapIsSaveable()
 {
+    // CE: a map not in maps.txt has no info (it was read from before the
+    // list's start): saved, as most maps are.
+    if (gMapHeader.index < 0 || gMapHeader.index >= wmMaxMapNum) {
+        return true;
+    }
+
     return (wmMapInfoList[gMapHeader.index].flags & MAP_SAVED) != 0;
 }
 
 // 0x4BFA90
 bool wmMapDeadBodiesAge()
 {
+    // CE: (a map not in maps.txt: as wmMapIsSaveable()).
+    if (gMapHeader.index < 0 || gMapHeader.index >= wmMaxMapNum) {
+        return false;
+    }
+
     return (wmMapInfoList[gMapHeader.index].flags & MAP_DEAD_BODIES_AGE) != 0;
 }
 
@@ -2844,6 +2860,11 @@ bool wmMapCanRestHere(int elevation)
 
     // NOTE: I'm not sure why they're copied.
     memcpy(flags, _can_rest_here, sizeof(flags));
+
+    // CE: (a map not in maps.txt: as wmMapIsSaveable()).
+    if (gMapHeader.index < 0 || gMapHeader.index >= wmMaxMapNum) {
+        return false;
+    }
 
     MapInfo* map = &(wmMapInfoList[gMapHeader.index]);
 
@@ -3533,7 +3554,17 @@ static int wmPartyFindCurSubTile()
 // 0x4C0C00
 static int wmFindCurSubTileFromPos(int x, int y, SubtileInfo** subtilePtr)
 {
+    // CE: a place off the world map (a mod's area past its smaller map) has
+    // no subtile.
+    if (x < 0 || y < 0 || x >= WM_TILE_WIDTH * wmNumHorizontalTiles) {
+        return -1;
+    }
+
     int tileIndex = y / WM_TILE_HEIGHT * wmNumHorizontalTiles + x / WM_TILE_WIDTH % wmNumHorizontalTiles;
+    if (tileIndex >= wmMaxTileNum) {
+        return -1;
+    }
+
     TileInfo* tile = &(wmTileInfoList[tileIndex]);
 
     int column = y % WM_TILE_HEIGHT / WM_SUBTILE_SIZE;
@@ -3931,8 +3962,8 @@ static int wmSetupRndNextTileNumInit(Encounter* encounter)
     case ENCOUNTER_FORMATION_TYPE_WEDGE:
     case ENCOUNTER_FORMATION_TYPE_CONE:
     case ENCOUNTER_FORMATION_TYPE_HUDDLE: {
-        MapInfo* map = &(wmMapInfoList[gMapHeader.index]);
-        if (map->startPointsLength != 0) {
+        MapInfo* map = gMapHeader.index >= 0 && gMapHeader.index < wmMaxMapNum ? &(wmMapInfoList[gMapHeader.index]) : nullptr;
+        if (map != nullptr && map->startPointsLength != 0) {
             int rspIndex = randomBetween(0, map->startPointsLength - 1);
             MapStartPointInfo* rsp = &(map->startPoints[rspIndex]);
 
@@ -5052,6 +5083,11 @@ static int wmMarkSubTileOffsetVisitedFunc(int tile, int subtileX, int subtileY, 
         actualTile -= wmNumHorizontalTiles;
     }
 
+    // CE: (only tiles the world map has).
+    if (actualTile < 0 || actualTile >= wmMaxTileNum) {
+        return -1;
+    }
+
     tileInfo = &(wmTileInfoList[actualTile]);
     subtileInfo = &(tileInfo->subtiles[actualSubtileY][actualSubtileX]);
     if (subtileState != SUBTILE_STATE_KNOWN || subtileInfo->state == SUBTILE_STATE_UNKNOWN) {
@@ -5083,7 +5119,18 @@ int wmSubTileMarkRadiusVisited(int x, int y, int radius)
     int offsetY;
     SubtileInfo* subtile;
 
+    // CE: a place off the world map (a mod's area placed past its smaller
+    // map, as in Fallout 1.5: Resurrection) marks nothing: this wrote past
+    // the tiles.
+    if (x < 0 || y < 0 || x >= WM_TILE_WIDTH * wmNumHorizontalTiles) {
+        return -1;
+    }
+
     tile = x / WM_TILE_WIDTH % wmNumHorizontalTiles + y / WM_TILE_HEIGHT * wmNumHorizontalTiles;
+    if (tile >= wmMaxTileNum) {
+        return -1;
+    }
+
     subtileX = x % WM_TILE_WIDTH / WM_SUBTILE_SIZE;
     subtileY = y % WM_TILE_HEIGHT / WM_SUBTILE_SIZE;
 

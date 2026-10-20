@@ -2022,7 +2022,7 @@ static void coop_autotest_talk_check()
 }
 
 // A background process (runs in every input loop, dialogs too): answers a
-// conversation (first option a few times, then Escape). Also one a script
+// conversation (an option a few times, then Escape, then the next option). Also one a script
 // started itself (start_gdialog from a critter's script, as Fallout: Nevada's
 // do), which isn't "active" as one begun by talking is.
 static void coop_autotest_answer_dialogs()
@@ -2030,8 +2030,22 @@ static void coop_autotest_answer_dialogs()
     static int presses = 0;
     static unsigned int last = 0;
     bool talking = _gdialogActive() || GameMode::isInGameMode(GameMode::kDialog);
+    // Each conversation in the log once: who, and how many so far (a test
+    // that waits on one shows why).
+    static bool wasTalking = false;
+    static int conversations = 0;
+    if (talking && !wasTalking) {
+        conversations++;
+        autotest_log("conversation %d: %s", conversations,
+            gGameDialogSpeaker != nullptr ? objectGetName(gGameDialogSpeaker) : "(no speaker)");
+    }
+    wasTalking = talking;
     if (talking && getTicksSince(last) > 1000 && !inject_pending()) {
-        inject_key(++presses % 4 == 0 ? KEY_ESCAPE : '1');
+        // Option 1 three times, Escape; then option 2, and so on (a
+        // conversation whose first option leads back to itself never ended,
+        // as one in Fallout 1.5: Resurrection's Albuquerque).
+        presses++;
+        inject_key(presses % 4 == 0 ? KEY_ESCAPE : '1' + (presses / 4) % 9);
         last = getTicks();
     }
 }

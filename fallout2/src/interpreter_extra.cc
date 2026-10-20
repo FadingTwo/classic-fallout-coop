@@ -3058,6 +3058,14 @@ static void opCritterGetInventoryObject(Program* program)
     int type = programStackPopInteger(program);
     Object* critter = static_cast<Object*>(programStackPopPointer(program));
 
+    // CE: as sfall, no object is an error, not a crash (a Fallout 1.5:
+    // Resurrection script in Albuquerque asks for one's).
+    if (critter == nullptr) {
+        scriptPredefinedError(program, "critter_inven_obj", SCRIPT_ERROR_OBJECT_IS_NULL);
+        programStackPushInteger(program, 0);
+        return;
+    }
+
     if (PID_TYPE(critter->pid) == OBJ_TYPE_CRITTER) {
         switch (type) {
         case INVEN_TYPE_WORN:

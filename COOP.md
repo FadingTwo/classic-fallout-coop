@@ -44,8 +44,8 @@ in `fallout2.cfg`. It plays like Fallout 1 co-op, with these differences:
   suit), or like their armor.
 - Your companions (Sulik, Vic...) follow player 1's orders as usual.
 
-Everyone plays the same game (Fallout 1, Fallout 2, Fallout: Sonora or
-Fallout: Nevada); since 1.13.3 its
+Everyone plays the same game (Fallout 1, Fallout 2, Fallout: Sonora,
+Fallout: Nevada or Fallout 1.5: Resurrection); since 1.13.3 its
 release, language or patches may differ (the game runs on player 1's
 computer; those players join as a new character). Fallout 2 co-op is
 new: please report what breaks (MULTIPLAYER, REPORT BUG).
@@ -87,6 +87,22 @@ mod only plays it.
 
 Nevada is a game of its own for co-op: Nevada players only find and join
 Nevada games. Everyone needs the same Nevada installed.
+
+## Fallout 1.5: Resurrection
+
+[Fallout 1.5: Resurrection](https://resurrection.cz/en/) is a free game on
+the Fallout 2 engine by a team of fans from the Czech Republic, in English.
+It needs Fallout 2. Pick FALLOUT 1.5: RESURRECTION in the launcher. The
+first time, it downloads its makers' release (version 1.5, 340 MB; checked
+against its SHA-256) and unpacks the game's files into a `resurrection`
+folder next to this package, its settings pointed at your Fallout 2's
+MASTER.DAT and CRITTER.DAT; nothing of Fallout 2's is changed. If you
+installed it with its makers' installer (into a Fallout 2 folder), that one
+is found and played instead. All credit for the game goes to its makers;
+this mod only plays it.
+
+Resurrection is a game of its own for co-op: Resurrection players only
+find and join Resurrection games.
 
 ## Rules
 

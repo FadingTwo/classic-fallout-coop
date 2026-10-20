@@ -297,6 +297,12 @@ bool coop_zip_extract(const std::string& zipPath, const std::string& prefix, con
                     inflater.next_out = out.data();
                     inflater.avail_out = (uInt)out.size();
                     int rc = inflate(&inflater, Z_NO_FLUSH);
+                    // No progress with this chunk used up: the output buffer
+                    // was filled just as the input ran out; it wants the next
+                    // chunk (this read as a damaged file).
+                    if (rc == Z_BUF_ERROR && chunk != 0 && inflater.avail_in == 0) {
+                        break;
+                    }
                     if (rc != Z_OK && rc != Z_STREAM_END && !(rc == Z_BUF_ERROR && chunk == 0)) {
                         *error = "The zip file is damaged in " + entry->name + ".";
                         ok = false;

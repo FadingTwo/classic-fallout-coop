@@ -48,6 +48,9 @@ namespace fallout {
 
 static char* mapBuildPath(char* name);
 static int mapLoad(File* stream);
+
+// CE: the file a map is loaded from (by name), while it loads.
+static const char* gMapLoadFileName = nullptr;
 static int _map_age_dead_critters();
 static void _map_fix_critter_combat_data();
 static int _map_save();
@@ -781,7 +784,9 @@ int mapLoadByName(char* fileName)
         const char* filePath = mapBuildPath(fileName);
         File* stream = fileOpen(filePath, "rb");
         if (stream != nullptr) {
+            gMapLoadFileName = fileName;
             rc = mapLoad(stream);
+            gMapLoadFileName = nullptr;
             fileClose(stream);
         }
 
@@ -929,6 +934,15 @@ static int mapLoad(File* stream)
     objectSetLocation(gDude, gCenterTile, gElevation, nullptr);
     objectSetRotation(gDude, gEnteringRotation, nullptr);
     gMapHeader.index = wmMapMatchNameToIdx(gMapHeader.name);
+    // CE: a map whose own name isn't in maps.txt (a mod's renamed map, as
+    // Fallout 1.5: Resurrection's alb_pred.map) is found by its file's name;
+    // with no number the map info was read before its list's start.
+    if (gMapHeader.index == -1 && gMapLoadFileName != nullptr) {
+        char name[sizeof(gMapHeader.name)];
+        strncpy(name, gMapLoadFileName, sizeof(name) - 1);
+        name[sizeof(name) - 1] = '\0';
+        gMapHeader.index = wmMapMatchNameToIdx(name);
+    }
 
     if ((gMapHeader.flags & 1) == 0) {
         char path[COMPAT_MAX_PATH];

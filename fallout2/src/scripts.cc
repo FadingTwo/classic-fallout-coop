@@ -14,6 +14,7 @@
 #include "combat.h"
 #include "coop.h"
 #include "critter.h"
+#include "db.h"
 #include "debug.h"
 #include "dialog.h"
 #include "elevator.h"
@@ -684,6 +685,16 @@ static Program* scriptsCreateProgramByName(const char* name)
     strcat(path, gScriptsBasePath);
     strcat(path, name);
     strcat(path, ".int");
+
+    // CE: a script the game's files don't have is left out (a mod's map can
+    // name one it never shipped, as Fallout 1.5: Resurrection's nh_past.map
+    // does): the interpreter stopped the game on a file it could not open.
+    File* stream = fileOpen(path, "rb");
+    if (stream == nullptr) {
+        debugPrint("\nScript %s could not be read", path);
+        return nullptr;
+    }
+    fileClose(stream);
 
     return programCreateByPath(path);
 }

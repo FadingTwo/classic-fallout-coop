@@ -685,6 +685,12 @@ int automapSaveCurrent()
     int map = mapGetCurrentMap();
     int elevation = gElevation;
 
+    // CE: a map not in maps.txt has no automap entry (its number was -1,
+    // read before the table).
+    if (map < 0 || map >= AUTOMAP_MAP_COUNT || elevation < 0 || elevation >= ELEVATION_COUNT) {
+        return 0;
+    }
+
     int entryOffset = gAutomapHeader.offsets[map][elevation];
     if (entryOffset < 0) {
         return 0;
@@ -948,7 +954,8 @@ static int automapLoadEntry(int map, int elevation)
         return -1;
     }
 
-    if (gAutomapHeader.offsets[map][elevation] <= 0) {
+    if (map < 0 || map >= AUTOMAP_MAP_COUNT || elevation < 0 || elevation >= ELEVATION_COUNT
+        || gAutomapHeader.offsets[map][elevation] <= 0) {
         success = false;
         goto out;
     }
