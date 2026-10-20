@@ -86,6 +86,7 @@ extern bool gSfallConfigInitialized;
 extern Config gSfallConfig;
 
 bool sfallConfigInit(int argc, char** argv);
+void sfallConfigReadModConfig(int argc, char** argv);
 void sfallConfigExit();
 
 } // namespace fallout

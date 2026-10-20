@@ -50,6 +50,7 @@
 #include "input.h"
 #include "kb.h"
 #include "mouse.h"
+#include "sfall_config.h"
 #include "svga.h"
 #include "text_font.h"
 
@@ -65,13 +66,22 @@ namespace fallout {
 // join a Fallout 2 game.
 #define COOP_NET_GAME 2
 
-// Which game we say we are: this one, or ([coop]test_game=1 or 2, for
-// tests) another.
+// Fallout: Sonora, played on this engine with its own data: a game of its
+// own (3) that Fallout 2 players can't join, nor the other way.
+#define COOP_NET_GAME_SONORA 3
+
+// Which game we say we are: this one (Fallout: Sonora when its data says
+// so), or ([coop]test_game=1, 2 or 3, for tests) another.
 static int coop_net_game_id()
 {
     int value;
-    if (config_get_value(&game_config, COOP_CONFIG_KEY, "test_game", &value) && (value == 1 || value == 2)) {
+    if (config_get_value(&game_config, COOP_CONFIG_KEY, "test_game", &value) && value >= 1 && value <= 3) {
         return value;
+    }
+    char* version;
+    if (configGetString(&gSfallConfig, SFALL_CONFIG_MISC_KEY, SFALL_CONFIG_VERSION_STRING, &version)
+        && compat_strnicmp(version, "FALLOUT SONORA", 14) == 0) {
+        return COOP_NET_GAME_SONORA;
     }
     return COOP_NET_GAME;
 }
@@ -111,7 +121,14 @@ static bool coop_net_version_older(const std::string& a, const std::string& b)
 
 const char* coop_net_game_name()
 {
-    return coop_net_game_id() == 1 ? "fallout1" : "fallout2";
+    int game = coop_net_game_id();
+    return game == 1 ? "fallout1" : game == COOP_NET_GAME_SONORA ? "sonora" : "fallout2";
+}
+
+const char* coop_net_game_title()
+{
+    int game = coop_net_game_id();
+    return game == 1 ? "Fallout 1" : game == COOP_NET_GAME_SONORA ? "Fallout: Sonora" : "Fallout 2";
 }
 
 // Messages: u32 length (of type + payload), u8 type, payload.
@@ -1079,8 +1096,8 @@ static void coop_host_handle(const CoopMessage& message)
             } else if (protocol != COOP_NET_PROTOCOL_VERSION) {
                 coop_host_welcome(false, "Different co-op version.");
                 coop_client.failed = true;
-            } else if (clientGame != 0 && clientGame != COOP_NET_GAME) {
-                coop_host_welcome(false, COOP_NET_GAME == 1 ? "Player 1 is playing Fallout 1: start Fallout 1 to join." : "Player 1 is playing Fallout 2: start Fallout 2 to join.");
+            } else if (clientGame != 0 && clientGame != coop_net_game_id()) {
+                coop_host_welcome(false, (std::string("Player 1 is playing ") + coop_net_game_title() + ": start " + coop_net_game_title() + " to join.").c_str());
                 coop_client.failed = true;
             } else if (checksum != coop_net_data_checksum() && clientGame == 0) {
                 coop_host_welcome(false, "Game data differs (version, language or patches).");

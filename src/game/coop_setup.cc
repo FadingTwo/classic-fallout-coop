@@ -416,42 +416,26 @@ static void setup_save_screenshot(SetupScreen* screen, const char* path)
 // Choosing the game (Fallout 1 or Fallout 2), when this package has both
 
 // Fallout 2 is set up: its fallout2.cfg (next to it) points at its data.
-static bool setup_fallout2_configured(const fs::path& base)
+// Starts Fallout 2 (`exe`) with this game's command line (and `extra`),
+// in `folder` (its own when empty). On success it does not return (or this
+// process should quit).
+static bool setup_start_fallout2(const fs::path& exe, int argc, char** argv, const fs::path& folder = fs::path(), const char* extra = NULL)
 {
-    Config config;
-    if (!config_init(&config)) {
-        return false;
-    }
-
-    std::string configPath = (base / "fallout2.cfg").string();
-    config_load(&config, configPath.c_str(), false);
-    char* master;
-    std::string masterPath = config_get_string(&config, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_MASTER_DAT_KEY, &master) ? master : "master.dat";
-    config_exit(&config);
-
-    std::error_code error;
-    fs::path path = masterPath;
-    if (path.is_relative()) {
-        path = base / path;
-    }
-    return fs::exists(path, error);
-}
-
-// Starts Fallout 2 (`exe`) with this game's command line. On success it
-// does not return (or this process should quit).
-static bool setup_start_fallout2(const fs::path& exe, int argc, char** argv)
-{
+    fs::path directoryPath = folder.empty() ? exe.parent_path() : folder;
 #ifdef _WIN32
     std::string commandLine = "\"" + exe.string() + "\"";
     for (int index = 1; index < argc; index++) {
         commandLine += " \"" + std::string(argv[index]) + "\"";
+    }
+    if (extra != NULL) {
+        commandLine += std::string(" ") + extra;
     }
     STARTUPINFOA startup;
     PROCESS_INFORMATION process;
     memset(&startup, 0, sizeof(startup));
     startup.cb = sizeof(startup);
     memset(&process, 0, sizeof(process));
-    std::string directory = exe.parent_path().string();
+    std::string directory = directoryPath.string();
     if (!CreateProcessA(exe.string().c_str(), &commandLine[0], NULL, NULL, FALSE, 0, NULL, directory.c_str(), &startup, &process)) {
         return false;
     }
@@ -465,9 +449,13 @@ static bool setup_start_fallout2(const fs::path& exe, int argc, char** argv)
     for (int index = 1; index < argc; index++) {
         args.push_back(argv[index]);
     }
+    std::string extraArg = extra != NULL ? extra : "";
+    if (extra != NULL) {
+        args.push_back(&extraArg[0]);
+    }
     args.push_back(NULL);
     std::error_code error;
-    fs::current_path(exe.parent_path(), error);
+    fs::current_path(directoryPath, error);
     execv(path.c_str(), args.data());
     return false;
 #endif
@@ -495,21 +483,15 @@ int coop_setup_choose_game(int argc, char** argv)
     fs::path fallout2 = base / "fallout2-ce";
 #endif
 
-    // Only a package with both games asks; and only when Fallout 2 is there.
+    // Only a package with both games asks (Fallout 2's program also plays
+    // Fallout: Sonora, kept in its own folder here).
     std::error_code error;
     if (!fs::exists(fallout2, error)) {
         return 1;
     }
 
-    bool fallout2Found = setup_fallout2_configured(base);
-    if (!fallout2Found) {
-        setup_game = 2;
-        fallout2Found = !setup_find_installs().empty();
-        setup_game = 1;
-    }
-    if (!fallout2Found) {
-        return 1;
-    }
+    fs::path sonora = base / "sonora";
+    bool sonoraInstalled = fs::exists(sonora / "master.dat", error);
 
     // The last choice, in fallout.cfg.
     std::string configPath = (base / GAME_CONFIG_FILE_NAME).string();
@@ -535,10 +517,11 @@ int coop_setup_choose_game(int argc, char** argv)
             SDL_RenderSetLogicalSize(screen->renderer, SETUP_WIDTH, SETUP_HEIGHT);
             screen->texture = SDL_CreateTexture(screen->renderer, SDL_PIXELFORMAT_RGB888, SDL_TEXTUREACCESS_STREAMING, SETUP_WIDTH, SETUP_HEIGHT);
 
-            const char* entries[] = { "FALLOUT", "FALLOUT 2", "[ QUIT ]" };
-            const int count = 3;
+            const char* entries[] = { "FALLOUT", "FALLOUT 2", sonoraInstalled ? "FALLOUT: SONORA" : "FALLOUT: SONORA  (free, downloads 1.7 GB)", "[ QUIT ]" };
+            const int count = 4;
+            const int quitIndex = 3;
             const int listTop = SETUP_MARGIN + 5 * SETUP_LINE;
-            int selected = last == 2 ? 1 : 0;
+            int selected = last >= 1 && last <= 3 ? last - 1 : 0;
             const char* screenshot = getenv("FALLOUT_SETUP_SCREENSHOT");
             int frame = 0;
 
@@ -548,7 +531,7 @@ int coop_setup_choose_game(int argc, char** argv)
                 while (SDL_PollEvent(&event)) {
                     switch (event.type) {
                     case SDL_QUIT:
-                        confirm = 2;
+                        confirm = quitIndex;
                         break;
                     case SDL_MOUSEMOTION:
                     case SDL_MOUSEBUTTONDOWN:
@@ -577,12 +560,15 @@ int coop_setup_choose_game(int argc, char** argv)
                         case SDLK_2:
                             confirm = 1;
                             break;
+                        case SDLK_3:
+                            confirm = 2;
+                            break;
                         case SDLK_RETURN:
                         case SDLK_KP_ENTER:
                             confirm = selected;
                             break;
                         case SDLK_ESCAPE:
-                            confirm = 2;
+                            confirm = quitIndex;
                             break;
                         }
                         break;
@@ -590,7 +576,7 @@ int coop_setup_choose_game(int argc, char** argv)
                 }
 
                 if (confirm != -1) {
-                    choice = confirm == 2 ? 0 : confirm + 1;
+                    choice = confirm == quitIndex ? 0 : confirm + 1;
                 }
 
                 setup_clear(screen);
@@ -598,7 +584,7 @@ int coop_setup_choose_game(int argc, char** argv)
                 setup_text(screen, SETUP_MARGIN, 4, "VAULT-TEC FALLOUT SETUP TERMINAL", 0x041A08);
                 setup_text(screen, SETUP_WIDTH - SETUP_MARGIN - (int)strlen("CO-OP v" COOP_VERSION) * COOP_SETUP_FONT_WIDTH, 4, "CO-OP v" COOP_VERSION, 0x041A08);
                 setup_text(screen, SETUP_MARGIN, SETUP_MARGIN + 2 * SETUP_LINE, "Which game do you want to play?", SETUP_GREEN);
-                setup_text(screen, SETUP_MARGIN, SETUP_MARGIN + 3 * SETUP_LINE, "Both play together the same way.", SETUP_DIM);
+                setup_text(screen, SETUP_MARGIN, SETUP_MARGIN + 3 * SETUP_LINE, "All play together the same way.", SETUP_DIM);
                 for (int index = 0; index < count; index++) {
                     int y = listTop + index * SETUP_LINE;
                     if (index == selected) {
@@ -608,7 +594,7 @@ int coop_setup_choose_game(int argc, char** argv)
                         setup_text(screen, SETUP_MARGIN, y, (std::string("  ") + entries[index]).c_str(), SETUP_GREEN);
                     }
                 }
-                setup_text(screen, SETUP_MARGIN, SETUP_HEIGHT - SETUP_MARGIN - SETUP_LINE, "1/2, Up/Down or mouse: choose   Enter: start   Esc: quit", SETUP_DIM);
+                setup_text(screen, SETUP_MARGIN, SETUP_HEIGHT - SETUP_MARGIN - SETUP_LINE, "1-3, Up/Down or mouse: choose   Enter: start   Esc: quit", SETUP_DIM);
                 setup_present(screen);
 
                 if (frame == 0 && screenshot != NULL) {
@@ -648,6 +634,15 @@ int coop_setup_choose_game(int argc, char** argv)
             return 0;
         }
         // Could not start it: Fallout 1 then.
+    }
+
+    // Fallout: Sonora: Fallout 2's program in its folder (it installs it
+    // there first, when asked).
+    if (choice == 3) {
+        fs::create_directories(sonora, error);
+        if (setup_start_fallout2(fallout2, argc, argv, sonora, "--sonora")) {
+            return 0;
+        }
     }
 
     return 1;

@@ -149,6 +149,9 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int a4
         return -1;
     }
 
+    // CE: a mod's own settings, from the archives just opened.
+    sfallConfigReadModConfig(argc, argv);
+
     // Message list repository is considered a specialized file manager, so
     // it should be initialized early in the process.
     messageListRepositoryInit();

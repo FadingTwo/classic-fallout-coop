@@ -94,6 +94,8 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/coop_setup.h"
     "src/coop_setup_font.h"
     "src/coop_update.cc"
+    "src/coop_zip.cc"
+    "src/coop_zip.h"
     "src/coop_update.h"
     "src/credits.cc"
     "src/credits.h"

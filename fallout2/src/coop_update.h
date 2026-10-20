@@ -16,6 +16,9 @@ void coop_update_cleanup();
 
 // Lower case hex SHA-256 of `data`.
 std::string coop_update_sha256(const std::string& data);
+// The same of a file, read in pieces; "" when it can't be read (or
+// `progress` returned false: cancelled).
+std::string coop_update_sha256_file(const std::string& path, bool (*progress)(void* data, unsigned long long done, unsigned long long total), void* data);
 
 // Unpacks the package at `packagePath` (.zip or .tar.gz, with the game's
 // files in one top folder) over the game's folder. The running executable

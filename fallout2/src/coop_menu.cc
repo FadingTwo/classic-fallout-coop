@@ -391,12 +391,11 @@ static int coop_menu_join()
             };
             coop_menu_message("JOIN GAME", lines, 4);
         } else if (games.empty() && otherGame > 0) {
-            bool fallout1 = strcmp(coop_net_game_name(), "fallout1") == 0;
             const char* lines[] = {
                 "Games were found, but only for",
-                fallout1 ? "Fallout 2. To join one, quit" : "Fallout 1. To join one, quit",
-                fallout1 ? "and pick FALLOUT 2 when the" : "and pick FALLOUT when the",
-                "game starts.",
+                "another game. To join one, quit",
+                "and pick that game when it",
+                "starts.",
             };
             coop_menu_message("JOIN GAME", lines, 4);
         }
@@ -737,7 +736,8 @@ static int coop_menu_update(bool ask)
 // sent to <server>/fallout-coop/report, or saved next to the game.
 static int coop_menu_report()
 {
-    char description[29] = "";
+    // (The field scrolls: room to say what happened.)
+    char description[201] = "";
     if (!main_menu_input("REPORT BUG", "Describe it, then Enter", description, (int)sizeof(description) - 1)) {
         return -1;
     }
@@ -748,7 +748,7 @@ static int coop_menu_report()
 
     std::string report = "Classic Fallout Co-op bug report\n";
     report += std::string("Version: ") + COOP_VERSION + "\n";
-    report += std::string("Game: ") + (strcmp(coop_net_game_name(), "fallout2") == 0 ? "Fallout 2" : "Fallout 1") + "\n";
+    report += std::string("Game: ") + coop_net_game_title() + "\n";
     report += std::string("Platform: ") + SDL_GetPlatform() + "\n";
     char checksum[32];
     snprintf(checksum, sizeof(checksum), "%016llx", (unsigned long long)coop_net_data_checksum());
@@ -1017,7 +1017,7 @@ static void coop_menu_offer_crash_report()
 
     // What the player plays, as in a bug report (not known while crashing:
     // the report was written then without them).
-    std::string info = std::string("Game: ") + (strcmp(coop_net_game_name(), "fallout2") == 0 ? "Fallout 2" : "Fallout 1") + "\n";
+    std::string info = std::string("Game: ") + coop_net_game_title() + "\n";
     char checksum[32];
     snprintf(checksum, sizeof(checksum), "%016llx", (unsigned long long)coop_net_data_checksum());
     info += std::string("Game files: ") + checksum + "\n";

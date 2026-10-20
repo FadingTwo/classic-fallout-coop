@@ -44,10 +44,30 @@ in `fallout2.cfg`. It plays like Fallout 1 co-op, with these differences:
   suit), or like their armor.
 - Your companions (Sulik, Vic...) follow player 1's orders as usual.
 
-Everyone plays the same game (Fallout 1 or Fallout 2); since 1.13.3 its
+Everyone plays the same game (Fallout 1, Fallout 2 or Fallout: Sonora); since 1.13.3 its
 release, language or patches may differ (the game runs on player 1's
 computer; those players join as a new character). Fallout 2 co-op is
 new: please report what breaks (MULTIPLAYER, REPORT BUG).
+
+## Fallout: Sonora
+
+[Fallout: Sonora](https://cambragol.github.io/Fallout-Sonora/) is a free
+game on the Fallout 2 engine by the Nevada Band (English version by
+cambragol). The launcher offers it as a third game: FALLOUT: SONORA. The
+first time, it downloads Sonora's own release from its makers' GitHub
+(version 1.16.4E, 1.7 GB; checked against its SHA-256) and unpacks the
+game's files into a `sonora` folder next to this package; it is never part
+of this package. Then it plays like Fallout 2 co-op, in English. Sonora's
+terms: free, not for sale, for players over 18.
+
+Credits: Fallout: Sonora is made by the Nevada Band; its English version
+and release by cambragol
+([GitHub](https://github.com/cambragol/Fallout-Sonora-English)). All credit
+for the game goes to them; this mod only plays it.
+
+Sonora is a game of its own for co-op: Sonora players only find and join
+Sonora games, and the other way round. Everyone needs Sonora installed
+the same way (the launcher does it). Its saves stay in its own folder.
 
 ## Rules
 

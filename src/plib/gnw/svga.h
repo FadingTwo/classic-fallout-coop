@@ -22,6 +22,11 @@ extern bool svga_screen_only;
 // Testing: the time uploads to the graphics card took (performance counter
 // ticks).
 extern unsigned long long svga_upload_ticks;
+
+// CE: what is drawn straight onto gSdlTextureSurface (not through the
+// windows) must say where, or the graphics card won't get it (only what
+// changed is uploaded). NULL/nullptr: all of it.
+void svga_mark_dirty(const SDL_Rect* rect);
 extern SDL_Renderer* gSdlRenderer;
 extern SDL_Texture* gSdlTexture;
 extern SDL_Surface* gSdlTextureSurface;

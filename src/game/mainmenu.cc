@@ -6,6 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <string>
+
 #include "game/art.h"
 #include "game/editor.h"
 #include "game/game.h"
@@ -18,6 +20,7 @@
 #include "plib/gnw/gnw.h"
 #include "plib/gnw/grbuf.h"
 #include "plib/gnw/input.h"
+#include "plib/gnw/kb.h"
 #include "plib/gnw/memory.h"
 #include "plib/gnw/mouse.h"
 #include "plib/gnw/svga.h"
@@ -622,14 +625,55 @@ bool main_menu_input(const char* label, const char* hint, char* text, int maxLen
     buf_fill(main_window_buf + MAIN_MENU_WINDOW_WIDTH * (fieldY - 3) + fieldX - 4, 172, text_height() + 6, MAIN_MENU_WINDOW_WIDTH, colorTable[0]);
     win_draw(main_window);
 
-    // Large enough cancel code that no key produces it.
-    bool ok = get_input_str(main_window, 0x7FFF0000, text, maxLength, fieldX, fieldY, colorTable[992], colorTable[0], 0) == 0;
+    // CE: co-op: typed into the field, its end shown when the text is
+    // longer than it (a bug report's description).
+    const int fieldWidth = 164;
+    std::string value = text;
+    beginTextInput();
+    int rc = 1;
+    unsigned int frame = 0;
+    while (rc == 1) {
+        sharedFpsLimiter.mark();
+
+        int keyCode = get_input();
+        if (keyCode == KEY_RETURN) {
+            gsound_play_sfx_file("ib1p1xx1");
+            rc = 0;
+        } else if (keyCode == KEY_ESCAPE || game_user_wants_to_quit != 0) {
+            rc = -1;
+        } else if ((keyCode == KEY_DELETE || keyCode == KEY_BACKSPACE) && !value.empty()) {
+            value.pop_back();
+        } else if (keyCode >= KEY_FIRST_INPUT_CHARACTER && keyCode <= KEY_LAST_INPUT_CHARACTER && (int)value.size() < maxLength) {
+            value += (char)(keyCode & 0xFF);
+        }
+
+        int cursorWidth = text_width("_");
+        size_t start = 0;
+        while (start < value.size() && text_width(value.c_str() + start) > fieldWidth - cursorWidth) {
+            start++;
+        }
+        buf_fill(main_window_buf + MAIN_MENU_WINDOW_WIDTH * (fieldY - 3) + fieldX - 4, 172, text_height() + 6, MAIN_MENU_WINDOW_WIDTH, colorTable[0]);
+        text_to_buf(main_window_buf + MAIN_MENU_WINDOW_WIDTH * fieldY + fieldX, value.c_str() + start, fieldWidth, MAIN_MENU_WINDOW_WIDTH, colorTable[992]);
+        if ((frame / 8) % 2 == 0) {
+            int cursorX = fieldX + text_width(value.c_str() + start);
+            text_to_buf(main_window_buf + MAIN_MENU_WINDOW_WIDTH * fieldY + cursorX, "_", cursorWidth, MAIN_MENU_WINDOW_WIDTH, colorTable[992]);
+        }
+        frame++;
+        win_draw(main_window);
+
+        renderPresent();
+        sharedFpsLimiter.throttle();
+    }
+    endTextInput();
     text_font(oldFont);
 
-    // Trailing blank the editor's input adds.
-    size_t length = strlen(text);
-    while (length > 0 && text[length - 1] == ' ') {
-        text[--length] = '\0';
+    bool ok = rc == 0;
+    if (ok) {
+        // Without trailing blanks.
+        while (!value.empty() && value.back() == ' ') {
+            value.pop_back();
+        }
+        strcpy(text, value.c_str());
     }
 
     return ok;

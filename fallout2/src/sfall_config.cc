@@ -87,6 +87,51 @@ bool sfallConfigInit(int argc, char** argv)
     return true;
 }
 
+// CE: a mod's own settings (Fallout: Sonora's data\mod.cfg, F.I.S.S.I.O.N.'s
+// data\game.cfg, in the game's archives), [mod_settings] with sfall's
+// [Misc] names: they take the place of the defaults; ddraw.ini next to the
+// game still wins.
+void sfallConfigReadModConfig(int argc, char** argv)
+{
+    if (!gSfallConfigInitialized) {
+        return;
+    }
+
+    Config mod;
+    if (!configInit(&mod)) {
+        return;
+    }
+    configRead(&mod, "data\\game.cfg", true);
+    configRead(&mod, "data\\mod.cfg", true);
+
+    int sectionIndex = dictionaryGetIndexByKey(&mod, "mod_settings");
+    if (sectionIndex != -1) {
+        // What ddraw.ini (and the command line) set themselves.
+        Config file;
+        bool haveFile = configInit(&file);
+        if (haveFile) {
+            configRead(&file, SFALL_CONFIG_FILE_NAME, false);
+            configParseCommandLineArguments(&file, argc, argv);
+        }
+
+        ConfigSection* section = (ConfigSection*)mod.entries[sectionIndex].value;
+        for (int index = 0; index < section->entriesLength; index++) {
+            const char* key = section->entries[index].key;
+            const char* value = *(char**)section->entries[index].value;
+            char* own;
+            if (value == nullptr || value[0] == '\0' || (haveFile && configGetString(&file, SFALL_CONFIG_MISC_KEY, key, &own))) {
+                continue;
+            }
+            configSetString(&gSfallConfig, SFALL_CONFIG_MISC_KEY, key, value);
+        }
+
+        if (haveFile) {
+            configFree(&file);
+        }
+    }
+    configFree(&mod);
+}
+
 void sfallConfigExit()
 {
     if (gSfallConfigInitialized) {

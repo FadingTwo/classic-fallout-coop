@@ -59,6 +59,7 @@
 #include "sound_effects_list.h"
 #include "queue.h"
 #include "scripts.h"
+#include "sfall_config.h"
 #include "skill.h"
 #include "sound.h"
 #include "sound_decoder.h"
@@ -143,6 +144,7 @@ static int coop_autotest_map_entry(AutotestNewGameProc* newGame);
 static int coop_autotest_map_edges(AutotestNewGameProc* newGame);
 static int coop_autotest_egg(AutotestNewGameProc* newGame);
 static int coop_autotest_monitor(AutotestNewGameProc* newGame);
+static int coop_autotest_game_info(AutotestNewGameProc* newGame);
 static int coop_autotest_net_death_host(AutotestNewGameProc* newGame);
 static int coop_autotest_net_worldmap_host(AutotestNewGameProc* newGame);
 static int coop_autotest_net_ending_host(AutotestNewGameProc* newGame);
@@ -213,6 +215,7 @@ void coop_autotest_register()
     autotest_add_script("map_edges", coop_autotest_map_edges);
     autotest_add_script("coop_egg", coop_autotest_egg);
     autotest_add_script("coop_monitor", coop_autotest_monitor);
+    autotest_add_script("game_info", coop_autotest_game_info);
     autotest_add_script("net_death_host", coop_autotest_net_death_host);
     autotest_add_script("net_worldmap_host", coop_autotest_net_worldmap_host);
     autotest_add_script("net_ending_host", coop_autotest_net_ending_host);
@@ -2157,6 +2160,13 @@ static bool coop_autotest_session_turn(Object* player)
     }
 
     if (player == coop_player(0)->obj) {
+        // An enemy that keeps away (as Fallout: Sonora's rat) would make
+        // it last forever: player 2 never fights here.
+        Object* enemy = coop_autotest_enemy;
+        if (coop_autotest_turns_total > 40 && enemy != nullptr && !critterIsDead(enemy)) {
+            autotest_log("the enemy kept away: it dies");
+            critterKill(enemy, -1, true);
+        }
         return coop_autotest_attack_turn(player);
     }
 
@@ -2274,6 +2284,9 @@ static int coop_autotest_net_session_host(AutotestNewGameProc* newGame)
     coop_autotest_session_frames(1500, false, false);
 
     // A fight where player 2 never acts: the turn timer has to move on.
+    // (Only the two of them and the enemy: the map's own people, as on
+    // Fallout: Sonora's first map, could keep it going.)
+    coop_autotest_clear_critters();
     Object* enemy = coop_autotest_spawn_enemy(coop_player(0)->obj);
     if (enemy == NULL) {
         return -1;
@@ -3735,8 +3748,10 @@ static int coop_autotest_four(AutotestNewGameProc* newGame)
         }
     }
 
-    // Travel: everyone comes along.
-    char mapName[] = "kladwtwn.map";
+    // Travel: everyone comes along (to COOP_AUTOTEST_TRAVEL_MAP, default
+    // Klamath).
+    char mapName[64];
+    snprintf(mapName, sizeof(mapName), "%s", getenv("COOP_AUTOTEST_TRAVEL_MAP") != nullptr ? getenv("COOP_AUTOTEST_TRAVEL_MAP") : "kladwtwn.map");
     MapTransition transition;
     memset(&transition, 0, sizeof(transition));
     transition.map = wmMapMatchNameToIdx(mapName);
@@ -4116,6 +4131,38 @@ static int coop_autotest_lobby_find(AutotestNewGameProc* newGame)
 // Player 2 walks in their scope, as on their turn in a fight: the egg
 // (see-through walls) stays with player 1, at their place within the hex
 // (as in Fallout 1 CE co-op).
+// Which game this is (Fallout 2, or a game on its engine such as Fallout:
+// Sonora) and the settings its own data gave: COOP_AUTOTEST_GAME, when set,
+// is the game name expected.
+static int coop_autotest_game_info(AutotestNewGameProc* newGame)
+{
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+
+    char* version = nullptr;
+    configGetString(&gSfallConfig, SFALL_CONFIG_MISC_KEY, SFALL_CONFIG_VERSION_STRING, &version);
+    int year = 0;
+    int month = 0;
+    int day = 0;
+    configGetInt(&gSfallConfig, SFALL_CONFIG_MISC_KEY, SFALL_CONFIG_START_YEAR, &year);
+    configGetInt(&gSfallConfig, SFALL_CONFIG_MISC_KEY, SFALL_CONFIG_START_MONTH, &month);
+    configGetInt(&gSfallConfig, SFALL_CONFIG_MISC_KEY, SFALL_CONFIG_START_DAY, &day);
+    int gameMonth;
+    int gameDay;
+    int gameYear;
+    gameTimeGetDate(&gameMonth, &gameDay, &gameYear);
+    autotest_log("game %s (%s), version string '%s', start %d-%d-%d, the game's date %d-%d-%d, map %s",
+        coop_net_game_name(), coop_net_game_title(), version != nullptr ? version : "", year, month, day,
+        gameYear, gameMonth, gameDay, gMapHeader.name);
+
+    const char* expected = getenv("COOP_AUTOTEST_GAME");
+    if (expected != nullptr && strcmp(expected, coop_net_game_name()) != 0) {
+        autotest_fail("game %s, expected %s", coop_net_game_name(), expected);
+    }
+    return 0;
+}
+
 // Each player's own monitor: everyone's messages on all, what a player
 // looks at only on theirs.
 static int coop_autotest_monitor(AutotestNewGameProc* newGame)

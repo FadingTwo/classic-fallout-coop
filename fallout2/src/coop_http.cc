@@ -1,5 +1,6 @@
 #include "coop_http.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -160,6 +161,87 @@ static bool http_request(const std::string& method, const std::string& urlText, 
                 *error = http_status_error((int)status);
             } else {
                 ok = true;
+            }
+        }
+    }
+
+    if (request != NULL) {
+        WinHttpCloseHandle(request);
+    }
+    if (connection != NULL) {
+        WinHttpCloseHandle(connection);
+    }
+    WinHttpCloseHandle(session);
+    return ok;
+}
+
+static bool http_download(const std::string& urlText, FILE* stream, CoopHttpProgress* progress, void* data, std::string* error, int timeoutMs)
+{
+    HttpUrl url;
+    if (!http_parse_url(urlText, &url, error)) {
+        return false;
+    }
+
+    HINTERNET session = WinHttpOpen(L"fallout-ce-coop", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (session == NULL) {
+        *error = "Networking unavailable.";
+        return false;
+    }
+
+    WinHttpSetTimeouts(session, timeoutMs, timeoutMs, timeoutMs, timeoutMs);
+
+    bool ok = false;
+    HINTERNET connection = WinHttpConnect(session, http_wide(url.host).c_str(), (INTERNET_PORT)atoi(url.port.c_str()), 0);
+    HINTERNET request = connection != NULL
+        ? WinHttpOpenRequest(connection, L"GET", http_wide(url.path).c_str(), NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, url.secure ? WINHTTP_FLAG_SECURE : 0)
+        : NULL;
+
+    // (WinHTTP follows redirects itself.)
+    if (request == NULL || !WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0)
+        || !WinHttpReceiveResponse(request, NULL)) {
+        *error = "Cannot connect to the server " + url.host + ".";
+    } else {
+        DWORD status = 0;
+        DWORD size = sizeof(status);
+        WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX);
+        wchar_t lengthText[32] = L"";
+        size = sizeof(lengthText);
+        unsigned long long total = 0;
+        if (WinHttpQueryHeaders(request, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX, lengthText, &size, WINHTTP_NO_HEADER_INDEX)) {
+            total = _wcstoui64(lengthText, NULL, 10);
+        }
+
+        if (status < 200 || status > 299) {
+            *error = http_status_error((int)status);
+        } else {
+            unsigned long long done = 0;
+            std::vector<char> buffer(256 * 1024);
+            ok = true;
+            for (;;) {
+                DWORD read = 0;
+                if (!WinHttpReadData(request, buffer.data(), (DWORD)buffer.size(), &read)) {
+                    *error = "The connection was lost.";
+                    ok = false;
+                    break;
+                }
+                if (read == 0) {
+                    break;
+                }
+                if (fwrite(buffer.data(), 1, read, stream) != read) {
+                    *error = "Could not write the download (is the disk full?).";
+                    ok = false;
+                    break;
+                }
+                done += read;
+                if (progress != NULL && !progress(data, done, total)) {
+                    *error = "Cancelled.";
+                    ok = false;
+                    break;
+                }
+            }
+            if (ok && total != 0 && done != total) {
+                *error = "The download was cut short.";
+                ok = false;
             }
         }
     }
@@ -451,7 +533,219 @@ static bool http_request(const std::string& method, const std::string& urlText, 
     return true;
 }
 
+// One GET into `stream`; a redirect gives its target in `location` instead.
+static bool http_download_once(const std::string& urlText, FILE* stream, CoopHttpProgress* progress, void* data, std::string* location, std::string* error, int timeoutMs)
+{
+    HttpUrl url;
+    if (!http_parse_url(urlText, &url, error)) {
+        return false;
+    }
+
+    if (url.secure && !http_load_openssl()) {
+        *error = "HTTPS needs OpenSSL (libssl), which was not found.";
+        return false;
+    }
+
+    int socket = http_connect(url, timeoutMs, error);
+    if (socket == -1) {
+        return false;
+    }
+
+    void* context = NULL;
+    void* ssl = NULL;
+    if (url.secure) {
+        context = http_openssl.SSL_CTX_new(http_openssl.TLS_client_method());
+        if (context != NULL) {
+            http_openssl.SSL_CTX_set_default_verify_paths(context);
+            http_openssl.SSL_CTX_set_verify(context, OPENSSL_VERIFY_PEER, NULL);
+            ssl = http_openssl.SSL_new(context);
+        }
+
+        bool secured = ssl != NULL
+            && http_openssl.SSL_set_fd(ssl, socket) == 1
+            && http_openssl.SSL_ctrl(ssl, OPENSSL_CTRL_SET_TLSEXT_HOSTNAME, OPENSSL_TLSEXT_NAMETYPE_HOST_NAME, (void*)url.host.c_str()) == 1
+            && http_openssl.SSL_set1_host(ssl, url.host.c_str()) == 1
+            && http_openssl.SSL_connect(ssl) == 1
+            && http_openssl.SSL_get_verify_result(ssl) == OPENSSL_X509_V_OK;
+
+        if (!secured) {
+            *error = "Could not open a secure connection to " + url.host + ".";
+            if (ssl != NULL) {
+                http_openssl.SSL_free(ssl);
+            }
+            if (context != NULL) {
+                http_openssl.SSL_CTX_free(context);
+            }
+            close(socket);
+            return false;
+        }
+    }
+
+    std::string request = "GET " + url.path + " HTTP/1.0\r\n"
+        + "Host: " + url.host + "\r\n"
+        + "User-Agent: fallout-ce-coop\r\n"
+        + "Connection: close\r\n\r\n";
+
+    bool ok = true;
+    size_t sent = 0;
+    while (ok && sent < request.size()) {
+        int n = ssl != NULL
+            ? http_openssl.SSL_write(ssl, request.data() + sent, (int)(request.size() - sent))
+            : (int)send(socket, request.data() + sent, request.size() - sent, HTTP_SEND_FLAGS);
+        if (n <= 0) {
+            *error = "The connection was lost.";
+            ok = false;
+        } else {
+            sent += n;
+        }
+    }
+
+    // The headers, then the body straight into the file.
+    std::string head;
+    bool inBody = false;
+    int status = 0;
+    unsigned long long total = 0;
+    unsigned long long done = 0;
+    std::vector<char> buffer(256 * 1024);
+    while (ok) {
+        int n = ssl != NULL
+            ? http_openssl.SSL_read(ssl, buffer.data(), (int)buffer.size())
+            : (int)recv(socket, buffer.data(), buffer.size(), 0);
+        if (n <= 0) {
+            if (!inBody) {
+                *error = head.empty() ? "The server did not answer." : "The server's answer was not understood.";
+                ok = false;
+            }
+            break;
+        }
+
+        const char* bodyStart = buffer.data();
+        size_t bodyLength = (size_t)n;
+        if (!inBody) {
+            head.append(buffer.data(), n);
+            size_t headerEnd = head.find("\r\n\r\n");
+            if (headerEnd == std::string::npos) {
+                if (head.size() > 64 * 1024) {
+                    *error = "The server's answer was not understood.";
+                    ok = false;
+                }
+                continue;
+            }
+            if (head.compare(0, 5, "HTTP/") != 0) {
+                *error = "The server's answer was not understood.";
+                ok = false;
+                break;
+            }
+            status = atoi(head.c_str() + head.find(' ') + 1);
+            std::string headers = head.substr(0, headerEnd + 2);
+            // Content-Length and Location (any case).
+            size_t at = 0;
+            while (at < headers.size()) {
+                size_t end = headers.find("\r\n", at);
+                if (end == std::string::npos) {
+                    break;
+                }
+                std::string line = headers.substr(at, end - at);
+                at = end + 2;
+                size_t colon = line.find(':');
+                if (colon == std::string::npos) {
+                    continue;
+                }
+                std::string name = line.substr(0, colon);
+                for (char& ch : name) {
+                    ch = (char)tolower((unsigned char)ch);
+                }
+                size_t valueStart = line.find_first_not_of(' ', colon + 1);
+                std::string value = valueStart == std::string::npos ? "" : line.substr(valueStart);
+                if (name == "content-length") {
+                    total = strtoull(value.c_str(), NULL, 10);
+                } else if (name == "location") {
+                    *location = value;
+                }
+            }
+            if (status >= 300 && status <= 399 && !location->empty()) {
+                // A relative one is on the same server.
+                if (location->compare(0, 4, "http") != 0) {
+                    bool defaultPort = url.port == (url.secure ? "443" : "80");
+                    *location = std::string(url.secure ? "https://" : "http://") + url.host + (defaultPort ? "" : ":" + url.port) + *location;
+                }
+                break;
+            }
+            location->clear();
+            if (status < 200 || status > 299) {
+                *error = http_status_error(status);
+                ok = false;
+                break;
+            }
+            inBody = true;
+            size_t skipped = headerEnd + 4 - (head.size() - (size_t)n);
+            bodyStart = buffer.data() + skipped;
+            bodyLength = (size_t)n - skipped;
+        }
+
+        if (bodyLength != 0 && fwrite(bodyStart, 1, bodyLength, stream) != bodyLength) {
+            *error = "Could not write the download (is the disk full?).";
+            ok = false;
+            break;
+        }
+        done += bodyLength;
+        if (progress != NULL && !progress(data, done, total)) {
+            *error = "Cancelled.";
+            ok = false;
+            break;
+        }
+    }
+
+    if (ok && inBody && total != 0 && done != total) {
+        *error = "The download was cut short.";
+        ok = false;
+    }
+
+    if (ssl != NULL) {
+        http_openssl.SSL_shutdown(ssl);
+        http_openssl.SSL_free(ssl);
+        http_openssl.SSL_CTX_free(context);
+    }
+    close(socket);
+    return ok;
+}
+
+static bool http_download(const std::string& urlText, FILE* stream, CoopHttpProgress* progress, void* data, std::string* error, int timeoutMs)
+{
+    std::string url = urlText;
+    for (int redirects = 0; redirects < 8; redirects++) {
+        std::string location;
+        if (!http_download_once(url, stream, progress, data, &location, error, timeoutMs)) {
+            return false;
+        }
+        if (location.empty()) {
+            return true;
+        }
+        url = location;
+    }
+    *error = "Too many redirects.";
+    return false;
+}
+
 #endif
+
+bool coop_http_download(const std::string& url, const std::string& path, CoopHttpProgress* progress, void* data, std::string* error, int timeoutMs)
+{
+    FILE* stream = fopen(path.c_str(), "wb");
+    if (stream == NULL) {
+        *error = "Could not write " + path + ".";
+        return false;
+    }
+    bool ok = http_download(url, stream, progress, data, error, timeoutMs);
+    if (fclose(stream) != 0 && ok) {
+        *error = "Could not write the download (is the disk full?).";
+        ok = false;
+    }
+    if (!ok) {
+        remove(path.c_str());
+    }
+    return ok;
+}
 
 bool coop_http_get(const std::string& url, std::string* body, std::string* error, int timeoutMs)
 {

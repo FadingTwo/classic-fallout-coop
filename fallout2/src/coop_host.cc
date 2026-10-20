@@ -1089,6 +1089,8 @@ static void coop_host_draw_banner(const char* text)
     text_font(oldFont);
 
     SDL_BlitSurface(banner, NULL, gSdlTextureSurface, NULL);
+    SDL_Rect bannerRect = { 0, 0, banner->w, banner->h };
+    svga_mark_dirty(&bannerRect);
     SDL_FreeSurface(banner);
 }
 
@@ -1128,12 +1130,14 @@ static void coop_host_present()
     // draws there.
     if (coop_host_marker_on_texture) {
         SDL_BlitSurface(gSdlSurface, &coop_host_marker_shown, gSdlTextureSurface, &coop_host_marker_shown);
+        svga_mark_dirty(&coop_host_marker_shown);
         coop_host_marker_on_texture = false;
     }
     coop_host_marker_draw();
     if (coop_host_marker_drawn) {
         coop_host_marker_shown = coop_host_marker_rect;
         SDL_BlitSurface(gSdlSurface, &coop_host_marker_shown, gSdlTextureSurface, &coop_host_marker_shown);
+        svga_mark_dirty(&coop_host_marker_shown);
         coop_host_marker_on_texture = true;
     }
     struct MarkerRestore {
@@ -1169,6 +1173,7 @@ static void coop_host_present()
         // Back to what is really there.
         SDL_Rect rect = { 0, 0, gSdlSurface->w, COOP_HOST_BANNER_HEIGHT };
         SDL_BlitSurface(gSdlSurface, &rect, gSdlTextureSurface, &rect);
+        svga_mark_dirty(&rect);
         coop_host_banner_shown = false;
     }
 }

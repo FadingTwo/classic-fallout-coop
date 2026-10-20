@@ -185,6 +185,63 @@ std::string coop_update_sha256(const std::string& data)
     return hex;
 }
 
+std::string coop_update_sha256_file(const std::string& path, bool (*progress)(void* data, unsigned long long done, unsigned long long total), void* data)
+{
+    FILE* stream = fopen(path.c_str(), "rb");
+    if (stream == NULL) {
+        return "";
+    }
+    std::error_code fsError;
+    unsigned long long total = (unsigned long long)fs::file_size(fs::u8path(path), fsError);
+
+    uint32_t state[8] = { 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19 };
+    std::vector<unsigned char> buffer(1024 * 1024);
+    unsigned long long length = 0;
+    size_t filled = 0;
+    bool cancelled = false;
+    for (;;) {
+        size_t read = fread(buffer.data() + filled, 1, buffer.size() - filled, stream);
+        filled += read;
+        size_t full = filled / 64 * 64;
+        for (size_t offset = 0; offset < full; offset += 64) {
+            update_sha256_block(state, buffer.data() + offset);
+        }
+        length += full;
+        memmove(buffer.data(), buffer.data() + full, filled - full);
+        filled -= full;
+        if (progress != NULL && !progress(data, length, total)) {
+            cancelled = true;
+            break;
+        }
+        if (read == 0) {
+            break;
+        }
+    }
+    fclose(stream);
+    if (cancelled) {
+        return "";
+    }
+
+    unsigned char tail[128];
+    memcpy(tail, buffer.data(), filled);
+    tail[filled] = 0x80;
+    size_t tailLength = filled + 9 <= 64 ? 64 : 128;
+    memset(tail + filled + 1, 0, tailLength - filled - 1);
+    uint64_t bits = (uint64_t)(length + filled) * 8;
+    for (int i = 0; i < 8; i++) {
+        tail[tailLength - 1 - i] = (unsigned char)(bits >> (i * 8));
+    }
+    for (size_t offset = 0; offset < tailLength; offset += 64) {
+        update_sha256_block(state, tail + offset);
+    }
+
+    char hex[65];
+    for (int i = 0; i < 8; i++) {
+        snprintf(hex + i * 8, 9, "%08x", state[i]);
+    }
+    return hex;
+}
+
 // -----------------------------------------------------------------------------
 // Installing
 

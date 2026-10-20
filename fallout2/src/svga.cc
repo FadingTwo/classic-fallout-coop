@@ -1,7 +1,11 @@
 #include "svga.h"
 
 #include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+#include <vector>
 
 #include <SDL.h>
 
@@ -248,7 +252,7 @@ static bool svga_dirty_all = true;
 // Testing: the time uploads took (performance counter ticks).
 unsigned long long svga_upload_ticks = 0;
 
-static void svga_mark_dirty(const SDL_Rect* rect)
+void svga_mark_dirty(const SDL_Rect* rect)
 {
     if (rect == nullptr) {
         svga_dirty_all = true;
@@ -475,6 +479,44 @@ void renderPresent()
 
     SDL_RenderClear(gSdlRenderer);
     SDL_RenderCopy(gSdlRenderer, gSdlTexture, nullptr, nullptr);
+
+    // CE: testing (COOP_PRESENT_CHECK=1): what the graphics card shows
+    // against what was drawn (only the changed part is uploaded).
+    static int presentCheck = -1;
+    if (presentCheck == -1) {
+        presentCheck = getenv("COOP_PRESENT_CHECK") != nullptr ? 1 : 0;
+    }
+    if (presentCheck == 1) {
+        static unsigned int checks = 0;
+        static unsigned int wrong = 0;
+        int width = gSdlTextureSurface->w;
+        int height = gSdlTextureSurface->h;
+        int outputWidth;
+        int outputHeight;
+        if (SDL_GetRendererOutputSize(gSdlRenderer, &outputWidth, &outputHeight) == 0 && outputWidth == width && outputHeight == height) {
+            std::vector<Uint32> shown((size_t)width * height);
+            if (SDL_RenderReadPixels(gSdlRenderer, nullptr, gSdlTextureSurface->format->format, shown.data(), width * 4) == 0) {
+                int pixels = 0;
+                for (int y = 0; y < height; y++) {
+                    const Uint32* row = (const Uint32*)((const unsigned char*)gSdlTextureSurface->pixels + (size_t)y * gSdlTextureSurface->pitch);
+                    for (int x = 0; x < width; x++) {
+                        if ((shown[(size_t)y * width + x] & 0xFFFFFF) != (row[x] & 0xFFFFFF)) {
+                            pixels++;
+                        }
+                    }
+                }
+                checks++;
+                if (checks == 1 || checks % 200 == 0) {
+                    fprintf(stderr, "PRESENT CHECK: %u checked, %u wrong\n", checks, wrong);
+                }
+                if (pixels != 0) {
+                    wrong++;
+                    fprintf(stderr, "PRESENT CHECK: the screen shows %d pixels other than drawn (%u of %u wrong)\n", pixels, wrong, checks);
+                }
+            }
+        }
+    }
+
     SDL_RenderPresent(gSdlRenderer);
 }
 

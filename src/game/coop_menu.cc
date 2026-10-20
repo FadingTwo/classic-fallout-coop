@@ -390,12 +390,11 @@ static int coop_menu_join()
             };
             coop_menu_message("JOIN GAME", lines, 4);
         } else if (games.empty() && otherGame > 0) {
-            bool fallout1 = strcmp(coop_net_game_name(), "fallout1") == 0;
             const char* lines[] = {
                 "Games were found, but only for",
-                fallout1 ? "Fallout 2. To join one, quit" : "Fallout 1. To join one, quit",
-                fallout1 ? "and pick FALLOUT 2 when the" : "and pick FALLOUT when the",
-                "game starts.",
+                "another game. To join one, quit",
+                "and pick that game when it",
+                "starts.",
             };
             coop_menu_message("JOIN GAME", lines, 4);
         }
@@ -736,7 +735,8 @@ static int coop_menu_update(bool ask)
 // sent to <server>/fallout-coop/report, or saved next to the game.
 static int coop_menu_report()
 {
-    char description[29] = "";
+    // (The field scrolls: room to say what happened.)
+    char description[201] = "";
     if (!main_menu_input("REPORT BUG", "Describe it, then Enter", description, (int)sizeof(description) - 1)) {
         return -1;
     }

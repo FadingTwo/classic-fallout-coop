@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include <algorithm>
+#include <string>
 
 #include "art.h"
 #include "character_editor.h"
@@ -592,14 +593,55 @@ bool main_menu_input(const char* label, const char* hint, char* text, int maxLen
     bufferFill(gMainMenuWindowBuffer + MAIN_MENU_WINDOW_WIDTH * (fieldY - 3) + fieldX - 4, 172, fontGetLineHeight() + 6, MAIN_MENU_WINDOW_WIDTH, _colorTable[0]);
     windowRefresh(gMainMenuWindow);
 
-    // Large enough cancel code that no key produces it.
-    bool ok = _get_input_str(gMainMenuWindow, 0x7FFF0000, text, maxLength, fieldX, fieldY, _colorTable[992], _colorTable[0], 0) == 0;
+    // CE: co-op: typed into the field, its end shown when the text is
+    // longer than it (a bug report's description).
+    const int fieldWidth = 164;
+    std::string value = text;
+    beginTextInput();
+    int rc = 1;
+    unsigned int frame = 0;
+    while (rc == 1) {
+        sharedFpsLimiter.mark();
+
+        int keyCode = inputGetInput();
+        if (keyCode == KEY_RETURN) {
+            soundPlayFile("ib1p1xx1");
+            rc = 0;
+        } else if (keyCode == KEY_ESCAPE || _game_user_wants_to_quit != 0) {
+            rc = -1;
+        } else if ((keyCode == KEY_DELETE || keyCode == KEY_BACKSPACE) && !value.empty()) {
+            value.pop_back();
+        } else if (keyCode >= KEY_FIRST_INPUT_CHARACTER && keyCode <= KEY_LAST_INPUT_CHARACTER && (int)value.size() < maxLength) {
+            value += (char)(keyCode & 0xFF);
+        }
+
+        int cursorWidth = fontGetStringWidth("_");
+        size_t start = 0;
+        while (start < value.size() && fontGetStringWidth(value.c_str() + start) > fieldWidth - cursorWidth) {
+            start++;
+        }
+        bufferFill(gMainMenuWindowBuffer + MAIN_MENU_WINDOW_WIDTH * (fieldY - 3) + fieldX - 4, 172, fontGetLineHeight() + 6, MAIN_MENU_WINDOW_WIDTH, _colorTable[0]);
+        fontDrawText(gMainMenuWindowBuffer + MAIN_MENU_WINDOW_WIDTH * fieldY + fieldX, value.c_str() + start, fieldWidth, MAIN_MENU_WINDOW_WIDTH, _colorTable[992]);
+        if ((frame / 8) % 2 == 0) {
+            int cursorX = fieldX + fontGetStringWidth(value.c_str() + start);
+            fontDrawText(gMainMenuWindowBuffer + MAIN_MENU_WINDOW_WIDTH * fieldY + cursorX, "_", cursorWidth, MAIN_MENU_WINDOW_WIDTH, _colorTable[992]);
+        }
+        frame++;
+        windowRefresh(gMainMenuWindow);
+
+        renderPresent();
+        sharedFpsLimiter.throttle();
+    }
+    endTextInput();
     fontSetCurrent(oldFont);
 
-    // Trailing blank the editor's input adds.
-    size_t length = strlen(text);
-    while (length > 0 && text[length - 1] == ' ') {
-        text[--length] = '\0';
+    bool ok = rc == 0;
+    if (ok) {
+        // Without trailing blanks.
+        while (!value.empty() && value.back() == ' ') {
+            value.pop_back();
+        }
+        strcpy(text, value.c_str());
     }
 
     return ok;

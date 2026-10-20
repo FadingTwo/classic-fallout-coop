@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <string>
 #include <system_error>
@@ -22,7 +23,10 @@
 #include "config.h"
 #include "coop.h"
 #include "coop_compat.h"
+#include "coop_http.h"
 #include "coop_setup_font.h"
+#include "coop_update.h"
+#include "coop_zip.h"
 #include "game_config.h"
 #include "platform_compat.h"
 
@@ -397,6 +401,291 @@ static void setup_save_screenshot(SetupScreen* screen, const char* path)
     }
 }
 
+// -----------------------------------------------------------------------------
+// Fallout: Sonora: downloaded from its makers' release and unpacked here
+
+// The release (its makers' GitHub; free, not for sale). FALLOUT_SONORA_URL
+// and FALLOUT_SONORA_SHA256 replace them in tests.
+#define SONORA_URL "https://github.com/cambragol/Fallout-Sonora-English/releases/download/1.16.4/Fallout_Sonora_1.16.4E.zip"
+#define SONORA_SHA256 "4a96b3326b62c6a908b80d479a5eb598d3f7bc97c14ced3621e92945615b8dfc"
+#define SONORA_SIZE_TEXT "1.7 GB"
+#define SONORA_FOLDER "Fallout_Sonora_1_16_E/"
+#define SONORA_DOWNLOAD "sonora-download.zip"
+
+// What a background job (download, check, unpack) has done so far.
+typedef struct SonoraJob {
+    std::atomic<int> stage; // 0 idle, 1 downloading, 2 checking, 3 unpacking, 4 done, 5 failed
+    std::atomic<unsigned long long> done;
+    std::atomic<unsigned long long> total;
+    std::atomic<bool> cancel;
+    std::string error;
+} SonoraJob;
+
+static bool sonora_progress(void* data, unsigned long long done, unsigned long long total)
+{
+    SonoraJob* job = (SonoraJob*)data;
+    job->done = done;
+    job->total = total;
+    return !job->cancel;
+}
+
+// The game's files: its archives and loose data (not F.I.S.S.I.O.N.'s
+// programs, nor macOS' extras).
+static bool sonora_wanted(const std::string& name)
+{
+    if (name.find(".DS_Store") != std::string::npos) {
+        return false;
+    }
+    return compat_stricmp(name.c_str(), "master.dat") == 0
+        || compat_stricmp(name.c_str(), "critter.dat") == 0
+        || compat_stricmp(name.c_str(), "readme.txt") == 0
+        || name.compare(0, 5, "data/") == 0;
+}
+
+static int sonora_run(void* data)
+{
+    SonoraJob* job = (SonoraJob*)data;
+    const char* url = getenv("FALLOUT_SONORA_URL") != NULL ? getenv("FALLOUT_SONORA_URL") : SONORA_URL;
+    const char* hash = getenv("FALLOUT_SONORA_SHA256") != NULL ? getenv("FALLOUT_SONORA_SHA256") : SONORA_SHA256;
+
+    job->done = 0;
+    job->total = 0;
+    job->stage = 1;
+    if (!coop_http_download(url, SONORA_DOWNLOAD, sonora_progress, job, &job->error)) {
+        job->stage = 5;
+        return 0;
+    }
+
+    job->done = 0;
+    job->stage = 2;
+    std::string got = coop_update_sha256_file(SONORA_DOWNLOAD, sonora_progress, job);
+    if (got != hash) {
+        job->error = job->cancel ? "Cancelled." : "The download is not the expected file (its check failed). Try again.";
+        remove(SONORA_DOWNLOAD);
+        job->stage = 5;
+        return 0;
+    }
+
+    job->done = 0;
+    job->stage = 3;
+    bool ok = coop_zip_extract(SONORA_DOWNLOAD, SONORA_FOLDER, ".", sonora_wanted, sonora_progress, job, &job->error);
+    remove(SONORA_DOWNLOAD);
+    job->stage = ok ? 4 : 5;
+    return 0;
+}
+
+// The install screen; true once Sonora is here.
+static bool setup_sonora_install(const char* configPath)
+{
+    if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) {
+        return false;
+    }
+
+    SetupScreen* screen = new SetupScreen();
+    screen->window = SDL_CreateWindow("Fallout: Sonora - Setup", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, SETUP_WIDTH * 3 / 2, SETUP_HEIGHT * 3 / 2, SDL_WINDOW_RESIZABLE);
+    screen->renderer = screen->window != NULL ? SDL_CreateRenderer(screen->window, -1, 0) : NULL;
+    if (screen->renderer == NULL) {
+        if (screen->window != NULL) {
+            SDL_DestroyWindow(screen->window);
+        }
+        delete screen;
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
+        return false;
+    }
+    SDL_RenderSetLogicalSize(screen->renderer, SETUP_WIDTH, SETUP_HEIGHT);
+    screen->texture = SDL_CreateTexture(screen->renderer, SDL_PIXELFORMAT_RGB888, SDL_TEXTUREACCESS_STREAMING, SETUP_WIDTH, SETUP_HEIGHT);
+
+    const char* screenshot = getenv("FALLOUT_SETUP_SCREENSHOT");
+    const char* choose = getenv("FALLOUT_SETUP_CHOOSE");
+
+    const char* entries[] = { "[ DOWNLOAD AND INSTALL ]", "[ QUIT ]" };
+    const int count = 2;
+    const int listTop = SETUP_MARGIN + 12 * SETUP_LINE;
+    int selected = 0;
+    bool result = false;
+    bool done = false;
+    int frame = 0;
+    SonoraJob job;
+    job.stage = 0;
+    job.done = 0;
+    job.total = 0;
+    job.cancel = false;
+    SDL_Thread* worker = NULL;
+    std::string message;
+
+    while (!done) {
+        int stage = job.stage;
+        bool busy = stage >= 1 && stage <= 3;
+        int confirm = -1;
+
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            switch (event.type) {
+            case SDL_QUIT:
+                if (busy) {
+                    job.cancel = true;
+                } else {
+                    done = true;
+                }
+                break;
+            case SDL_MOUSEMOTION:
+            case SDL_MOUSEBUTTONDOWN:
+                if (!busy) {
+                    int y = event.type == SDL_MOUSEMOTION ? event.motion.y : event.button.y;
+                    int line = (y - listTop) / SETUP_LINE;
+                    if (y >= listTop && line >= 0 && line < count) {
+                        selected = line;
+                        if (event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_LEFT) {
+                            confirm = line;
+                        }
+                    }
+                }
+                break;
+            case SDL_KEYDOWN:
+                switch (event.key.keysym.sym) {
+                case SDLK_UP:
+                case SDLK_DOWN:
+                    selected = 1 - selected;
+                    break;
+                case SDLK_RETURN:
+                case SDLK_KP_ENTER:
+                    confirm = selected;
+                    break;
+                case SDLK_ESCAPE:
+                    if (busy) {
+                        job.cancel = true;
+                    } else {
+                        confirm = 1;
+                    }
+                    break;
+                }
+                break;
+            }
+        }
+
+        if (frame == 1 && choose != NULL) {
+            confirm = atoi(choose);
+        }
+
+        if (confirm != -1 && !busy) {
+            if (confirm == 1) {
+                done = true;
+            } else {
+                if (worker != NULL) {
+                    SDL_WaitThread(worker, NULL);
+                }
+                message.clear();
+                job.cancel = false;
+                job.error.clear();
+                job.stage = 1;
+                worker = SDL_CreateThread(sonora_run, "sonora", &job);
+            }
+        }
+
+        if (stage == 4) {
+            if (worker != NULL) {
+                SDL_WaitThread(worker, NULL);
+                worker = NULL;
+            }
+            if (setup_write_config(configPath, fs::current_path())) {
+                message = "Fallout: Sonora is installed. Starting...";
+                result = true;
+            } else {
+                message = "Could not write fallout2.cfg here.";
+                job.stage = 5;
+            }
+            done = result;
+        } else if (stage == 5 && worker != NULL) {
+            SDL_WaitThread(worker, NULL);
+            worker = NULL;
+            message = "! " + job.error;
+            fprintf(stderr, "Fallout: Sonora setup: %s\n", job.error.c_str());
+            // (Tests choose by themselves: they stop here.)
+            if (choose != NULL) {
+                done = true;
+            }
+        }
+
+        // Draw.
+        setup_clear(screen);
+        setup_fill(screen, 0, 0, SETUP_WIDTH, SETUP_LINE + 6, SETUP_GREEN);
+        setup_text(screen, SETUP_MARGIN, 4, "VAULT-TEC FALLOUT: SONORA SETUP", 0x041A08);
+        setup_text(screen, SETUP_WIDTH - SETUP_MARGIN - (int)strlen("CO-OP v" COOP_VERSION) * COOP_SETUP_FONT_WIDTH, 4, "CO-OP v" COOP_VERSION, 0x041A08);
+
+        int y = SETUP_MARGIN + 2 * SETUP_LINE;
+        const char* about[] = {
+            "Fallout: Sonora is not installed here yet.",
+            "",
+            "A free game on the Fallout 2 engine by the Nevada",
+            "Band; English version by cambragol. It is",
+            "downloaded from their release on GitHub:",
+            "  github.com/cambragol/Fallout-Sonora-English",
+            "Version 1.16.4E, " SONORA_SIZE_TEXT " to download, as much on disk.",
+            "Its terms: free, not for sale; for players over 18.",
+            "Nothing else on this computer is changed.",
+        };
+        for (const char* line : about) {
+            setup_text(screen, SETUP_MARGIN, y, line, line == about[0] ? SETUP_GREEN : SETUP_DIM);
+            y += SETUP_LINE;
+        }
+
+        if (busy) {
+            const char* what = stage == 1 ? "DOWNLOADING" : stage == 2 ? "CHECKING" : "UNPACKING";
+            unsigned long long amount = job.done;
+            unsigned long long total = job.total;
+            char line[96];
+            if (total != 0) {
+                snprintf(line, sizeof(line), "%s  %llu / %llu MB", what, amount >> 20, total >> 20);
+            } else {
+                snprintf(line, sizeof(line), "%s  %llu MB", what, amount >> 20);
+            }
+            setup_text(screen, SETUP_MARGIN, listTop, line, SETUP_GREEN);
+            int barWidth = SETUP_WIDTH - 2 * SETUP_MARGIN;
+            setup_fill(screen, SETUP_MARGIN, listTop + SETUP_LINE, barWidth, 12, SETUP_DIM);
+            if (total != 0) {
+                setup_fill(screen, SETUP_MARGIN, listTop + SETUP_LINE, (int)(barWidth * (double)amount / (double)total), 12, SETUP_GREEN);
+            }
+        } else {
+            for (int index = 0; index < count; index++) {
+                int lineY = listTop + index * SETUP_LINE;
+                if (index == selected) {
+                    setup_fill(screen, SETUP_MARGIN - 6, lineY - 1, SETUP_WIDTH - 2 * SETUP_MARGIN + 12, SETUP_LINE - 1, SETUP_GREEN);
+                    setup_text(screen, SETUP_MARGIN, lineY, (std::string("> ") + entries[index]).c_str(), 0x041A08);
+                } else {
+                    setup_text(screen, SETUP_MARGIN, lineY, (std::string("  ") + entries[index]).c_str(), SETUP_GREEN);
+                }
+            }
+        }
+
+        if (!message.empty()) {
+            setup_text(screen, SETUP_MARGIN, SETUP_HEIGHT - SETUP_MARGIN - 3 * SETUP_LINE, message.c_str(), SETUP_GREEN, 58);
+        }
+        setup_text(screen, SETUP_MARGIN, SETUP_HEIGHT - SETUP_MARGIN - SETUP_LINE, busy ? "Esc: cancel" : "Up/Down or mouse: choose   Enter: confirm   Esc: quit", SETUP_DIM);
+        setup_present(screen);
+
+        if (frame == 0 && screenshot != NULL) {
+            setup_save_screenshot(screen, screenshot);
+        }
+        frame++;
+        SDL_Delay(16);
+    }
+
+    if (worker != NULL) {
+        job.cancel = true;
+        SDL_WaitThread(worker, NULL);
+    }
+    if (result) {
+        SDL_Delay(400);
+    }
+
+    SDL_DestroyTexture(screen->texture);
+    SDL_DestroyRenderer(screen->renderer);
+    SDL_DestroyWindow(screen->window);
+    delete screen;
+    SDL_QuitSubSystem(SDL_INIT_VIDEO);
+    return result;
+}
+
 bool coop_setup_ensure_game_data(int argc, char** argv)
 {
     // fallout2.cfg, found the way gameConfigInit() finds it.
@@ -437,6 +726,14 @@ bool coop_setup_ensure_game_data(int argc, char** argv)
 
     if (found) {
         return true;
+    }
+
+    // Started for Fallout: Sonora (the launcher's choice, in its own folder):
+    // installs it.
+    for (int index = 1; index < argc; index++) {
+        if (strcmp(argv[index], "--sonora") == 0) {
+            return setup_sonora_install(configPath);
+        }
     }
 
     // Not found: the setup screen.
