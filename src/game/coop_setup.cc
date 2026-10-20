@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <string>
 #include <system_error>
@@ -23,7 +24,9 @@
 
 #include "game/config.h"
 #include "game/coop.h"
+#include "game/coop_http.h"
 #include "game/coop_setup_font.h"
+#include "game/coop_update.h"
 #include "game/gconfig.h"
 #include "platform_compat.h"
 
@@ -461,6 +464,36 @@ static bool setup_start_fallout2(const fs::path& exe, int argc, char** argv, con
 #endif
 }
 
+#ifdef COOP_EXTRA_GAME_HEADER
+#include COOP_EXTRA_GAME_HEADER
+#endif
+
+// The game choice looks for a newer co-op version meanwhile (the server's
+// latest.txt): it offers the newest games too, and players who only use
+// the launcher would not see the multiplayer menu's UPDATE.
+typedef struct SetupUpdateCheck {
+    std::string server;
+    std::atomic<int> state; // 0 checking, 1 newer, 2 not newer or no answer
+    CoopUpdateLatest latest;
+} SetupUpdateCheck;
+
+static int setup_update_check_run(void* data)
+{
+    SetupUpdateCheck* check = (SetupUpdateCheck*)data;
+    std::string body;
+    std::string error;
+    CoopUpdateLatest latest;
+    if (coop_http_get(check->server + "/fallout-coop/latest.txt", &body, &error, 4000)
+        && coop_update_parse_latest(body, &latest)
+        && coop_update_compare_versions(latest.version, COOP_VERSION) > 0) {
+        check->latest = latest;
+        check->state = 1;
+    } else {
+        check->state = 2;
+    }
+    return 0;
+}
+
 int coop_setup_choose_game(int argc, char** argv)
 {
     // Automated tests run the game they were started as.
@@ -500,14 +533,33 @@ int coop_setup_choose_game(int argc, char** argv)
     // where its makers' installer put it).
     fs::path resurrection = base / "resurrection";
     bool resurrectionInstalled = fs::exists(resurrection / "fores.dat", error);
+    // Olympus 2207: installed by its makers' installer; this folder only
+    // remembers where (olympus.txt).
+    fs::path olympus = base / "olympus";
+    bool olympusKnown = fs::exists(olympus / "olympus.txt", error);
+
+    // The extra game of these release builds (COOP_EXTRA_GAME_HEADER): a
+    // program of its own in its folder here.
+    bool extraGame = false;
+#ifdef COOP_EXTRA_GAME_HEADER
+    fs::path extraFolder = base / COOP_EXTRA_GAME_FOLDER;
+#if defined(_WIN32) || !COOP_EXTRA_GAME_WINDOWS_ONLY
+    extraGame = true;
+#endif
+    // (Tests show it anywhere.)
+    extraGame = extraGame || getenv("FALLOUT_SETUP_EXTRA_GAME") != NULL;
+#endif
 
     // The last choice, in fallout.cfg.
     std::string configPath = (base / GAME_CONFIG_FILE_NAME).string();
     int last = 1;
+    std::string serverUrl;
     Config config;
     if (config_init(&config)) {
         config_load(&config, configPath.c_str(), false);
         config_get_value(&config, COOP_CONFIG_KEY, COOP_CONFIG_GAME_KEY, &last);
+        char* server;
+        serverUrl = config_get_string(&config, COOP_CONFIG_KEY, COOP_CONFIG_SERVER_KEY, &server) && server[0] != '\0' ? server : COOP_DEFAULT_SERVER;
         config_exit(&config);
     }
 
@@ -527,13 +579,35 @@ int coop_setup_choose_game(int argc, char** argv)
 
             const char* entries[] = { "FALLOUT", "FALLOUT 2", sonoraInstalled ? "FALLOUT: SONORA" : "FALLOUT: SONORA  (free, downloads 1.7 GB)",
                 nevadaKnown ? "FALLOUT: NEVADA" : "FALLOUT: NEVADA  (needs its installer and Fallout 2)",
-                resurrectionInstalled ? "FALLOUT 1.5: RESURRECTION" : "FALLOUT 1.5: RESURRECTION  (free, 340 MB, needs Fallout 2)", "[ QUIT ]" };
-            const int count = 6;
-            const int quitIndex = 5;
+                resurrectionInstalled ? "FALLOUT 1.5: RESURRECTION" : "FALLOUT 1.5: RESURRECTION  (free, 340 MB, needs Fallout 2)",
+                olympusKnown ? "OLYMPUS 2207" : "OLYMPUS 2207  (free, needs its installer)", "[ QUIT ]", "[ QUIT ]" };
+#ifdef COOP_EXTRA_GAME_HEADER
+            if (extraGame) {
+                entries[6] = COOP_EXTRA_GAME_CHOOSER;
+            }
+#endif
+            const int count = extraGame ? 8 : 7;
+            const int quitIndex = count - 1;
             const int listTop = SETUP_MARGIN + 5 * SETUP_LINE;
-            int selected = last >= 1 && last <= 5 ? last - 1 : 0;
+            int selected = last >= 1 && last <= quitIndex ? last - 1 : 0;
             const char* screenshot = getenv("FALLOUT_SETUP_SCREENSHOT");
             int frame = 0;
+
+            while (!serverUrl.empty() && (serverUrl.back() == '/' || serverUrl.back() == ' ')) {
+                serverUrl.pop_back();
+            }
+            // (Left to finish by itself if it's still asking when a game is
+            // chosen.)
+            SetupUpdateCheck* update = NULL;
+            SDL_Thread* updateThread = NULL;
+            if (!serverUrl.empty()) {
+                update = new SetupUpdateCheck();
+                update->server = serverUrl;
+                update->state = 0;
+                updateThread = SDL_CreateThread(setup_update_check_run, "update check", update);
+            }
+            std::string updateMessage;
+            const char* updateKey = getenv("FALLOUT_SETUP_UPDATE");
 
             while (choice == -1) {
                 int confirm = -1;
@@ -579,6 +653,14 @@ int coop_setup_choose_game(int argc, char** argv)
                         case SDLK_5:
                             confirm = 4;
                             break;
+                        case SDLK_6:
+                            confirm = 5;
+                            break;
+                        case SDLK_7:
+                            if (extraGame) {
+                                confirm = 6;
+                            }
+                            break;
                         case SDLK_RETURN:
                         case SDLK_KP_ENTER:
                             confirm = selected;
@@ -586,12 +668,38 @@ int coop_setup_choose_game(int argc, char** argv)
                         case SDLK_ESCAPE:
                             confirm = quitIndex;
                             break;
+                        case SDLK_u:
+                            confirm = -2;
+                            break;
                         }
                         break;
                     }
                 }
 
-                if (confirm != -1) {
+                // (Tests: update as soon as the check found one.)
+                if (updateKey != NULL && update != NULL && update->state == 1) {
+                    confirm = -2;
+                    updateKey = NULL;
+                }
+
+                if (confirm == -2 && update != NULL && update->state == 1) {
+                    // Update now: download, check, install, start again.
+                    setup_fill(screen, 0, SETUP_HEIGHT - SETUP_MARGIN - 3 * SETUP_LINE - 2, SETUP_WIDTH, 2 * SETUP_LINE, 0x041A08);
+                    setup_text(screen, SETUP_MARGIN, SETUP_HEIGHT - SETUP_MARGIN - 3 * SETUP_LINE, ("UPDATING TO CO-OP v" + update->latest.version + ", PLEASE WAIT...").c_str(), SETUP_GREEN);
+                    setup_present(screen);
+                    std::string error;
+                    if (coop_update_download_install(update->latest, &error)) {
+                        if (getenv("FALLOUT_UPDATE_NO_RESTART") != NULL) {
+                            fprintf(stderr, "Updated to %s.\n", update->latest.version.c_str());
+                            choice = 0;
+                            continue;
+                        }
+                        coop_update_restart();
+                    }
+                    updateMessage = "! Update failed: " + error;
+                    fprintf(stderr, "Update failed: %s\n", error.c_str());
+                    update->state = 2;
+                } else if (confirm >= 0) {
                     choice = confirm == quitIndex ? 0 : confirm + 1;
                 }
 
@@ -600,7 +708,7 @@ int coop_setup_choose_game(int argc, char** argv)
                 setup_text(screen, SETUP_MARGIN, 4, "VAULT-TEC FALLOUT SETUP TERMINAL", 0x041A08);
                 setup_text(screen, SETUP_WIDTH - SETUP_MARGIN - (int)strlen("CO-OP v" COOP_VERSION) * COOP_SETUP_FONT_WIDTH, 4, "CO-OP v" COOP_VERSION, 0x041A08);
                 setup_text(screen, SETUP_MARGIN, SETUP_MARGIN + 2 * SETUP_LINE, "Which game do you want to play?", SETUP_GREEN);
-                setup_text(screen, SETUP_MARGIN, SETUP_MARGIN + 3 * SETUP_LINE, "All play together the same way.", SETUP_DIM);
+                setup_text(screen, SETUP_MARGIN, SETUP_MARGIN + 3 * SETUP_LINE, extraGame ? "The Fallout games all play together the same way." : "All play together the same way.", SETUP_DIM);
                 for (int index = 0; index < count; index++) {
                     int y = listTop + index * SETUP_LINE;
                     if (index == selected) {
@@ -610,7 +718,13 @@ int coop_setup_choose_game(int argc, char** argv)
                         setup_text(screen, SETUP_MARGIN, y, (std::string("  ") + entries[index]).c_str(), SETUP_GREEN);
                     }
                 }
-                setup_text(screen, SETUP_MARGIN, SETUP_HEIGHT - SETUP_MARGIN - SETUP_LINE, "1-5, Up/Down or mouse: choose   Enter: start   Esc: quit", SETUP_DIM);
+                if (update != NULL && update->state == 1) {
+                    setup_text(screen, SETUP_MARGIN, SETUP_HEIGHT - SETUP_MARGIN - 3 * SETUP_LINE, ("NEW: CO-OP v" + update->latest.version + " - press U to update").c_str(), SETUP_GREEN);
+                    setup_text(screen, SETUP_MARGIN, SETUP_HEIGHT - SETUP_MARGIN - 2 * SETUP_LINE, "(it brings the newest games and fixes)", SETUP_DIM);
+                } else if (!updateMessage.empty()) {
+                    setup_text(screen, SETUP_MARGIN, SETUP_HEIGHT - SETUP_MARGIN - 3 * SETUP_LINE, updateMessage.c_str(), SETUP_GREEN, 58);
+                }
+                setup_text(screen, SETUP_MARGIN, SETUP_HEIGHT - SETUP_MARGIN - SETUP_LINE, extraGame ? "1-7, Up/Down or mouse: choose   Enter: start   Esc: quit" : "1-6, Up/Down or mouse: choose   Enter: start   Esc: quit", SETUP_DIM);
                 setup_present(screen);
 
                 if (frame == 0 && screenshot != NULL) {
@@ -618,6 +732,15 @@ int coop_setup_choose_game(int argc, char** argv)
                 }
                 frame++;
                 SDL_Delay(16);
+            }
+
+            if (updateThread != NULL) {
+                if (update->state == 0) {
+                    SDL_DetachThread(updateThread);
+                } else {
+                    SDL_WaitThread(updateThread, NULL);
+                    delete update;
+                }
             }
 
             SDL_DestroyTexture(screen->texture);
@@ -679,6 +802,27 @@ int coop_setup_choose_game(int argc, char** argv)
             return 0;
         }
     }
+
+    // Olympus 2207: Fallout 2's program finds it (or asks where it is) and
+    // plays it in its folder.
+    if (choice == 6) {
+        fs::create_directories(olympus, error);
+        if (setup_start_fallout2(fallout2, argc, argv, olympus, "--olympus")) {
+            return 0;
+        }
+    }
+
+#ifdef COOP_EXTRA_GAME_HEADER
+    // The extra game: Fallout 2's program shows its screen (PLAY, or
+    // DOWNLOAD AND INSTALL first; its screenshots) and starts its program
+    // with nothing of ours on its command line.
+    if (choice == 7 && extraGame) {
+        fs::create_directories(extraFolder, error);
+        if (setup_start_fallout2(fallout2, argc, argv, extraFolder, "--extra-game")) {
+            return 0;
+        }
+    }
+#endif
 
     return 1;
 }

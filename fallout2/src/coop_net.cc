@@ -72,14 +72,15 @@ namespace fallout {
 #define COOP_NET_GAME_SONORA 3
 #define COOP_NET_GAME_NEVADA 4
 #define COOP_NET_GAME_RESURRECTION 5
+#define COOP_NET_GAME_OLYMPUS 6
 
-// Which game we say we are: this one (Fallout: Sonora, Fallout: Nevada or
-// Fallout 1.5: Resurrection when its data says so), or ([coop]test_game=1
-// to 5, for tests) another.
+// Which game we say we are: this one (Fallout: Sonora, Fallout: Nevada,
+// Fallout 1.5: Resurrection or Olympus 2207 when its data says so), or
+// ([coop]test_game=1 to 6, for tests) another.
 static int coop_net_game_id()
 {
     int value;
-    if (config_get_value(&game_config, COOP_CONFIG_KEY, "test_game", &value) && value >= 1 && value <= 5) {
+    if (config_get_value(&game_config, COOP_CONFIG_KEY, "test_game", &value) && value >= 1 && value <= 6) {
         return value;
     }
     char* version;
@@ -94,6 +95,10 @@ static int coop_net_game_id()
     if (configGetString(&gSfallConfig, SFALL_CONFIG_MISC_KEY, SFALL_CONFIG_VERSION_STRING, &version)
         && compat_strnicmp(version, "FO1.5:RESURRECTION", 18) == 0) {
         return COOP_NET_GAME_RESURRECTION;
+    }
+    if (configGetString(&gSfallConfig, SFALL_CONFIG_MISC_KEY, SFALL_CONFIG_VERSION_STRING, &version)
+        && compat_strnicmp(version, "Olympus 2207", 12) == 0) {
+        return COOP_NET_GAME_OLYMPUS;
     }
     return COOP_NET_GAME;
 }
@@ -134,13 +139,13 @@ static bool coop_net_version_older(const std::string& a, const std::string& b)
 const char* coop_net_game_name()
 {
     int game = coop_net_game_id();
-    return game == 1 ? "fallout1" : game == COOP_NET_GAME_SONORA ? "sonora" : game == COOP_NET_GAME_NEVADA ? "nevada" : game == COOP_NET_GAME_RESURRECTION ? "resurrection" : "fallout2";
+    return game == 1 ? "fallout1" : game == COOP_NET_GAME_SONORA ? "sonora" : game == COOP_NET_GAME_NEVADA ? "nevada" : game == COOP_NET_GAME_RESURRECTION ? "resurrection" : game == COOP_NET_GAME_OLYMPUS ? "olympus" : "fallout2";
 }
 
 const char* coop_net_game_title()
 {
     int game = coop_net_game_id();
-    return game == 1 ? "Fallout 1" : game == COOP_NET_GAME_SONORA ? "Fallout: Sonora" : game == COOP_NET_GAME_NEVADA ? "Fallout: Nevada" : game == COOP_NET_GAME_RESURRECTION ? "Fallout 1.5: Resurrection" : "Fallout 2";
+    return game == 1 ? "Fallout 1" : game == COOP_NET_GAME_SONORA ? "Fallout: Sonora" : game == COOP_NET_GAME_NEVADA ? "Fallout: Nevada" : game == COOP_NET_GAME_RESURRECTION ? "Fallout 1.5: Resurrection" : game == COOP_NET_GAME_OLYMPUS ? "Olympus 2207" : "Fallout 2";
 }
 
 // Messages: u32 length (of type + payload), u8 type, payload.

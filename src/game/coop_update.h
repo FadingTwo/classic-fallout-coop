@@ -25,6 +25,25 @@ bool coop_update_install(const std::string& packagePath, std::string* error);
 // Starts the game again with the same command line and exits.
 [[noreturn]] void coop_update_restart();
 
+// What the co-op server's latest.txt (key=value lines) offers this system.
+typedef struct CoopUpdateLatest {
+    std::string version;
+    std::string notes;
+    std::string url;
+    std::string sha256;
+} CoopUpdateLatest;
+
+// Reads latest.txt: false when it has no version.
+bool coop_update_parse_latest(const std::string& body, CoopUpdateLatest* latest);
+
+// -1, 0 or 1 as version `a` is older than, the same as or newer than `b`
+// ("1.18.1" style).
+int coop_update_compare_versions(const std::string& a, const std::string& b);
+
+// Downloads the package, checks it against its SHA-256 (when given), saves
+// it next to the game and installs it (then call coop_update_restart()).
+bool coop_update_download_install(const CoopUpdateLatest& latest, std::string* error);
+
 } // namespace fallout
 
 #endif /* FALLOUT_GAME_COOP_UPDATE_H_ */

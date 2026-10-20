@@ -515,20 +515,7 @@ static std::string coop_menu_relay()
 // "1.10" > "1.9".
 static int coop_menu_compare_versions(const std::string& a, const std::string& b)
 {
-    size_t i = 0;
-    size_t j = 0;
-    while (i < a.size() || j < b.size()) {
-        long x = strtol(a.c_str() + i, NULL, 10);
-        long y = strtol(b.c_str() + j, NULL, 10);
-        if (x != y) {
-            return x < y ? -1 : 1;
-        }
-        i = a.find('.', i);
-        j = b.find('.', j);
-        i = i == std::string::npos ? a.size() : i + 1;
-        j = j == std::string::npos ? b.size() : j + 1;
-    }
-    return 0;
+    return coop_update_compare_versions(a, b);
 }
 
 // The file name at the end of a URL.
@@ -590,62 +577,12 @@ static int coop_menu_update(bool ask)
         return -1;
     }
 
-#if defined(_WIN32)
-    const char* platformKey = "url_windows";
-    const char* hashKey = "sha256_windows";
-#elif defined(__APPLE__)
-    const char* platformKey = "url_macos";
-    const char* hashKey = "sha256_macos";
-#else
-    const char* platformKey = "url_linux";
-    const char* hashKey = "sha256_linux";
-#endif
-
-    std::string version;
-    std::string notes;
-    std::string url;
-    std::string anyUrl;
-    std::string hash;
-    std::string anyHash;
-    size_t start = 0;
-    while (start < body.size()) {
-        size_t end = body.find('\n', start);
-        if (end == std::string::npos) {
-            end = body.size();
-        }
-        std::string line = body.substr(start, end - start);
-        start = end + 1;
-
-        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) {
-            line.pop_back();
-        }
-
-        size_t equals = line.find('=');
-        if (equals == std::string::npos) {
-            continue;
-        }
-
-        std::string key = line.substr(0, equals);
-        std::string value = line.substr(equals + 1);
-        if (key == "version") {
-            version = value;
-        } else if (key == "notes") {
-            notes = value;
-        } else if (key == platformKey) {
-            url = value;
-        } else if (key == "url") {
-            anyUrl = value;
-        } else if (key == hashKey) {
-            hash = value;
-        } else if (key == "sha256") {
-            anyHash = value;
-        }
-    }
-
-    if (url.empty()) {
-        url = anyUrl;
-        hash = anyHash;
-    }
+    CoopUpdateLatest latest;
+    coop_update_parse_latest(body, &latest);
+    std::string version = latest.version;
+    std::string notes = latest.notes;
+    std::string url = latest.url;
+    std::string hash = latest.sha256;
 
     if (version.empty()) {
         const char* lines[] = { "The update server's answer", "was not understood." };

@@ -38,7 +38,8 @@ Total conversions made by other teams on the Fallout 2 engine:
   installer; the launcher finds it)
 - **Fallout 1.5: Resurrection**: playable since 1.19 (the launcher
   downloads it, or finds its installer's copy)
-- **Olympus 2207** (later)
+- **Olympus 2207**: playable since 1.20 (installed with its makers'
+  installer; the launcher finds it)
 
 Others rely more on sfall, an extension of the original Fallout 2 engine
 that Fallout 2 CE only partly supports, so they come one at a time. You

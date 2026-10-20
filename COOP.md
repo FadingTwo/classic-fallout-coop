@@ -45,7 +45,8 @@ in `fallout2.cfg`. It plays like Fallout 1 co-op, with these differences:
 - Your companions (Sulik, Vic...) follow player 1's orders as usual.
 
 Everyone plays the same game (Fallout 1, Fallout 2, Fallout: Sonora,
-Fallout: Nevada or Fallout 1.5: Resurrection); since 1.13.3 its
+Fallout: Nevada, Fallout 1.5: Resurrection or Olympus 2207); since 1.13.3
+its
 release, language or patches may differ (the game runs on player 1's
 computer; those players join as a new character). Fallout 2 co-op is
 new: please report what breaks (MULTIPLAYER, REPORT BUG).
@@ -103,6 +104,22 @@ this mod only plays it.
 
 Resurrection is a game of its own for co-op: Resurrection players only
 find and join Resurrection games.
+
+## Olympus 2207
+
+[Olympus 2207](https://www.moddb.com/mods/olympus-2207) is a free game on
+the Fallout 2 engine with a world, story and rules of its own, made by a
+Russian team and translated into English. It brings its own MASTER.DAT and
+CRITTER.DAT: no Fallout 2 files are needed. Install Olympus 2207 1.2
+(English) with its makers' own installer into a folder of its own, then
+pick OLYMPUS 2207 in the launcher. It looks for it next to the Fallout 2
+folders it finds and in the usual folders for games, or asks where it is
+once (the folder with OLYMPUS.CFG), and remembers it. Nothing of Olympus is
+copied or included here. All credit for the game goes to its makers; this
+mod only plays it.
+
+Olympus is a game of its own for co-op: Olympus players only find and join
+Olympus games.
 
 ## Rules
 

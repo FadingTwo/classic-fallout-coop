@@ -19,6 +19,7 @@
 #include <SDL.h>
 
 #include "game/amutex.h"
+#include "game/coop_http.h"
 #include "game/gconfig.h"
 #include "plib/gnw/debug.h"
 
@@ -358,6 +359,131 @@ bool coop_update_install(const std::string& packagePath, std::string* error)
     }
     exit(0);
 #endif
+}
+
+bool coop_update_parse_latest(const std::string& body, CoopUpdateLatest* latest)
+{
+#if defined(_WIN32)
+    const char* platformKey = "url_windows";
+    const char* hashKey = "sha256_windows";
+#elif defined(__APPLE__)
+    const char* platformKey = "url_macos";
+    const char* hashKey = "sha256_macos";
+#else
+    const char* platformKey = "url_linux";
+    const char* hashKey = "sha256_linux";
+#endif
+
+    std::string anyUrl;
+    std::string anyHash;
+    *latest = CoopUpdateLatest();
+    size_t start = 0;
+    while (start < body.size()) {
+        size_t end = body.find('\n', start);
+        if (end == std::string::npos) {
+            end = body.size();
+        }
+        std::string line = body.substr(start, end - start);
+        start = end + 1;
+
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) {
+            line.pop_back();
+        }
+
+        size_t equals = line.find('=');
+        if (equals == std::string::npos) {
+            continue;
+        }
+
+        std::string key = line.substr(0, equals);
+        std::string value = line.substr(equals + 1);
+        if (key == "version") {
+            latest->version = value;
+        } else if (key == "notes") {
+            latest->notes = value;
+        } else if (key == platformKey) {
+            latest->url = value;
+        } else if (key == "url") {
+            anyUrl = value;
+        } else if (key == hashKey) {
+            latest->sha256 = value;
+        } else if (key == "sha256") {
+            anyHash = value;
+        }
+    }
+
+    if (latest->url.empty()) {
+        latest->url = anyUrl;
+        latest->sha256 = anyHash;
+    }
+
+    return !latest->version.empty();
+}
+
+int coop_update_compare_versions(const std::string& a, const std::string& b)
+{
+    size_t i = 0;
+    size_t j = 0;
+    while (i < a.size() || j < b.size()) {
+        long x = strtol(a.c_str() + i, NULL, 10);
+        long y = strtol(b.c_str() + j, NULL, 10);
+        if (x != y) {
+            return x < y ? -1 : 1;
+        }
+        i = a.find('.', i);
+        j = b.find('.', j);
+        i = i == std::string::npos ? a.size() : i + 1;
+        j = j == std::string::npos ? b.size() : j + 1;
+    }
+    return 0;
+}
+
+bool coop_update_download_install(const CoopUpdateLatest& latest, std::string* error)
+{
+    if (latest.url.empty()) {
+        *error = "There is no download for this system yet.";
+        return false;
+    }
+
+    std::string body;
+    if (!coop_http_get(latest.url, &body, error, 60000)) {
+        return false;
+    }
+
+    // A damaged download is never installed.
+    if (!latest.sha256.empty() && coop_update_sha256(body) != latest.sha256) {
+        *error = "The download is damaged (checksum differs). Try again.";
+        return false;
+    }
+
+    // Next to the game, named as at the end of its URL.
+    size_t slash = latest.url.rfind('/');
+    std::string name = slash == std::string::npos ? latest.url : latest.url.substr(slash + 1);
+    size_t query = name.find('?');
+    if (query != std::string::npos) {
+        name = name.substr(0, query);
+    }
+    if (name.empty()) {
+        name = "classic-fallout-coop-update.zip";
+    }
+    std::string path = name;
+    char* basePath = SDL_GetBasePath();
+    if (basePath != NULL) {
+        path = std::string(basePath) + name;
+        SDL_free(basePath);
+    }
+
+    FILE* stream = fopen(path.c_str(), "wb");
+    bool written = stream != NULL && fwrite(body.data(), 1, body.size(), stream) == body.size();
+    if (stream != NULL) {
+        fclose(stream);
+    }
+    if (!written) {
+        *error = "Could not save the download next to the game.";
+        return false;
+    }
+
+    return coop_update_install(path, error);
 }
 
 } // namespace fallout

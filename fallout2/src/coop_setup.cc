@@ -447,6 +447,14 @@ typedef struct ModDownload {
     int aboutCount;
     bool (*unpack)(ModJob* job);
     bool (*finish)(const char* configPath, std::string* error);
+    // When set: where the release is and its SHA-256 now (instead of url
+    // and sha256), e.g. from a latest.json next to it.
+    bool (*resolve)(ModJob* job, std::string* url, std::string* sha256);
+    // When set and it says so: here already (the screen offers PLAY).
+    bool (*installed)();
+    // When set: a folder of screenshots (.bmp) next to this program, which
+    // the screen offers to look at.
+    const char* screensDir;
 } ModDownload;
 
 // The game's files: its archives and loose data (not F.I.S.S.I.O.N.'s
@@ -466,8 +474,19 @@ static int mod_run(void* data)
 {
     ModJob* job = (ModJob*)data;
     const ModDownload* mod = job->mod;
-    const char* url = getenv(mod->urlEnv) != NULL ? getenv(mod->urlEnv) : mod->url;
-    const char* hash = getenv(mod->sha256Env) != NULL ? getenv(mod->sha256Env) : mod->sha256;
+    std::string resolvedUrl = getenv(mod->urlEnv) != NULL ? getenv(mod->urlEnv) : mod->url;
+    std::string resolvedHash = getenv(mod->sha256Env) != NULL ? getenv(mod->sha256Env) : mod->sha256;
+    if (mod->resolve != NULL && getenv(mod->sha256Env) == NULL && !mod->resolve(job, &resolvedUrl, &resolvedHash)) {
+        job->stage = 5;
+        return 0;
+    }
+    const char* url = resolvedUrl.c_str();
+    const char* hash = resolvedHash.c_str();
+    if (hash[0] == '\0') {
+        job->error = std::string(mod->name) + " can't be downloaded yet.";
+        job->stage = 5;
+        return 0;
+    }
 
     job->done = 0;
     job->total = 0;
@@ -533,10 +552,128 @@ static const ModDownload kSonora = {
     (int)(sizeof(kSonoraAbout) / sizeof(kSonoraAbout[0])),
     sonora_unpack,
     sonora_finish,
+    NULL,
+    NULL,
+    NULL,
 };
 
+// The screenshots in `dir` next to this program (sorted by name).
+static std::vector<std::string> setup_screen_files(const char* dir)
+{
+    std::vector<std::string> files;
+    if (dir == NULL) {
+        return files;
+    }
+    char* basePath = SDL_GetBasePath();
+    fs::path folder = fs::u8path(basePath != NULL ? basePath : "") / dir;
+    if (basePath != NULL) {
+        SDL_free(basePath);
+    }
+    std::error_code error;
+    for (fs::directory_iterator it(folder, error); !error && it != fs::directory_iterator(); it.increment(error)) {
+        std::string name = it->path().filename().string();
+        if (name.size() > 4 && compat_stricmp(name.c_str() + name.size() - 4, ".bmp") == 0) {
+            files.push_back(it->path().string());
+        }
+    }
+    std::sort(files.begin(), files.end());
+    return files;
+}
+
+// Looks at the screenshots, one at a time (Left/Right or a click: the next;
+// Esc: back). `screenshot` (tests): saves the first and returns.
+static void setup_view_screens(SetupScreen* screen, const ModDownload* mod, const std::vector<std::string>& files, const char* screenshot)
+{
+    int index = 0;
+    int shown = -1;
+    SDL_Surface* image = NULL;
+    bool done = false;
+    while (!done) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            switch (event.type) {
+            case SDL_QUIT:
+                done = true;
+                break;
+            case SDL_MOUSEBUTTONDOWN:
+                index = event.button.button == SDL_BUTTON_RIGHT ? index + (int)files.size() - 1 : index + 1;
+                break;
+            case SDL_KEYDOWN:
+                switch (event.key.keysym.sym) {
+                case SDLK_RIGHT:
+                case SDLK_SPACE:
+                case SDLK_RETURN:
+                case SDLK_KP_ENTER:
+                    index++;
+                    break;
+                case SDLK_LEFT:
+                    index += (int)files.size() - 1;
+                    break;
+                case SDLK_ESCAPE:
+                case SDLK_BACKSPACE:
+                    done = true;
+                    break;
+                }
+                break;
+            }
+        }
+        index %= (int)files.size();
+
+        if (index != shown) {
+            shown = index;
+            if (image != NULL) {
+                SDL_FreeSurface(image);
+            }
+            SDL_Surface* loaded = SDL_LoadBMP(files[index].c_str());
+            image = loaded != NULL ? SDL_ConvertSurfaceFormat(loaded, SDL_PIXELFORMAT_RGB888, 0) : NULL;
+            if (loaded != NULL) {
+                SDL_FreeSurface(loaded);
+            }
+        }
+
+        setup_clear(screen);
+        setup_fill(screen, 0, 0, SETUP_WIDTH, SETUP_LINE + 6, SETUP_GREEN);
+        setup_text(screen, SETUP_MARGIN, 4, mod->header, 0x041A08);
+        // The picture under the title bar, as large as fits.
+        int top = SETUP_LINE + 10;
+        int areaHeight = SETUP_HEIGHT - top - 2 * SETUP_LINE - 8;
+        if (image != NULL && image->w > 0 && image->h > 0) {
+            int width = SETUP_WIDTH;
+            int height = image->h * width / image->w;
+            if (height > areaHeight) {
+                height = areaHeight;
+                width = image->w * height / image->h;
+            }
+            int left = (SETUP_WIDTH - width) / 2;
+            SDL_LockSurface(image);
+            for (int y = 0; y < height; y++) {
+                const unsigned int* row = (const unsigned int*)((const unsigned char*)image->pixels + (size_t)(y * image->h / height) * image->pitch);
+                unsigned int* out = &(screen->pixels[(top + y) * SETUP_WIDTH + left]);
+                for (int x = 0; x < width; x++) {
+                    out[x] = row[x * image->w / width] & 0xFFFFFF;
+                }
+            }
+            SDL_UnlockSurface(image);
+        }
+        char line[96];
+        snprintf(line, sizeof(line), "SCREENSHOT %d / %d", index + 1, (int)files.size());
+        setup_text(screen, SETUP_MARGIN, SETUP_HEIGHT - SETUP_MARGIN - 2 * SETUP_LINE + 6, line, SETUP_GREEN);
+        setup_text(screen, SETUP_MARGIN, SETUP_HEIGHT - SETUP_MARGIN - SETUP_LINE + 4, "Left/Right or click: next   Esc: back", SETUP_DIM);
+        setup_present(screen);
+
+        if (screenshot != NULL) {
+            setup_save_screenshot(screen, screenshot);
+            done = true;
+        }
+        SDL_Delay(16);
+    }
+    if (image != NULL) {
+        SDL_FreeSurface(image);
+    }
+}
+
 // The install screen of a story mod the launcher downloads; true once it is
-// here.
+// here (or, when it was here already, PLAY was chosen).
 static bool setup_mod_install(const ModDownload* mod, const char* configPath)
 {
     if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) {
@@ -561,9 +698,19 @@ static bool setup_mod_install(const ModDownload* mod, const char* configPath)
     const char* screenshot = getenv("FALLOUT_SETUP_SCREENSHOT");
     const char* choose = getenv("FALLOUT_SETUP_CHOOSE");
 
-    const char* entries[] = { "[ DOWNLOAD AND INSTALL ]", "[ QUIT ]" };
-    const int count = 2;
-    const int listTop = SETUP_MARGIN + 12 * SETUP_LINE;
+    bool installed = mod->installed != NULL && mod->installed();
+    std::vector<std::string> screens = setup_screen_files(mod->screensDir);
+    std::vector<std::string> entries = { installed ? "[ PLAY ]" : "[ DOWNLOAD AND INSTALL ]" };
+    int screensIndex = -1;
+    if (!screens.empty()) {
+        screensIndex = (int)entries.size();
+        entries.push_back("[ SCREENSHOTS ]");
+    }
+    entries.push_back("[ QUIT ]");
+    const int count = (int)entries.size();
+    const int quitIndex = count - 1;
+    // (Below its text, with a line between.)
+    const int listTop = SETUP_MARGIN + std::max(12, 3 + mod->aboutCount) * SETUP_LINE;
     int selected = 0;
     bool result = false;
     bool done = false;
@@ -608,8 +755,10 @@ static bool setup_mod_install(const ModDownload* mod, const char* configPath)
             case SDL_KEYDOWN:
                 switch (event.key.keysym.sym) {
                 case SDLK_UP:
+                    selected = (selected + count - 1) % count;
+                    break;
                 case SDLK_DOWN:
-                    selected = 1 - selected;
+                    selected = (selected + 1) % count;
                     break;
                 case SDLK_RETURN:
                 case SDLK_KP_ENTER:
@@ -619,7 +768,7 @@ static bool setup_mod_install(const ModDownload* mod, const char* configPath)
                     if (busy) {
                         job.cancel = true;
                     } else {
-                        confirm = 1;
+                        confirm = quitIndex;
                     }
                     break;
                 }
@@ -631,8 +780,18 @@ static bool setup_mod_install(const ModDownload* mod, const char* configPath)
             confirm = atoi(choose);
         }
 
+        // (Tests: the screenshots, saved, then on.)
+        if (frame == 1 && screensIndex != -1 && getenv("FALLOUT_SETUP_SCREENS_SCREENSHOT") != NULL) {
+            setup_view_screens(screen, mod, screens, getenv("FALLOUT_SETUP_SCREENS_SCREENSHOT"));
+        }
+
         if (confirm != -1 && !busy) {
-            if (confirm == 1) {
+            if (confirm == quitIndex) {
+                done = true;
+            } else if (confirm == screensIndex) {
+                setup_view_screens(screen, mod, screens, NULL);
+            } else if (installed) {
+                result = true;
                 done = true;
             } else {
                 if (worker != NULL) {
@@ -866,11 +1025,26 @@ static bool setup_nevada_point_at_fallout2(const std::vector<SetupInstall>& fall
     return ok;
 }
 
-// Where Nevada is: remembered in nevada.txt here, else picked on a screen.
-// Then the game runs in its folder. False: quit.
-static bool setup_nevada_enter()
+// A story mod its makers' installer puts somewhere: how it's recognized,
+// where it may be, and what its screen says.
+typedef struct InstalledMod {
+    const char* name; // "Fallout: Nevada"
+    const char* header; // the screen's title bar
+    const char* rememberFile; // where its folder is remembered (here)
+    bool (*isMod)(const fs::path& dir);
+    std::vector<SetupInstall> (*find)(const std::vector<SetupInstall>& fallout2s);
+    const char* const* about; // after "Where is ... installed?"
+    int aboutCount;
+    const char* notThere; // a folder without it
+    // Its settings must find Fallout 2's master.dat and critter.dat.
+    bool needsFallout2;
+} InstalledMod;
+
+// Where the mod is: remembered here, else picked on a screen. Then the game
+// runs in its folder. False: quit.
+static bool setup_installed_mod_enter(const InstalledMod* mod)
 {
-    const char* rememberFile = "nevada.txt";
+    const char* rememberFile = mod->rememberFile;
     std::string remembered;
     FILE* stream = fopen(rememberFile, "rt");
     if (stream != NULL) {
@@ -885,15 +1059,16 @@ static bool setup_nevada_enter()
     std::vector<SetupInstall> fallout2s = setup_find_installs();
     std::error_code error;
     fs::path chosen;
-    if (!remembered.empty() && setup_is_nevada(fs::u8path(remembered))) {
+    if (!remembered.empty() && mod->isMod(fs::u8path(remembered))) {
         chosen = fs::u8path(remembered);
     } else {
-        std::vector<SetupInstall> nevadas = setup_find_nevadas(fallout2s);
+        std::vector<SetupInstall> nevadas = mod->find(fallout2s);
         if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) {
             return false;
         }
         SetupScreen* screen = new SetupScreen();
-        screen->window = SDL_CreateWindow("Fallout: Nevada - Setup", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, SETUP_WIDTH * 3 / 2, SETUP_HEIGHT * 3 / 2, SDL_WINDOW_RESIZABLE);
+        std::string windowTitle = std::string(mod->name) + " - Setup";
+        screen->window = SDL_CreateWindow(windowTitle.c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, SETUP_WIDTH * 3 / 2, SETUP_HEIGHT * 3 / 2, SDL_WINDOW_RESIZABLE);
         screen->renderer = screen->window != NULL ? SDL_CreateRenderer(screen->window, -1, 0) : NULL;
         if (screen->renderer == NULL) {
             if (screen->window != NULL) {
@@ -1003,8 +1178,8 @@ static bool setup_nevada_enter()
                     }
                     if (path.empty() || !fs::is_directory(fs::u8path(path), error)) {
                         message = "! That folder does not exist.";
-                    } else if (!setup_is_nevada(fs::u8path(path))) {
-                        message = "! No Fallout: Nevada in that folder (PATCH000.DAT).";
+                    } else if (!mod->isMod(fs::u8path(path))) {
+                        message = mod->notThere;
                     } else {
                         chosen = fs::u8path(path);
                         done = true;
@@ -1014,18 +1189,14 @@ static bool setup_nevada_enter()
 
             setup_clear(screen);
             setup_fill(screen, 0, 0, SETUP_WIDTH, SETUP_LINE + 6, SETUP_GREEN);
-            setup_text(screen, SETUP_MARGIN, 4, "VAULT-TEC FALLOUT: NEVADA SETUP", 0x041A08);
+            setup_text(screen, SETUP_MARGIN, 4, mod->header, 0x041A08);
             setup_text(screen, SETUP_WIDTH - SETUP_MARGIN - (int)strlen("CO-OP v" COOP_VERSION) * COOP_SETUP_FONT_WIDTH, 4, "CO-OP v" COOP_VERSION, 0x041A08);
             int y = SETUP_MARGIN + 2 * SETUP_LINE;
-            const char* about[] = {
-                nevadas.empty() ? "Fallout: Nevada was not found." : "Where is Fallout: Nevada installed?",
-                "A free game on the Fallout 2 engine by the Nevada Band.",
-                "Install it first with its makers' installer (it needs",
-                "Fallout 2), from: fnevada.bgforge.net",
-                "Then pick its folder here (the one with PATCH000.DAT).",
-            };
-            for (const char* line : about) {
-                setup_text(screen, SETUP_MARGIN, y, line, line == about[0] ? SETUP_GREEN : SETUP_DIM);
+            std::string first = nevadas.empty() ? std::string(mod->name) + " was not found." : std::string("Where is ") + mod->name + " installed?";
+            setup_text(screen, SETUP_MARGIN, y, first.c_str(), SETUP_GREEN);
+            y += SETUP_LINE;
+            for (int index = 0; index < mod->aboutCount; index++) {
+                setup_text(screen, SETUP_MARGIN, y, mod->about[index], SETUP_DIM);
                 y += SETUP_LINE;
             }
 
@@ -1090,11 +1261,155 @@ static bool setup_nevada_enter()
     if (error) {
         return false;
     }
-    if (!setup_nevada_point_at_fallout2(fallout2s)) {
-        fprintf(stderr, "Fallout: Nevada setup: Fallout 2 (master.dat, critter.dat) was not found.\n");
+    if (mod->needsFallout2 && !setup_nevada_point_at_fallout2(fallout2s)) {
+        fprintf(stderr, "%s setup: Fallout 2 (master.dat, critter.dat) was not found.\n", mod->name);
     }
     return true;
 }
+
+static const char* const kNevadaAbout[] = {
+    "A free game on the Fallout 2 engine by the Nevada Band.",
+    "Install it first with its makers' installer (it needs",
+    "Fallout 2), from: fnevada.bgforge.net",
+    "Then pick its folder here (the one with PATCH000.DAT).",
+};
+
+static const InstalledMod kNevada = {
+    "Fallout: Nevada",
+    "VAULT-TEC FALLOUT: NEVADA SETUP",
+    "nevada.txt",
+    setup_is_nevada,
+    setup_find_nevadas,
+    kNevadaAbout,
+    (int)(sizeof(kNevadaAbout) / sizeof(kNevadaAbout[0])),
+    "! No Fallout: Nevada in that folder (PATCH000.DAT).",
+    true,
+};
+
+// -----------------------------------------------------------------------------
+// Olympus 2207: installed by its makers' installer into a folder of its own
+// (its own master.dat and critter.dat: no Fallout 2 files needed), played
+// there
+
+// Whether `dir`'s ddraw.ini (sfall's settings) has `text` (lower case).
+static bool setup_ddraw_has(const fs::path& dir, const char* text)
+{
+    fs::path ini;
+    if (!setup_find(dir, "ddraw.ini", &ini)) {
+        return false;
+    }
+    FILE* stream = compat_fopen(ini.string().c_str(), "rb");
+    if (stream == NULL) {
+        return false;
+    }
+    std::string content;
+    char buffer[4096];
+    size_t read;
+    while ((read = fread(buffer, 1, sizeof(buffer), stream)) > 0) {
+        content.append(buffer, read);
+    }
+    fclose(stream);
+    for (char& ch : content) {
+        ch = (char)tolower((unsigned char)ch);
+    }
+    return content.find(text) != std::string::npos;
+}
+
+static bool setup_is_olympus(const fs::path& dir)
+{
+    fs::path config;
+    fs::path master;
+    return setup_find(dir, "olympus.cfg", &config) && setup_find(dir, "master.dat", &master)
+        && setup_ddraw_has(dir, "versionstring=olympus 2207");
+}
+
+// Olympus folders next to the Fallout 2 installations found and in the
+// usual places for games (one level down), and in FALLOUT_SETUP_SEARCH.
+static std::vector<SetupInstall> setup_find_olympus(const std::vector<SetupInstall>& fallout2s)
+{
+    std::vector<fs::path> roots;
+    for (const SetupInstall& install : fallout2s) {
+        roots.push_back(fs::u8path(install.path).parent_path());
+    }
+#ifdef _WIN32
+    const char* fixed[] = { "C:\\Games", "C:\\GOG Games", "C:\\Program Files (x86)", "C:\\Program Files", "D:\\Games" };
+    for (const char* root : fixed) {
+        roots.push_back(fs::u8path(root));
+    }
+    const char* profile = getenv("USERPROFILE");
+    if (profile != NULL) {
+        roots.push_back(fs::u8path(profile) / "Games");
+        roots.push_back(fs::u8path(profile) / "Desktop");
+    }
+#else
+    const char* home = getenv("HOME");
+    if (home != NULL) {
+        roots.push_back(fs::u8path(home) / "Games");
+        roots.push_back(fs::u8path(home));
+    }
+#endif
+    const char* extra = getenv("FALLOUT_SETUP_SEARCH");
+    if (extra != NULL) {
+        std::string list = extra;
+        size_t start = 0;
+        while (start <= list.size()) {
+            size_t end = list.find(';', start);
+            if (end == std::string::npos) {
+                end = list.size();
+            }
+            if (end > start) {
+                roots.push_back(fs::u8path(list.substr(start, end - start)));
+            }
+            start = end + 1;
+        }
+    }
+
+    std::vector<SetupInstall> found;
+    std::error_code error;
+    for (const fs::path& root : roots) {
+        std::vector<fs::path> dirs = { root };
+        std::error_code inner;
+        for (fs::directory_iterator it(root, inner); !inner && it != fs::directory_iterator(); it.increment(inner)) {
+            if (it->is_directory(inner)) {
+                dirs.push_back(it->path());
+            }
+        }
+        for (const fs::path& dir : dirs) {
+            if (setup_is_olympus(dir)) {
+                bool known = false;
+                for (const SetupInstall& other : found) {
+                    known = known || other.path == dir.string();
+                }
+                if (!known) {
+                    SetupInstall install;
+                    install.path = dir.string();
+                    found.push_back(install);
+                }
+            }
+        }
+    }
+    return found;
+}
+
+static const char* const kOlympusAbout[] = {
+    "A free game on the Fallout 2 engine by a Russian team,",
+    "in English. Install it first with its makers'",
+    "installer (version 1.2), into a folder of its own:",
+    "see Olympus 2207 on ModDB. Then pick its folder here",
+    "(the one with OLYMPUS.CFG).",
+};
+
+static const InstalledMod kOlympus = {
+    "Olympus 2207",
+    "VAULT-TEC OLYMPUS 2207 SETUP",
+    "olympus.txt",
+    setup_is_olympus,
+    setup_find_olympus,
+    kOlympusAbout,
+    (int)(sizeof(kOlympusAbout) / sizeof(kOlympusAbout[0])),
+    "! No Olympus 2207 in that folder (OLYMPUS.CFG).",
+    false,
+};
 
 // -----------------------------------------------------------------------------
 // Fallout 1.5: Resurrection: its makers' installer puts it in a folder of
@@ -1250,6 +1565,9 @@ static const ModDownload kResurrection = {
     (int)(sizeof(kResurrectionAbout) / sizeof(kResurrectionAbout[0])),
     resurrection_unpack,
     resurrection_finish,
+    NULL,
+    NULL,
+    NULL,
 };
 
 // Started for Resurrection (in its folder next to the co-op files): when
@@ -1286,19 +1604,203 @@ static void setup_resurrection_enter()
     }
 }
 
+// -----------------------------------------------------------------------------
+// An extra game of these release builds (COOP_EXTRA_GAME_HEADER, not in the
+// public source): a program of its own, downloaded into its folder here and
+// started there. Nothing of Fallout's is touched.
+
+#ifdef COOP_EXTRA_GAME_HEADER
+#include COOP_EXTRA_GAME_HEADER
+
+#define EXTRA_GAME_DOWNLOAD "extra-game-download.zip"
+
+static bool extra_game_unpack(ModJob* job)
+{
+    return coop_zip_extract(EXTRA_GAME_DOWNLOAD, "", ".", NULL, mod_progress, job, &job->error);
+}
+
+static fs::path extra_game_program()
+{
+    std::error_code error;
+    return fs::current_path(error) / COOP_EXTRA_GAME_DIR / COOP_EXTRA_GAME_EXE;
+}
+
+static bool extra_game_finish(const char* configPath, std::string* error)
+{
+    (void)configPath;
+    std::error_code fsError;
+    if (!fs::exists(extra_game_program(), fsError)) {
+        *error = std::string("The download has no ") + COOP_EXTRA_GAME_EXE + ".";
+        return false;
+    }
+    return true;
+}
+
+static const char* const kExtraGameAbout[] = COOP_EXTRA_GAME_ABOUT;
+
+static bool extra_game_installed()
+{
+    std::error_code error;
+    return fs::exists(extra_game_program(), error);
+}
+
+#ifdef COOP_EXTRA_GAME_LATEST_URL
+// A string value of a flat JSON object ({"key": "value", ...}).
+static std::string extra_game_json_string(const std::string& json, const char* key)
+{
+    std::string quoted = std::string("\"") + key + "\"";
+    size_t at = json.find(quoted);
+    if (at == std::string::npos) {
+        return std::string();
+    }
+    at = json.find(':', at + quoted.size());
+    if (at == std::string::npos) {
+        return std::string();
+    }
+    at = json.find('"', at);
+    if (at == std::string::npos) {
+        return std::string();
+    }
+    size_t end = json.find('"', at + 1);
+    return end == std::string::npos ? std::string() : json.substr(at + 1, end - at - 1);
+}
+
+// The release now: latest.json names its zip (next to it) and SHA-256 (the
+// game updates itself, so the zip changes).
+static bool extra_game_resolve(ModJob* job, std::string* url, std::string* sha256)
+{
+    const char* latestUrl = getenv("FALLOUT_EXTRA_GAME_LATEST") != NULL ? getenv("FALLOUT_EXTRA_GAME_LATEST") : COOP_EXTRA_GAME_LATEST_URL;
+    const char* latestFile = "extra-game-latest.json";
+    if (!coop_http_download(latestUrl, latestFile, NULL, NULL, &job->error)) {
+        return false;
+    }
+    std::string json;
+    FILE* stream = fopen(latestFile, "rb");
+    if (stream != NULL) {
+        char buffer[4096];
+        size_t read;
+        while ((read = fread(buffer, 1, sizeof(buffer), stream)) > 0 && json.size() < 65536) {
+            json.append(buffer, read);
+        }
+        fclose(stream);
+    }
+    remove(latestFile);
+
+    std::string zip = extra_game_json_string(json, "zip");
+    std::string hash = extra_game_json_string(json, "sha256");
+    bool hex = hash.size() == 64 && hash.find_first_not_of("0123456789abcdef") == std::string::npos;
+    if (zip.empty() || zip.find('/') != std::string::npos || zip.find('\\') != std::string::npos || zip.find("..") != std::string::npos || !hex) {
+        job->error = std::string(COOP_EXTRA_GAME_NAME) + " can't be downloaded yet.";
+        return false;
+    }
+    std::string base = latestUrl;
+    base = base.substr(0, base.rfind('/') + 1);
+    *url = base + zip;
+    *sha256 = hash;
+    return true;
+}
+#endif
+
+static const ModDownload kExtraGame = {
+    COOP_EXTRA_GAME_NAME,
+    COOP_EXTRA_GAME_HEADER_TEXT,
+    COOP_EXTRA_GAME_URL,
+    "FALLOUT_EXTRA_GAME_URL",
+    COOP_EXTRA_GAME_SHA256,
+    "FALLOUT_EXTRA_GAME_SHA256",
+    EXTRA_GAME_DOWNLOAD,
+    kExtraGameAbout,
+    (int)(sizeof(kExtraGameAbout) / sizeof(kExtraGameAbout[0])),
+    extra_game_unpack,
+    extra_game_finish,
+#ifdef COOP_EXTRA_GAME_LATEST_URL
+    extra_game_resolve,
+#else
+    NULL,
+#endif
+    extra_game_installed,
+#ifdef COOP_EXTRA_GAME_SCREENS
+    COOP_EXTRA_GAME_SCREENS,
+#else
+    NULL,
+#endif
+};
+
+// Starts its program in its folder, with nothing of ours on its command line.
+static bool extra_game_start()
+{
+    fs::path program = extra_game_program();
+    fs::path folder = program.parent_path();
+#ifdef _WIN32
+    std::wstring path = program.wstring();
+    std::wstring commandLine = L"\"" + path + L"\"";
+    std::wstring directory = folder.wstring();
+    STARTUPINFOW startup;
+    PROCESS_INFORMATION process;
+    memset(&startup, 0, sizeof(startup));
+    startup.cb = sizeof(startup);
+    memset(&process, 0, sizeof(process));
+    if (!CreateProcessW(path.c_str(), &commandLine[0], NULL, NULL, FALSE, 0, NULL, directory.c_str(), &startup, &process)) {
+        return false;
+    }
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    return true;
+#else
+    // (Tests only: it's a Windows game. Unpacking keeps no permissions.)
+    std::string path = program.string();
+    std::error_code error;
+    fs::permissions(program, fs::perms::owner_exec, fs::perm_options::add, error);
+    fs::current_path(folder, error);
+    char* args[] = { &path[0], NULL };
+    execv(path.c_str(), args);
+    return false;
+#endif
+}
+
+// Started for the extra game (in its folder here): its screen (PLAY, or
+// DOWNLOAD AND INSTALL first; its screenshots), then it's started; this
+// program then quits (false).
+static bool setup_extra_game(const char* configPath)
+{
+    if (!setup_mod_install(&kExtraGame, configPath)) {
+        return false;
+    }
+    if (!extra_game_start()) {
+        fprintf(stderr, "%s could not be started.\n", COOP_EXTRA_GAME_NAME);
+    }
+    return false;
+}
+#endif
+
 bool coop_setup_ensure_game_data(int argc, char** argv)
 {
+#ifdef COOP_EXTRA_GAME_HEADER
+    // Started for the extra game (the launcher's choice, in its folder).
+    for (int index = 1; index < argc; index++) {
+        if (strcmp(argv[index], "--extra-game") == 0) {
+            return setup_extra_game(setup_config_file_name("ddraw.ini").c_str());
+        }
+    }
+#endif
+
     // Started for Fallout: Nevada (the launcher's choice): the game runs in
     // the folder its makers' installer put it in.
     for (int index = 1; index < argc; index++) {
         if (strcmp(argv[index], "--nevada") == 0) {
-            if (!setup_nevada_enter()) {
+            if (!setup_installed_mod_enter(&kNevada)) {
                 return false;
             }
             break;
         }
         if (strcmp(argv[index], "--resurrection") == 0) {
             setup_resurrection_enter();
+            break;
+        }
+        if (strcmp(argv[index], "--olympus") == 0) {
+            if (!setup_installed_mod_enter(&kOlympus)) {
+                return false;
+            }
             break;
         }
     }

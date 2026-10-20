@@ -47,7 +47,8 @@ connection starts with one line:
                                       never reaches a Fallout 2 game (game:
                                       fallout1 or fallout2, since 1.13.3;
                                       sonora since 1.17, nevada since
-                                      1.18, resurrection since 1.19).
+                                      1.18, resurrection since 1.19,
+                                      olympus since 1.20).
                                       The versions (since 1.15.3) go in the
                                       log: why a join failed shows there.
     FCOOP-RELAY ACCEPT <code> <id>    player 1's connection for CONN <id>;
@@ -232,12 +233,12 @@ def _relay_pipe(a, b):
 
 
 def _game_name(text):
-    """fallout1, fallout2 (what 1.13.3 and later send), sonora, nevada or
-    resurrection (Fallout: Sonora since 1.17, Fallout: Nevada since 1.18 and
-    Fallout 1.5: Resurrection since 1.19, on the Fallout 2 engine), else
-    empty."""
+    """fallout1, fallout2 (what 1.13.3 and later send), sonora, nevada,
+    resurrection or olympus (Fallout: Sonora since 1.17, Fallout: Nevada
+    since 1.18, Fallout 1.5: Resurrection since 1.19 and Olympus 2207 since
+    1.20, on the Fallout 2 engine), else empty."""
     text = (text or "").lower()
-    return text if text in ("fallout1", "fallout2", "sonora", "nevada", "resurrection") else ""
+    return text if text in ("fallout1", "fallout2", "sonora", "nevada", "resurrection", "olympus") else ""
 
 
 def _version_name(text):
@@ -247,7 +248,7 @@ def _version_name(text):
 
 
 def _game_title(game):
-    return {"fallout2": "Fallout 2", "sonora": "Fallout: Sonora", "nevada": "Fallout: Nevada", "resurrection": "Fallout 1.5: Resurrection"}.get(game, "Fallout 1")
+    return {"fallout2": "Fallout 2", "sonora": "Fallout: Sonora", "nevada": "Fallout: Nevada", "resurrection": "Fallout 1.5: Resurrection", "olympus": "Olympus 2207"}.get(game, "Fallout 1")
 
 
 def _relay_host(conn, address, wanted, game="", version=""):

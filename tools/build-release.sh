@@ -11,7 +11,9 @@
 # (../fallout2-ce; or FALLOUT2_REPO), its game is built too and packaged alongside: the setup
 # screen then lets players pick Fallout or Fallout 2.
 #
-# The server URL is built in (-DCOOP_SERVER) and used in latest.txt.
+# The server URL is built in (-DCOOP_SERVER) and used in latest.txt. An
+# extra game for the launcher is built in when private/extra_game.h is here,
+# and private/package/ is packaged (neither is part of the public source).
 # Both are built with zig (pip install ziglang). Linux also needs SDL2
 # development files (or pass SDL2_INCLUDE_DIRS and SDL2_LIBRARIES in the
 # environment). Game data is never packaged.
@@ -26,6 +28,8 @@ work="$out/work"
 
 mkdir -p "$out" "$work"
 
+extra_args=()
+[ -f "$repo/private/extra_game.h" ] && extra_args+=("-DCOOP_EXTRA_GAME_HEADER=$repo/private/extra_game.h")
 sdl_args=()
 [ -n "${SDL2_INCLUDE_DIRS:-}" ] && sdl_args+=("-DSDL2_INCLUDE_DIRS=$SDL2_INCLUDE_DIRS")
 [ -n "${SDL2_LIBRARIES:-}" ] && sdl_args+=("-DSDL2_LIBRARIES=$SDL2_LIBRARIES")
@@ -36,12 +40,12 @@ prefix_map="-ffile-prefix-map=$repo/= -ffile-prefix-map=$work/="
 
 echo "== Linux"
 # zig against glibc 2.31, so the build runs on older distributions too.
-cmake -S "$repo" -B "$work/linux" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCOOP_SERVER="$server" \
+cmake -S "$repo" -B "$work/linux" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCOOP_SERVER="$server" "${extra_args[@]}" \
     -DCMAKE_TOOLCHAIN_FILE="$repo/tools/zig-linux/toolchain.cmake" -DCMAKE_C_FLAGS="-g $prefix_map" -DCMAKE_CXX_FLAGS="-g $prefix_map" "${sdl_args[@]}" >/dev/null
 cmake --build "$work/linux"
 
 echo "== Windows"
-cmake -S "$repo" -B "$work/windows" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCOOP_SERVER="$server" \
+cmake -S "$repo" -B "$work/windows" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCOOP_SERVER="$server" "${extra_args[@]}" \
     -DCMAKE_TOOLCHAIN_FILE="$repo/tools/zig-windows/toolchain.cmake" -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -DCMAKE_C_FLAGS="-gdwarf-4 $prefix_map" -DCMAKE_CXX_FLAGS="-gdwarf-4 $prefix_map" >/dev/null
 cmake --build "$work/windows"
@@ -61,14 +65,14 @@ if [ -f "$fallout2/src/coop.h" ]; then
     prefix_map2="-ffile-prefix-map=$fallout2/= -ffile-prefix-map=$work/="
 
     echo "== Fallout 2, Linux"
-    cmake -S "$fallout2" -B "$work/f2-linux" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCOOP_SERVER="$server" \
+    cmake -S "$fallout2" -B "$work/f2-linux" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCOOP_SERVER="$server" "${extra_args[@]}" \
         -DCMAKE_TOOLCHAIN_FILE="$repo/tools/zig-linux/toolchain.cmake" -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
         -DFALLOUT_VENDORED=OFF -DFALLOUT_VENDORED_ZLIB=ON \
         -DCMAKE_C_FLAGS="-g $prefix_map2" -DCMAKE_CXX_FLAGS="-g $prefix_map2" "${sdl_args[@]}" >/dev/null
     cmake --build "$work/f2-linux"
 
     echo "== Fallout 2, Windows"
-    cmake -S "$fallout2" -B "$work/f2-windows" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCOOP_SERVER="$server" \
+    cmake -S "$fallout2" -B "$work/f2-windows" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCOOP_SERVER="$server" "${extra_args[@]}" \
         -DCMAKE_TOOLCHAIN_FILE="$repo/tools/zig-windows/toolchain.cmake" -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
         -DCMAKE_C_FLAGS="-gdwarf-4 $prefix_map2" -DCMAKE_CXX_FLAGS="-gdwarf-4 $prefix_map2" >/dev/null
     cmake --build "$work/f2-windows"
@@ -83,6 +87,10 @@ package() {
     cp "$binary" "$dir/"
     cp "$repo/COOP.md" "$repo/README.md" "$repo/LICENSE.md" "$repo/NOTICE.txt" "$dir/"
     cp "$repo/third_party/fonts/OFL.txt" "$dir/OFL-NotoSansMono.txt"
+    # Files of these release builds' own (not in the public source).
+    if [ -d "$repo/private/package" ]; then
+        cp -r "$repo/private/package/." "$dir/"
+    fi
 }
 
 name="classic-fallout-coop-$version"

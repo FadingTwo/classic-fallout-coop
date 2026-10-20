@@ -436,6 +436,13 @@ endif()
 # server= overrides it), e.g. -DCOOP_SERVER=http://your.server:8080
 set(COOP_SERVER "" CACHE STRING "Default co-op server URL")
 target_compile_definitions(${EXECUTABLE_NAME} PRIVATE COOP_DEFAULT_SERVER="${COOP_SERVER}")
+
+# An extra game the launcher offers (its name, download and texts), in a
+# header outside the public source; see tools/build-release.sh.
+set(COOP_EXTRA_GAME_HEADER "" CACHE FILEPATH "Header describing an extra game for the launcher")
+if(COOP_EXTRA_GAME_HEADER)
+    target_compile_definitions(${EXECUTABLE_NAME} PRIVATE COOP_EXTRA_GAME_HEADER="${COOP_EXTRA_GAME_HEADER}")
+endif()
 target_include_directories(${EXECUTABLE_NAME} PRIVATE ${SDL2_INCLUDE_DIRS})
 
 if(APPLE)

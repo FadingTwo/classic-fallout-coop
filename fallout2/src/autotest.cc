@@ -7,6 +7,7 @@
 
 #include "config.h"
 #include "critter.h"
+#include "db.h"
 #include "debug.h"
 #include "game.h"
 #include "game_config.h"
@@ -20,6 +21,7 @@
 #include "proto.h"
 #include "random.h"
 #include "scripts.h"
+#include "sfall_config.h"
 #include "skill.h"
 #include "stat.h"
 #include "tile.h"
@@ -137,7 +139,26 @@ bool autotest_new_game(AutotestNewGameProc* newGame, const char* premade)
         _proto_dude_init(premade);
     }
 
-    char map[] = "artemple.map";
+    // Fallout 2's temple; a mod without it (Olympus 2207 has its own
+    // master.dat) starts where its sfall settings say, as a new game does.
+    char map[COMPAT_MAX_PATH] = "artemple.map";
+    File* temple = fileOpen("maps\\artemple.map", "rb");
+    // (COOP_AUTOTEST_START_MAP: a map of the test's choice, as for a mod
+    // whose start is a conversation.)
+    const char* startMap = getenv("COOP_AUTOTEST_START_MAP");
+    if (startMap != nullptr && startMap[0] != '\0') {
+        snprintf(map, sizeof(map), "%s", startMap);
+        if (temple != nullptr) {
+            fileClose(temple);
+        }
+    } else if (temple != nullptr) {
+        fileClose(temple);
+    } else {
+        char* startingMap = nullptr;
+        if (configGetString(&gSfallConfig, SFALL_CONFIG_MISC_KEY, SFALL_CONFIG_STARTING_MAP_KEY, &startingMap) && startingMap[0] != '\0') {
+            snprintf(map, sizeof(map), "%s", startingMap);
+        }
+    }
     if (newGame(map) != 0) {
         autotest_fail("new game failed");
         return false;
