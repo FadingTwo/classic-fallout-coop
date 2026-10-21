@@ -820,6 +820,8 @@ static void _MVE_sndPause()
 int _MVE_rmStepMovie()
 {
     int v0;
+    // (Its 16-bit fields are read with loadUInt16LE: the stream gives no
+    // alignment, and a misaligned unsigned short read is undefined.)
     unsigned short* v1;
     unsigned int v5;
     int v6;
@@ -871,7 +873,7 @@ LABEL_5:
             v1 = (unsigned short*)_ioNextRecord();
             goto LABEL_5;
         case 2:
-            if (!_syncInit(v1[0], v1[2])) {
+            if (!_syncInit(loadUInt16LE((unsigned char*)v1 + 0), loadUInt16LE((unsigned char*)v1 + 4))) {
                 v6 = -3;
                 break;
             }
@@ -880,14 +882,14 @@ LABEL_5:
             if ((v5 >> 24) < 1) {
                 v7 = 0;
             } else {
-                v7 = (v1[1] & 0x04) >> 2;
+                v7 = (loadUInt16LE((unsigned char*)v1 + 2) & 0x04) >> 2;
             }
             v8 = loadUInt32LE((unsigned char*)v1 + 6);
             if ((v5 >> 24) == 0) {
                 v8 &= 0xFFFF;
             }
 
-            if (_MVE_sndConfigure(v1[0], v8, v1[1] & 0x01, v1[2], (v1[1] & 0x02) >> 1, v7)) {
+            if (_MVE_sndConfigure(loadUInt16LE((unsigned char*)v1 + 0), v8, loadUInt16LE((unsigned char*)v1 + 2) & 0x01, loadUInt16LE((unsigned char*)v1 + 4), (loadUInt16LE((unsigned char*)v1 + 2) & 0x02) >> 1, v7)) {
                 continue;
             }
 
@@ -900,15 +902,15 @@ LABEL_5:
         case 5:
             v9 = 0;
             if ((v5 >> 24) >= 2) {
-                v9 = v1[3];
+                v9 = loadUInt16LE((unsigned char*)v1 + 6);
             }
 
             v10 = 1;
             if ((v5 >> 24) >= 1) {
-                v10 = v1[2];
+                v10 = loadUInt16LE((unsigned char*)v1 + 4);
             }
 
-            if (!_nfConfig(v1[0], v1[1], v10, v9)) {
+            if (!_nfConfig(loadUInt16LE((unsigned char*)v1 + 0), loadUInt16LE((unsigned char*)v1 + 2), v10, v9)) {
                 v6 = -5;
                 break;
             }
@@ -949,28 +951,28 @@ LABEL_5:
 
             v18 = 0;
             if ((v5 >> 24) >= 1) {
-                v18 = v1[2];
+                v18 = loadUInt16LE((unsigned char*)v1 + 4);
             }
 
-            v19 = v1[1];
+            v19 = loadUInt16LE((unsigned char*)v1 + 2);
             if (v19 == 0 || v21 || dword_6B3680) {
-                _SetPalette_1(v1[0], v19);
+                _SetPalette_1(loadUInt16LE((unsigned char*)v1 + 0), v19);
             } else {
-                _SetPalette_(v1[0], v19);
+                _SetPalette_(loadUInt16LE((unsigned char*)v1 + 0), v19);
             }
 
             if (v21) {
                 _do_nothing_(_rm_dx, _rm_dy, v21);
-            } else if (!_sync_late || v1[1]) {
+            } else if (!_sync_late || loadUInt16LE((unsigned char*)v1 + 2)) {
                 _sfShowFrame(_rm_dx, _rm_dy, v18);
             } else {
                 _sync_FrameDropped = 1;
                 ++_rm_FrameDropCount;
             }
 
-            v20 = v1[1];
+            v20 = loadUInt16LE((unsigned char*)v1 + 2);
             if (v20 && !v21 && !dword_6B3680) {
-                _SetPalette_1(v1[0], v20);
+                _SetPalette_1(loadUInt16LE((unsigned char*)v1 + 0), v20);
             }
 
             _rm_p = (unsigned char*)v1;
@@ -980,12 +982,12 @@ LABEL_5:
         case 8:
         case 9:
             // push data to audio buffers?
-            if (v1[1] & _rm_track_bit) {
+            if (loadUInt16LE((unsigned char*)v1 + 2) & _rm_track_bit) {
                 v14 = (unsigned char*)v1 + 6;
                 if ((v5 >> 16) != 8) {
                     v14 = NULL;
                 }
-                _CallsSndBuff_Loc(v14, v1[2]);
+                _CallsSndBuff_Loc(v14, loadUInt16LE((unsigned char*)v1 + 4));
             }
             continue;
         case 10:
@@ -998,11 +1000,11 @@ LABEL_5:
             continue;
         case 11:
             // some kind of palette rotation
-            _palMakeSynthPalette(v1[0], v1[1], v1[2], v1[3], v1[4], v1[5]);
+            _palMakeSynthPalette(loadUInt16LE((unsigned char*)v1 + 0), loadUInt16LE((unsigned char*)v1 + 2), loadUInt16LE((unsigned char*)v1 + 4), loadUInt16LE((unsigned char*)v1 + 6), loadUInt16LE((unsigned char*)v1 + 8), loadUInt16LE((unsigned char*)v1 + 10));
             continue;
         case 12:
             // palette
-            _palLoadPalette((unsigned char*)v1 + 4, v1[0], v1[1]);
+            _palLoadPalette((unsigned char*)v1 + 4, loadUInt16LE((unsigned char*)v1 + 0), loadUInt16LE((unsigned char*)v1 + 2));
             continue;
         case 14:
             // save current position
@@ -1020,7 +1022,7 @@ LABEL_5:
             }
 
             // swap movie surfaces
-            if (v1[6] & 0x01) {
+            if (loadUInt16LE((unsigned char*)v1 + 12) & 0x01) {
                 movieSwapSurfaces();
             }
 
@@ -1083,7 +1085,7 @@ LABEL_5:
                 break;
             }
 
-            _nfPkDecomp((unsigned char*)v3, (unsigned char*)&v1[7], v1[2], v1[3], v1[4], v1[5]);
+            _nfPkDecomp((unsigned char*)v3, (unsigned char*)&v1[7], loadUInt16LE((unsigned char*)v1 + 4), loadUInt16LE((unsigned char*)v1 + 6), loadUInt16LE((unsigned char*)v1 + 8), loadUInt16LE((unsigned char*)v1 + 10));
 
             // unlock
             movieUnlockSurfaces();

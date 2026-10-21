@@ -1526,6 +1526,10 @@ void coop_host_frame()
         int mapCenter = tile_center_tile;
         int mapIndex = map_get_index_number();
         int mapElevation = map_elevation;
+        // Where player 1's 3D cursor is in that picture.
+        Rect cursorRects[2];
+        obj_bound(obj_mouse, &(cursorRects[0]));
+        obj_bound(obj_mouse_flat, &(cursorRects[1]));
         bool restore = coop_host_restore_setting() != 0 && mapBuffer != NULL;
         if (restore) {
             coop_host_restore_saved.assign(mapBuffer, mapBuffer + mapSize);
@@ -1576,6 +1580,18 @@ void coop_host_frame()
             memcpy(mapBuffer, coop_host_restore_saved.data(), mapSize);
             win_draw(display_win);
             gmouse_bk_process();
+            // Player 1's cursor moved meanwhile by itself (its hex follows
+            // the map, e.g. after an elevation change): the picture still
+            // had it where it was, a red hex left on their screen.
+            for (int index = 0; index < 2; index++) {
+                Rect now;
+                obj_bound(index == 0 ? obj_mouse : obj_mouse_flat, &now);
+                if (memcmp(&now, &(cursorRects[index]), sizeof(now)) != 0) {
+                    coop_host_own_draw = true;
+                    tile_refresh_rect(&(cursorRects[index]), map_elevation);
+                    coop_host_own_draw = false;
+                }
+            }
             intface_update_items(false);
             intface_redraw();
             coop_host_restores++;

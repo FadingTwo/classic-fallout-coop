@@ -22,7 +22,9 @@
 set -uo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
-out=$1
+# (Absolute: the relay code file is shared by programs started in other
+# folders.)
+out=$(realpath -m "$1")
 mkdir -p "$out"
 bin=${SOAK_BIN:-$here/../build/fallout-ce}
 tools=${SOAK_TOOLS:-$here}
@@ -107,20 +109,20 @@ while true; do
     extra+=(COOP_AUTOTEST_RELAY_FILE="$out/code-$n.txt")
 
     case $what in
-    tour) scripts=(net_tour_host net_tour_client); extra+=(COOP_AUTOTEST_TOUR=ALL COOP_AUTOTEST_ROUGH=1 HOST_EXTRA="[coop]turn_time=10") ;;
+    tour) scripts=(net_tour_host net_tour_client); extra+=(COOP_AUTOTEST_TOUR=${SOAK_TOUR:-ALL} COOP_AUTOTEST_ROUGH=1 HOST_EXTRA="[coop]turn_time=10") ;;
     session) scripts=(net_session_host net_session_client); extra+=(HOST_EXTRA="[coop]turn_time=3") ;;
     combat) scripts=(net_combat_host net_combat_client); extra+=(COOP_AUTOTEST_COMBAT_CHAT=1) ;;
     talk) scripts=(net_talk_host net_talk_client) ;;
     play) scripts=(net_play_host net_play_client) ;;
     barter) scripts=(net_talk_host net_talk_client); extra+=(COOP_AUTOTEST_NET_BARTER=1 HOST_EXTRA="[coop]talk=0") ;;
-    tour4) scripts=(net_tour_host net_tour_client); extra+=(COOP_AUTOTEST_PLAYERS=4 EXTRA_CLIENTS=2 COOP_AUTOTEST_TOUR=ALL COOP_AUTOTEST_ROUGH=1 HOST_EXTRA="[coop]turn_time=10") ;;
+    tour4) scripts=(net_tour_host net_tour_client); extra+=(COOP_AUTOTEST_PLAYERS=4 EXTRA_CLIENTS=2 COOP_AUTOTEST_TOUR=${SOAK_TOUR:-ALL} COOP_AUTOTEST_ROUGH=1 HOST_EXTRA="[coop]turn_time=10") ;;
     esac
 
     dir="$out/run-$n"
     rm -rf "$dir"
     start=$(date +%s)
     env "${extra[@]}" CLIENT_BIN="$clientBin" HOST_RES="$hostRes" CLIENT_RES="$clientRes" \
-        AUTOTEST_TIMEOUT=10800 HOST_WAIT=20 \
+        AUTOTEST_TIMEOUT=10800 HOST_WAIT=${SOAK_HOST_WAIT:-20} \
         "$tools/nettest.sh" "$hostBin" "$dir" "${scripts[@]}" >"$dir.txt" 2>&1
     seconds=$(($(date +%s) - start))
 

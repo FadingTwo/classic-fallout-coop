@@ -65,8 +65,8 @@ For more about the engine itself (other platforms, `fallout.cfg`,
 - [docs/coop/HOW-IT-WAS-MADE.md](docs/coop/HOW-IT-WAS-MADE.md): how it
   was built, and why it works the way it does
 - [CONTRIBUTING.md](CONTRIBUTING.md)
-- [ROADMAP.md](ROADMAP.md): Fallout 1 now, then Fallout 2, then big Fallout 2
-  mods (Sonora, Nevada, Olympus 2207)
+- [ROADMAP.md](ROADMAP.md): Fallout 1, Fallout 2 and four big Fallout 2 mods
+  (Sonora, Nevada, Resurrection, Olympus 2207); now bugs and stability
 - [Ideas](https://github.com/FadingTwo/classic-fallout-coop/issues?q=is%3Aissue+is%3Aopen+label%3Aenhancement):
   what could come next; comment or add a 👍 to the ones you want
 

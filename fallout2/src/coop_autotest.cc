@@ -131,6 +131,24 @@ static void coop_autotest_click_centered(int x, int y);
 // sanitizer, on a busy machine).
 #define COOP_AUTOTEST_JOIN_WAIT 90000
 
+
+// The client run, trying again while the host is not listening yet: a slow
+// host (a mod's long start, a big screen, a loaded machine) can open its port
+// after the clients' first try.
+static int coop_autotest_client_run()
+{
+    unsigned int start = get_time();
+    while (true) {
+        int rc = coop_net_client_run();
+        if (rc != 1 || strncmp(coop_net_last_error(), "Cannot connect to ", 18) != 0
+            || elapsed_time(start) >= COOP_AUTOTEST_JOIN_WAIT) {
+            return rc;
+        }
+        autotest_log("host not listening yet, trying again");
+        SDL_Delay(2000);
+    }
+}
+
 static void coop_autotest_screenshot();
 
 // The enemy of the combat tests, and the player turns counted there.
@@ -1268,7 +1286,8 @@ static void coop_autotest_relay_client_setup()
 
     char code[32] = "";
     unsigned int start = get_time();
-    while (elapsed_time(start) < 30000) {
+    // (As long as a join may take: a busy machine's host is slow to start.)
+    while (elapsed_time(start) < COOP_AUTOTEST_JOIN_WAIT) {
         FILE* stream = fopen(file, "r");
         if (stream != NULL) {
             bool read = fgets(code, sizeof(code), stream) != NULL;
@@ -1280,6 +1299,11 @@ static void coop_autotest_relay_client_setup()
         SDL_Delay(100);
     }
     code[strcspn(code, "\r\n")] = '\0';
+
+    if (strlen(code) < 6) {
+        autotest_fail("no relay code from the host");
+        return;
+    }
 
     // Typed by hand, with a dash, as a player might.
     std::string typed = std::string(code).substr(0, 3) + "-" + std::string(code).substr(3);
@@ -1407,7 +1431,7 @@ static int coop_autotest_net_client(AutotestNewGameProc* newGame)
     coop_autotest_relay_client_setup();
     autotest_log("connecting, checksum %016llx", (unsigned long long)coop_net_data_checksum());
     coop_net_set_client_exit_hook(coop_autotest_net_client_exit);
-    int rc = coop_net_client_run();
+    int rc = coop_autotest_client_run();
     autotest_log("client finished with %d", rc);
     if (rc != 0) {
         autotest_fail("client failed");
@@ -1724,7 +1748,7 @@ static int coop_autotest_net_play_client(AutotestNewGameProc* newGame)
     inject_call(coop_net_client_request_exit);
 
     coop_net_set_client_exit_hook(coop_autotest_net_client_exit);
-    int rc = coop_net_client_run();
+    int rc = coop_autotest_client_run();
     autotest_log("client finished with %d", rc);
     if (rc != 0) {
         autotest_fail("client failed");
@@ -2488,7 +2512,7 @@ static int coop_autotest_net_session_client(AutotestNewGameProc* newGame)
 
     inject_wait(240);
     inject_call(coop_autotest_session_walk);
-    int rc = coop_net_client_run();
+    int rc = coop_autotest_client_run();
     autotest_log("first visit finished with %d: %s", rc, coop_net_last_error());
 
     SDL_Delay(2000);
@@ -2501,7 +2525,7 @@ static int coop_autotest_net_session_client(AutotestNewGameProc* newGame)
         inject_key(KEY_F10);
     }
     inject_call(coop_autotest_session_shots);
-    rc = coop_net_client_run();
+    rc = coop_autotest_client_run();
     autotest_log("second visit finished with %d: %s", rc, coop_net_last_error());
     return 0;
 }
@@ -2888,7 +2912,7 @@ static int coop_autotest_net_tour_client(AutotestNewGameProc* newGame)
     inject_wait(300);
     inject_call(coop_autotest_tour_walk);
 
-    int rc = coop_net_client_run();
+    int rc = coop_autotest_client_run();
     autotest_log("client finished with %d, %s", rc, coop_net_last_error());
     return 0;
 }
@@ -3107,7 +3131,7 @@ static int coop_autotest_net_character_client(AutotestNewGameProc* newGame)
 
     inject_wait(200);
     inject_call(coop_autotest_screenshot);
-    int rc = coop_net_client_run();
+    int rc = coop_autotest_client_run();
     autotest_log("client finished with %d", rc);
 
     // The host sent back a copy of the character to keep.
@@ -3471,7 +3495,7 @@ static int coop_autotest_net_talk_client(AutotestNewGameProc* newGame)
     coop_autotest_relay_client_setup();
     inject_wait(300);
     inject_call(coop_autotest_net_talk_keys);
-    int rc = coop_net_client_run();
+    int rc = coop_autotest_client_run();
     autotest_log("client finished with %d", rc);
     return 0;
 }
@@ -3608,7 +3632,7 @@ static int coop_autotest_net_combat_client(AutotestNewGameProc* newGame)
     }
     inject_call(coop_autotest_press_space_forever);
 
-    int rc = coop_net_client_run();
+    int rc = coop_autotest_client_run();
     autotest_log("client finished with %d", rc);
     if (rc != 0) {
         autotest_fail("client failed");
@@ -4076,7 +4100,7 @@ static int coop_autotest_net_four_client(AutotestNewGameProc* newGame)
     inject_call(coop_autotest_screenshot);
     inject_call(coop_autotest_net_four_seen);
     inject_call(coop_autotest_press_space_forever);
-    int rc = coop_net_client_run();
+    int rc = coop_autotest_client_run();
     autotest_log("client finished with %d, frames %dx%d", rc, coop_autotest_net_four_width, coop_autotest_net_four_height);
     if (coop_autotest_net_four_width == 0) {
         autotest_fail("no frames came");

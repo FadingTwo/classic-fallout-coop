@@ -41,8 +41,12 @@ Total conversions made by other teams on the Fallout 2 engine:
 - **Olympus 2207**: playable since 1.20 (installed with its makers'
   installer; the launcher finds it)
 
-Others rely more on sfall, an extension of the original Fallout 2 engine
-that Fallout 2 CE only partly supports, so they come one at a time. You
-will still need the mod itself from its
-makers; nothing of theirs is included here. This project is not affiliated
-with them.
+You still get each mod from its makers; nothing of theirs is included
+here. This project is not affiliated with them.
+
+## 5. Now: bugs and stability
+
+The games and mods above are what co-op covers for now. The work now is
+maintenance: fixing what players report, testing more (every game and mod,
+online and with four players) and making it steadier, not adding more
+mods. Found a bug? MULTIPLAYER, REPORT BUG in the game, or an issue here.

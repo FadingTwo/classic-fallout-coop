@@ -423,6 +423,8 @@ typedef struct ModJob {
     std::atomic<unsigned long long> total;
     std::atomic<bool> cancel;
     std::string error;
+    // The release's version, when its manifest names it.
+    std::string version;
 } ModJob;
 
 static bool mod_progress(void* data, unsigned long long done, unsigned long long total)
@@ -452,6 +454,9 @@ typedef struct ModDownload {
     bool (*resolve)(ModJob* job, std::string* url, std::string* sha256);
     // When set and it says so: here already (the screen offers PLAY).
     bool (*installed)();
+    // When set (a game that doesn't update itself): a newer release than
+    // the one here (the screen offers UPDATE AND PLAY).
+    bool (*updateAvailable)(std::string* version);
     // When set: a folder of screenshots (.bmp) next to this program, which
     // the screen offers to look at.
     const char* screensDir;
@@ -552,6 +557,7 @@ static const ModDownload kSonora = {
     (int)(sizeof(kSonoraAbout) / sizeof(kSonoraAbout[0])),
     sonora_unpack,
     sonora_finish,
+    NULL,
     NULL,
     NULL,
     NULL,
@@ -699,8 +705,13 @@ static bool setup_mod_install(const ModDownload* mod, const char* configPath)
     const char* choose = getenv("FALLOUT_SETUP_CHOOSE");
 
     bool installed = mod->installed != NULL && mod->installed();
+    std::string newerVersion;
+    if (installed && mod->updateAvailable != NULL && mod->updateAvailable(&newerVersion)) {
+        // Downloaded again (over the old one), then played.
+        installed = false;
+    }
     std::vector<std::string> screens = setup_screen_files(mod->screensDir);
-    std::vector<std::string> entries = { installed ? "[ PLAY ]" : "[ DOWNLOAD AND INSTALL ]" };
+    std::vector<std::string> entries = { installed ? "[ PLAY ]" : !newerVersion.empty() ? "[ UPDATE TO " + newerVersion + " AND PLAY ]" : "[ DOWNLOAD AND INSTALL ]" };
     int screensIndex = -1;
     if (!screens.empty()) {
         screensIndex = (int)entries.size();
@@ -1568,6 +1579,7 @@ static const ModDownload kResurrection = {
     NULL,
     NULL,
     NULL,
+    NULL,
 };
 
 // Started for Resurrection (in its folder next to the co-op files): when
@@ -1614,9 +1626,20 @@ static void setup_resurrection_enter()
 
 #define EXTRA_GAME_DOWNLOAD "extra-game-download.zip"
 
+#define EXTRA_GAME_VERSION_FILE "extra-game-version.txt"
+
 static bool extra_game_unpack(ModJob* job)
 {
-    return coop_zip_extract(EXTRA_GAME_DOWNLOAD, "", ".", NULL, mod_progress, job, &job->error);
+    if (!coop_zip_extract(EXTRA_GAME_DOWNLOAD, "", ".", NULL, mod_progress, job, &job->error)) {
+        return false;
+    }
+    // Which release is here (for a newer one later).
+    FILE* stream = fopen(EXTRA_GAME_VERSION_FILE, "wt");
+    if (stream != NULL) {
+        fprintf(stream, "%s\n", job->version.c_str());
+        fclose(stream);
+    }
+    return true;
 }
 
 static fs::path extra_game_program()
@@ -1688,6 +1711,7 @@ static bool extra_game_resolve(ModJob* job, std::string* url, std::string* sha25
 
     std::string zip = extra_game_json_string(json, "zip");
     std::string hash = extra_game_json_string(json, "sha256");
+    job->version = extra_game_json_string(json, "version");
     bool hex = hash.size() == 64 && hash.find_first_not_of("0123456789abcdef") == std::string::npos;
     if (zip.empty() || zip.find('/') != std::string::npos || zip.find('\\') != std::string::npos || zip.find("..") != std::string::npos || !hex) {
         job->error = std::string(COOP_EXTRA_GAME_NAME) + " can't be downloaded yet.";
@@ -1699,6 +1723,48 @@ static bool extra_game_resolve(ModJob* job, std::string* url, std::string* sha25
     *sha256 = hash;
     return true;
 }
+
+#ifdef COOP_EXTRA_GAME_LAUNCHER_UPDATES
+// Its manifest names another release than the one here (asked briefly: no
+// answer, no update offered).
+static bool extra_game_update_available(std::string* version)
+{
+    char here[64] = "";
+    FILE* stream = fopen(EXTRA_GAME_VERSION_FILE, "rt");
+    if (stream != NULL) {
+        if (fgets(here, sizeof(here), stream) == NULL) {
+            here[0] = '\0';
+        }
+        here[strcspn(here, "\r\n")] = '\0';
+        fclose(stream);
+    }
+
+    const char* latestUrl = getenv("FALLOUT_EXTRA_GAME_LATEST") != NULL ? getenv("FALLOUT_EXTRA_GAME_LATEST") : COOP_EXTRA_GAME_LATEST_URL;
+    const char* latestFile = "extra-game-latest.json";
+    std::string error;
+    if (!coop_http_download(latestUrl, latestFile, NULL, NULL, &error, 4000)) {
+        return false;
+    }
+    std::string json;
+    stream = fopen(latestFile, "rb");
+    if (stream != NULL) {
+        char buffer[4096];
+        size_t read;
+        while ((read = fread(buffer, 1, sizeof(buffer), stream)) > 0 && json.size() < 65536) {
+            json.append(buffer, read);
+        }
+        fclose(stream);
+    }
+    remove(latestFile);
+
+    std::string latest = extra_game_json_string(json, "version");
+    if (latest.empty() || latest == here || latest.size() > 32) {
+        return false;
+    }
+    *version = latest;
+    return true;
+}
+#endif
 #endif
 
 static const ModDownload kExtraGame = {
@@ -1719,6 +1785,11 @@ static const ModDownload kExtraGame = {
     NULL,
 #endif
     extra_game_installed,
+#if defined(COOP_EXTRA_GAME_LAUNCHER_UPDATES) && defined(COOP_EXTRA_GAME_LATEST_URL)
+    extra_game_update_available,
+#else
+    NULL,
+#endif
 #ifdef COOP_EXTRA_GAME_SCREENS
     COOP_EXTRA_GAME_SCREENS,
 #else
@@ -1747,7 +1818,7 @@ static bool extra_game_start()
     CloseHandle(process.hProcess);
     return true;
 #else
-    // (Tests only: it's a Windows game. Unpacking keeps no permissions.)
+    // (Unpacking keeps no permissions: runnable first.)
     std::string path = program.string();
     std::error_code error;
     fs::permissions(program, fs::perms::owner_exec, fs::perm_options::add, error);

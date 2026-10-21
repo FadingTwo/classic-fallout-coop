@@ -73,7 +73,17 @@ cmd_run() {
         *) ln -s "$FALLOUT_DATA/$extra" "$out/$extra" ;;
         esac
     done
-    cp -r "$data" "$out/data"
+    # A copy (the game writes maps, saves and protos there), but its art
+    # and sound, which it only reads, linked: a mod's are hundreds of MB,
+    # copied for every player.
+    mkdir -p "$out/data"
+    for entry in "$data"/* ; do
+        [ -e "$entry" ] || continue
+        case "$(basename "$entry" | tr '[:upper:]' '[:lower:]')" in
+        art | sound) ln -s "$entry" "$out/data/$(basename "$entry")" ;;
+        *) cp -r "$entry" "$out/data/" ;;
+        esac
+    done
     rm -rf "$out/data/SAVEGAME" "$out/data/savegame"
     if [ -n "${AUTOTEST_SAVES:-}" ]; then
         cp -r "$AUTOTEST_SAVES/data/SAVEGAME" "$out/data/SAVEGAME"
