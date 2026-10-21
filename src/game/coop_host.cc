@@ -828,8 +828,10 @@ static void coop_host_poll()
 }
 
 // Moves the client's input into the injection queue.
-// Each player's mouse buttons as last fed.
+// Each player's mouse buttons and position as last fed.
 static int coop_host_fed_buttons[COOP_MAX_PLAYERS];
+static int coop_host_fed_x[COOP_MAX_PLAYERS];
+static int coop_host_fed_y[COOP_MAX_PLAYERS];
 
 // Feeds player `slot` + 1's input; whether any of it can do something (a
 // key, a mouse button pressed or let go) rather than only move the mouse.
@@ -839,10 +841,23 @@ static bool coop_host_feed_input(int slot)
     CoopNetInput input;
     while (coop_net_next_input(&input)) {
         if (input.kind == COOP_NET_INPUT_MOUSE) {
-            if (input.value != coop_host_fed_buttons[slot]) {
+            int fedButtons = coop_host_fed_buttons[slot];
+            // A button pressed somewhere new: the mouse goes there first for
+            // two frames. Buttons only take a press once they have seen the
+            // mouse over them, and a move and the press that came together
+            // over the network were one frame apart (a click on a skill in
+            // the character editor did nothing now and then).
+            if ((input.value & ~fedButtons) != 0
+                && (input.x != coop_host_fed_x[slot] || input.y != coop_host_fed_y[slot])) {
+                inject_mouse(input.x, input.y, fedButtons);
+                inject_mouse(input.x, input.y, fedButtons);
+            }
+            if (input.value != fedButtons) {
                 acts = true;
                 coop_host_fed_buttons[slot] = input.value;
             }
+            coop_host_fed_x[slot] = input.x;
+            coop_host_fed_y[slot] = input.y;
             inject_mouse(input.x, input.y, input.value);
         } else if (input.kind == COOP_NET_INPUT_KEY) {
             acts = true;

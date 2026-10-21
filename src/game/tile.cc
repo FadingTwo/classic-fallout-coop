@@ -1458,6 +1458,17 @@ void square_render_floor(Rect* rect, int elevation)
     square_xy(constrainedRect.ulx, constrainedRect.lry, elevation, &maxX, &temp);
     square_xy(constrainedRect.lrx, constrainedRect.lry, elevation, &temp, &maxY);
 
+    // CE: one square more all around: floor art smaller than a square (or
+    // drawn off its middle) can lie where the rect's corners find the next
+    // square, and was left out of a part's redraw (a black patch where a
+    // full redraw draws floor: sfshutl2's shuttle floor). Each floor is
+    // clipped to the rect, so the extra squares draw only what a full
+    // redraw does.
+    minX--;
+    minY--;
+    maxX++;
+    maxY++;
+
     if (minX < 0) {
         minX = 0;
     }
@@ -1653,6 +1664,73 @@ void draw_grid(int tile, int elevation, Rect* rect)
         buf_full,
         wallBlendTable,
         commonGrayTable);
+}
+
+// CE: The floor drawing's triangles (below) fill its light map only inside
+// the usual floor shape; some floor art has pixels outside it (in a corner,
+// say), which read whatever the previous floor left there, so a tile looked
+// different depending on what was drawn before it (co-op: the redraw checks).
+// Those places take the light of the nearest filled place in their row.
+static void tileFillIntensityMapGaps()
+{
+    static short sources[80 * 36];
+    static bool sourcesReady = false;
+    if (!sourcesReady) {
+        bool filled[3280] = {};
+        for (int i = 0; i < 5; i++) {
+            int pos = verticies[rightside_up_triangles[i].field_8].field_0;
+            for (int row = 0; row < 13; row++) {
+                pos += rightside_up_table[row].field_0;
+                for (int j = 0; j < rightside_up_table[row].field_4; j++) {
+                    filled[pos++] = true;
+                }
+            }
+        }
+        for (int i = 0; i < 5; i++) {
+            int pos = verticies[upside_down_triangles[i].field_0].field_0;
+            for (int row = 0; row < 13; row++) {
+                pos += upside_down_table[row].field_0;
+                for (int j = 0; j < upside_down_table[row].field_4; j++) {
+                    filled[pos++] = true;
+                }
+            }
+        }
+        for (int row = 0; row < 36; row++) {
+            // A row with nothing filled (the last one) uses the row above.
+            int sourceRow = row;
+            while (sourceRow > 0) {
+                bool any = false;
+                for (int col = 0; col < 80; col++) {
+                    any = any || filled[160 + 80 * sourceRow + col];
+                }
+                if (any) {
+                    break;
+                }
+                sourceRow--;
+            }
+            for (int col = 0; col < 80; col++) {
+                int index = 160 + 80 * row + col;
+                short source = -1;
+                if (!filled[index]) {
+                    for (int distance = 0; distance < 80 && source == -1; distance++) {
+                        if (col - distance >= 0 && filled[160 + 80 * sourceRow + col - distance]) {
+                            source = static_cast<short>(160 + 80 * sourceRow + col - distance);
+                        } else if (col + distance < 80 && filled[160 + 80 * sourceRow + col + distance]) {
+                            source = static_cast<short>(160 + 80 * sourceRow + col + distance);
+                        }
+                    }
+                }
+                sources[80 * row + col] = source;
+            }
+        }
+        sourcesReady = true;
+    }
+
+    for (int index = 0; index < 80 * 36; index++) {
+        if (sources[index] != -1) {
+            intensity_map[160 + index] = intensity_map[sources[index]];
+        }
+    }
 }
 
 // 0x49FB64
@@ -1869,6 +1947,8 @@ void floor_draw(int fid, int x, int y, Rect* rect)
                 }
             }
         }
+
+        tileFillIntensityMapGaps();
 
         unsigned char* v66 = buf + buf_full * y + x;
         unsigned char* v67 = art_frame_data(art, 0, 0) + frameWidth * v78 + v79;

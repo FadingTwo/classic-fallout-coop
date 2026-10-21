@@ -44,6 +44,7 @@
 #include "loadsave.h"
 #include "mainmenu.h"
 #include "map.h"
+#include "mouse.h"
 #include "object.h"
 #include "palette.h"
 #include "perk.h"
@@ -134,14 +135,15 @@ static void coop_autotest_click_centered(int x, int y);
 
 // The client run, trying again while the host is not listening yet: a slow
 // host (a mod's long start, a big screen, a loaded machine) can open its port
-// after the clients' first try.
+// after the clients' first try (Olympus on the loaded server: over 2 minutes).
+#define COOP_AUTOTEST_CONNECT_WAIT 300000
 static int coop_autotest_client_run()
 {
     unsigned int start = get_time();
     while (true) {
         int rc = coop_net_client_run();
         if (rc != 1 || strncmp(coop_net_last_error(), "Cannot connect to ", 18) != 0
-            || elapsed_time(start) >= COOP_AUTOTEST_JOIN_WAIT) {
+            || elapsed_time(start) >= COOP_AUTOTEST_CONNECT_WAIT) {
             return rc;
         }
         autotest_log("host not listening yet, trying again");
@@ -1160,7 +1162,17 @@ static void coop_autotest_mouse_transform(int* x, int* y)
 static void coop_autotest_click_centered(int x, int y)
 {
     inject_set_mouse_transform(coop_autotest_mouse_transform);
-    inject_click(x | COOP_AUTOTEST_CENTERED, y);
+    // As a hand does: the button held a few frames (pressed for exactly one
+    // frame, a client's click on a tag skill button now and then only
+    // selected the skill).
+    x |= COOP_AUTOTEST_CENTERED;
+    inject_mouse(x, y, 0);
+    inject_mouse(x, y, 0);
+    inject_mouse(x, y, 0);
+    inject_mouse(x, y, MOUSE_STATE_LEFT_BUTTON_DOWN);
+    inject_mouse(x, y, MOUSE_STATE_LEFT_BUTTON_DOWN);
+    inject_mouse(x, y, MOUSE_STATE_LEFT_BUTTON_DOWN);
+    inject_mouse(x, y, 0);
 }
 
 static void coop_autotest_screenshot()
