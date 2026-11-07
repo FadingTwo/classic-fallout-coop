@@ -81,8 +81,9 @@ typedef struct CoopNetInput {
     int x;
     int y;
     int value;
-    // Which input message this is (counted from 1).
+    // Which input message this is (counted from 1), and when it came.
     unsigned int number;
+    unsigned int receivedAt;
 } CoopNetInput;
 
 CoopNetMode coop_net_mode();

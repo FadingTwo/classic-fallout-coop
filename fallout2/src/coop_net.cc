@@ -1258,6 +1258,7 @@ static void coop_host_handle(const CoopMessage& message)
         } else {
             CoopNetInput input;
             input.number = coop_peer->inputsReceived;
+            input.receivedAt = get_time();
             input.kind = reader.u8();
             input.x = (short)reader.u16();
             input.y = (short)reader.u16();
@@ -2277,7 +2278,9 @@ static void coop_relay_host_pump()
             int reachable = line == "DIRECT OK" ? 1 : 0;
             if (reachable != coop_direct_reachable) {
                 debug_printf("\nCOOP NET: %s\n", reachable ? "players can connect to us directly" : "players can't reach us directly: they join through the relay");
-                display_print((char*)(reachable ? "Players who join connect to you directly." : "Players join through the co-op server (your router keeps the game's port closed)."));
+                display_print((char*)(reachable ? "Players who join connect to you directly."
+                        : coop_upnp_behind_another_router() ? "Players join through the co-op server (your router is behind another one)."
+                                                            : "Players join through the co-op server (your router keeps the game's port closed)."));
             }
             coop_direct_reachable = reachable;
             continue;
@@ -2707,12 +2710,15 @@ int coop_net_client_run()
     unsigned long long drawTicks = 0;
     unsigned long long presentTicks = 0;
     unsigned int lastRound = get_time() - COOP_NET_CLIENT_ROUND;
+    // A click or key press came during the wait (read it now).
+    bool inputNow = false;
     while (!hostLeft) {
         sharedFpsLimiter.mark();
 
         // Input once a round, as before 1.21 (the loop also runs when a
         // picture comes).
-        bool inputRound = coop_net_no_early_frames || elapsed_time(lastRound) >= COOP_NET_CLIENT_ROUND;
+        bool inputRound = coop_net_no_early_frames || inputNow || elapsed_time(lastRound) >= COOP_NET_CLIENT_ROUND;
+        inputNow = false;
         if (inputRound) {
             lastRound = get_time();
             // Local input goes to the host, except the quit keys: they leave.
@@ -3107,9 +3113,23 @@ int coop_net_client_run()
             // Until the next round is due, or the host's next picture comes:
             // then it's shown and acknowledged at once (the host sends only a
             // few before an acknowledgement), not up to a round later.
-            unsigned int spent = elapsed_time(lastRound);
-            if (spent < COOP_NET_CLIENT_ROUND && connection.socket != COOP_INVALID_SOCKET) {
-                coop_socket_wait(connection.socket, false, COOP_NET_CLIENT_ROUND - spent);
+            // A click or key press ends the wait too: it goes out at once
+            // (it waited half a round on average).
+            while (connection.socket != COOP_INVALID_SOCKET) {
+                unsigned int spent = elapsed_time(lastRound);
+                if (spent >= COOP_NET_CLIENT_ROUND) {
+                    break;
+                }
+                if (coop_socket_wait(connection.socket, false, std::min(COOP_NET_CLIENT_ROUND - spent, 2u))) {
+                    break;
+                }
+                SDL_PumpEvents();
+                if (SDL_PeepEvents(NULL, 0, SDL_PEEKEVENT, SDL_KEYDOWN, SDL_KEYUP) > 0
+                    || SDL_PeepEvents(NULL, 0, SDL_PEEKEVENT, SDL_MOUSEBUTTONDOWN, SDL_MOUSEBUTTONUP) > 0
+                    || SDL_PeepEvents(NULL, 0, SDL_PEEKEVENT, SDL_CONTROLLERBUTTONDOWN, SDL_CONTROLLERBUTTONUP) > 0) {
+                    inputNow = true;
+                    break;
+                }
             }
         }
     }

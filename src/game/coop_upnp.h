@@ -23,6 +23,10 @@ bool coop_upnp_refresh(std::string* log);
 // Closes what coop_upnp_map opened. Blocking (a second at most).
 void coop_upnp_unmap();
 
+// After coop_upnp_map: the router said its own address is a private one,
+// so another router (or the internet provider's) is in front of it.
+bool coop_upnp_behind_another_router();
+
 } // namespace fallout
 
 #endif /* FALLOUT_GAME_COOP_UPNP_H_ */

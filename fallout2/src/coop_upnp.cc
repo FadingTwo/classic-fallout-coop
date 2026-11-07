@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <atomic>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -57,6 +58,23 @@ typedef struct UpnpMapping {
 
 static std::mutex upnp_mutex;
 static UpnpMapping upnp_mapping;
+// The router's own address is private (another router in front of it).
+static std::atomic<bool> upnp_behind_another { false };
+
+// 10/8, 172.16/12, 192.168/16 and the providers' 100.64/10.
+static bool upnp_private_address(const std::string& text)
+{
+    unsigned int a, b, c, d;
+    if (sscanf(text.c_str(), "%u.%u.%u.%u", &a, &b, &c, &d) != 4) {
+        return false;
+    }
+    return a == 10 || (a == 172 && b >= 16 && b <= 31) || (a == 192 && b == 168) || (a == 100 && b >= 64 && b <= 127);
+}
+
+bool coop_upnp_behind_another_router()
+{
+    return upnp_behind_another;
+}
 
 static bool upnp_startup()
 {
@@ -482,6 +500,18 @@ int coop_upnp_map(int port, std::string* log)
                 mapping.mapped = true;
                 upnp_mapping = mapping;
                 *log += "port " + std::to_string(mapping.externalPort) + " opened on " + host + " for " + mapping.internalClient;
+                // A router whose own address is private sits behind another
+                // one (or the provider's): the port it opened can't be
+                // reached from the internet.
+                std::string body;
+                std::string external;
+                if (upnp_soap(mapping, "GetExternalIPAddress", "", &body) == 200) {
+                    external = upnp_tag(body, "NewExternalIPAddress", 0);
+                }
+                upnp_behind_another = upnp_private_address(external);
+                if (!external.empty()) {
+                    *log += "; its address is " + external + (upnp_behind_another ? " (private: behind another router)" : "");
+                }
                 return mapping.externalPort;
             }
             if (errorCode != "718") {

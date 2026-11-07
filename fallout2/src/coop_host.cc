@@ -103,6 +103,11 @@ static bool coop_host_free_roam_present = false;
 // that player's slot during their part of the frame).
 static CoopView coop_host_views[COOP_MAX_PLAYERS];
 
+// For the debug log: how long clicks and keys waited here before they
+// were fed (for their player's part of a frame, or a menu's loop).
+static unsigned long long coop_host_input_waits_total = 0;
+static unsigned int coop_host_input_waits_count = 0;
+
 // Player 1's view back after the others' parts without a full redraw:
 // their map window as it was, when those parts changed nothing on the map
 // but the 3D cursor (most frames: what walks around does so in the main
@@ -674,6 +679,10 @@ void coop_host_exit()
     }
 
     coop_net_cpu_report("host");
+    if (coop_host_input_waits_count != 0) {
+        debug_printf("\nCOOP HOST: the others' clicks and keys waited %llu ms on average to be fed (%u)\n",
+            coop_host_input_waits_total / coop_host_input_waits_count, coop_host_input_waits_count);
+    }
     if (coop_host_restores_total + coop_host_redraws_total > 0) {
         debug_printf("\nCOOP HOST: player 1's view restored %u times, redrawn %u times", coop_host_restores_total, coop_host_redraws_total);
         if (coop_host_restore_check_on) {
@@ -855,6 +864,8 @@ static bool coop_host_feed_input(int slot)
             }
             if (input.value != fedButtons) {
                 acts = true;
+                coop_host_input_waits_total += elapsed_time(input.receivedAt);
+                coop_host_input_waits_count++;
                 coop_host_fed_buttons[slot] = input.value;
             }
             coop_host_fed_x[slot] = input.x;
@@ -862,6 +873,8 @@ static bool coop_host_feed_input(int slot)
             inject_mouse(input.x, input.y, input.value);
         } else if (input.kind == COOP_NET_INPUT_KEY) {
             acts = true;
+            coop_host_input_waits_total += elapsed_time(input.receivedAt);
+            coop_host_input_waits_count++;
             // Chat in a menu too (inventory, talk, barter...): T starts it
             // there before the menu's own T (barter's Talk: it ended the
             // barter), and while typing every key is the chat's. (Free roam

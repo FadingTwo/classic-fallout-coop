@@ -184,6 +184,7 @@ static int coop_autotest_map_time(AutotestNewGameProc* newGame);
 static int coop_autotest_pack(AutotestNewGameProc* newGame);
 static int coop_autotest_story_kill(AutotestNewGameProc* newGame);
 static void coop_autotest_log_story(const char* when);
+static void coop_autotest_hit(Object* attacker, Object* defender, int damage);
 static bool coop_autotest_frames_until(unsigned int ms, bool (*done)());
 static int coop_autotest_object_find(AutotestNewGameProc* newGame);
 static int coop_autotest_config_brackets(AutotestNewGameProc* newGame);
@@ -5589,6 +5590,20 @@ static void coop_autotest_log_story(const char* when)
         when, gameGetGlobalVar(GVAR_VAULT13_FOUND_GECK), gameGetGlobalVar(GVAR_ARROYO_RETURN_GECK),
         gameGetGlobalVar(GVAR_ENCLAVE_FRANK_DEAD), gameGetGlobalVar(GVAR_ENCLAVE_REACTOR),
         gameGetGlobalVar(GVAR_ENCLAVE_COUNTDOWN), gameGetGlobalVar(GVAR_ENCLAVE_TIMER), gameGetGlobalVar(GVAR_ENCLAVE_ALARM));
+    // COOP_AUTOTEST_GVARS=155,247: those global variables too.
+    if (const char* list = getenv("COOP_AUTOTEST_GVARS")) {
+        std::string line;
+        for (const char* at = list; *at != '\0';) {
+            int var = atoi(at);
+            line += " " + std::to_string(var) + "=" + std::to_string(gameGetGlobalVar(var));
+            const char* comma = strchr(at, ',');
+            if (comma == nullptr) {
+                break;
+            }
+            at = comma + 1;
+        }
+        autotest_log("globals %s:%s", when, line.c_str());
+    }
 }
 
 // Single player (or with [coop]enabled=1 and player 2 added: co-op): on
@@ -5640,10 +5655,22 @@ static int coop_autotest_story_kill(AutotestNewGameProc* newGame)
     // Players' turns in the fight that follows pass by themselves.
     coop_set_turn_hook(coop_autotest_pass_turn);
     autotest_log("killing %s (pid %x, script %d)", critterGetName(victim), victim->pid, victim->sid);
-    critterKill(victim, -1, true);
-    if (victim->sid != -1) {
-        scriptSetObjects(victim->sid, gDude, nullptr);
-        scriptExecProc(victim->sid, SCRIPT_PROC_DESTROY);
+    // COOP_AUTOTEST_KILLER=1 or 2: a blow from that player, as in a fight
+    // (the death script runs from the damage, with them as the killer).
+    const char* killer = getenv("COOP_AUTOTEST_KILLER");
+    int killerIndex = killer != nullptr ? atoi(killer) - 1 : -1;
+    if (killerIndex >= 0 && killerIndex < coop_player_count()) {
+        autotest_log("killed by player %d", killerIndex + 1);
+        coop_autotest_hit(coop_player(killerIndex)->obj, victim, 1000);
+    } else {
+        critterKill(victim, -1, true);
+        if (victim->sid != -1) {
+            scriptSetObjects(victim->sid, gDude, nullptr);
+            scriptExecProc(victim->sid, SCRIPT_PROC_DESTROY);
+        }
+    }
+    if (!critterIsDead(victim)) {
+        autotest_fail("%s didn't die", critterGetName(victim));
     }
     coop_autotest_frames_until(15000, nullptr);
     coop_set_turn_hook(nullptr);
