@@ -316,6 +316,10 @@ static void movie_MVE_ShowFrame(SDL_Surface* surface, int srcWidth, int srcHeigh
     SDL_SetSurfacePalette(surface, gSdlSurface->format->palette);
     SDL_BlitSurface(surface, &srcRect, gSdlSurface, &destRect);
     SDL_BlitSurface(gSdlSurface, NULL, gSdlTextureSurface, NULL);
+    // CE: only what changed is uploaded (svga.cc); the whole screen was
+    // written here. Unmarked, movies showed a new picture about once a
+    // second (since 1.16).
+    svga_mark_dirty(NULL);
     renderPresent();
 }
 

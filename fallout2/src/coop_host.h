@@ -37,6 +37,9 @@ int coop_host_view_center(int slot);
 // The cursor of player `slot` + 1's view (-1 before they had one).
 int coop_host_view_cursor(int slot);
 unsigned int coop_host_view_parts(int slot);
+
+// Chat messages player `slot` + 1 sent (tests).
+unsigned int coop_host_chat_count(int slot);
 // Testing: how many of their parts ended with their 3D cursor showing what
 // is under it (the mouse rested there).
 unsigned int coop_host_view_hover_parts(int slot);

@@ -4898,7 +4898,14 @@ static void _damage_object(Object* a1, int damage, bool animated, int a4, Object
 
     if ((a1->data.critter.combat.results & DAM_DEAD) != 0) {
         scriptSetObjects(a1->sid, a1->data.critter.combat.whoHitMe, nullptr);
-        scriptExecProc(a1->sid, SCRIPT_PROC_DESTROY);
+        {
+            // CE: co-op: death scripts ask "did the player kill me?" as
+            // source_obj == dude_obj: run with the player who made the kill
+            // as the dude (as Fallout 1: Killian's assassin).
+            PlayerState* killer = coop_player_of(a1) == nullptr ? coop_player_of(a1->data.critter.combat.whoHitMe) : nullptr;
+            ActivePlayerScope scope(killer);
+            scriptExecProc(a1->sid, SCRIPT_PROC_DESTROY);
+        }
         itemDestroyAllHidden(a1);
 
         // CE: co-op: no player character counts as a kill.

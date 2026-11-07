@@ -2098,6 +2098,46 @@ int _win_last_button_winID()
     return _last_button_winID;
 }
 
+void windowSaveButtonState(std::vector<WindowButtonState>* state, int* lastWin)
+{
+    state->clear();
+    for (int index = 0; index < gWindowsLength; index++) {
+        Window* window = gWindows[index];
+        if (window->hoveredButton != nullptr || window->clickedButton != nullptr) {
+            WindowButtonState entry;
+            entry.win = window->id;
+            entry.hovered = window->hoveredButton != nullptr ? window->hoveredButton->id : -1;
+            entry.clicked = window->clickedButton != nullptr ? window->clickedButton->id : -1;
+            state->push_back(entry);
+        }
+    }
+    *lastWin = _last_button_winID;
+}
+
+void windowLoadButtonState(const std::vector<WindowButtonState>& state, int lastWin)
+{
+    for (int index = 0; index < gWindowsLength; index++) {
+        Window* window = gWindows[index];
+        window->hoveredButton = nullptr;
+        window->clickedButton = nullptr;
+        for (const WindowButtonState& entry : state) {
+            if (entry.win != window->id) {
+                continue;
+            }
+            // By id: a button deleted since then is no longer in the list.
+            for (Button* button = window->buttonListHead; button != nullptr; button = button->next) {
+                if (button->id == entry.hovered) {
+                    window->hoveredButton = button;
+                }
+                if (button->id == entry.clicked) {
+                    window->clickedButton = button;
+                }
+            }
+        }
+    }
+    _last_button_winID = windowGetWindow(lastWin) != nullptr ? lastWin : -1;
+}
+
 // 0x4D92BC
 int buttonDestroy(int btn)
 {

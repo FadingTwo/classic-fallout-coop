@@ -37,6 +37,7 @@
 
 #include "config.h"
 #include "coop.h"
+#include "coop_upnp.h"
 #include "coop_compat.h"
 #include "cycle.h"
 #include "display_monitor.h"
@@ -297,6 +298,19 @@ static uint64_t coop_net_checksum_value = 0;
 // Host state.
 static CoopSocket coop_listen_socket = COOP_INVALID_SOCKET;
 
+// Flow control (clients that acknowledge frames): at most this many frames
+// on the way, so a slow line can't pile up seconds of delay in the buffers
+// between (the system's, the relay's).
+#define COOP_NET_FRAMES_IN_FLIGHT 2
+// ... and up to this many over a long way (1.21): with 2, a frame's trip
+// there and back of 100 ms (online, far from the relay) let only 20 frames
+// a second through, however fast the line. As many as 60 a second need,
+// going by the shortest trip seen; back to 2 when trips grow (frames pile
+// up: the line is full).
+#define COOP_NET_FRAMES_IN_FLIGHT_MAX 8
+// Testing: always COOP_NET_FRAMES_IN_FLIGHT (as before 1.21).
+static bool coop_net_fixed_flight = getenv("COOP_NET_FIXED_FLIGHT") != NULL;
+
 // Host state of each client (player 2 and up: `coop_peers[n]` is player
 // n + 1's), and the one the host functions below act on (coop_net_select).
 typedef struct CoopPeer {
@@ -309,6 +323,13 @@ typedef struct CoopPeer {
     bool bringsCharacter = false;
     std::vector<unsigned char> character;
     // Flow control (see COOP_NET_FRAMES_IN_FLIGHT).
+    // How many frames may be on the way now; the shortest trip (frame to
+    // acknowledgement) lately and a smoothed one.
+    unsigned int framesInFlight = COOP_NET_FRAMES_IN_FLIGHT;
+    unsigned int tripShortest = 0;
+    unsigned int tripShortestSince = 0;
+    unsigned int tripShortestNext = 0;
+    unsigned int tripSmoothed = 0;
     bool acks = false;
     bool unpacks = false;
     // Moves its last picture with the camera (flag 16, 1.15).
@@ -329,6 +350,22 @@ typedef struct CoopPeer {
     std::vector<unsigned char> scaledFrame;
     unsigned int since = 0;
     std::deque<CoopNetInput> input;
+    // Input messages received, and the last one acted on (see
+    // COOP_NET_MSG_INPUT_SEEN) and reported so.
+    unsigned int inputsReceived = 0;
+    unsigned int inputsTaken = 0;
+    unsigned int inputsTakenSent = 0;
+    // Takes INPUT_SEEN and draws its own cursor (flag 32, 1.21); the last
+    // shape sent to it.
+    bool seesInputs = false;
+    bool ownCursor = false;
+    bool cursorSent = false;
+    std::vector<unsigned char> cursorShape;
+    int cursorWidth = 0;
+    int cursorHeight = 0;
+    int cursorHotX = 0;
+    int cursorHotY = 0;
+    int cursorTrans = 0;
     // Traffic statistics for the debug log.
     unsigned long long statsBytes = 0;
     unsigned long long statsRawBytes = 0;
@@ -409,6 +446,13 @@ static unsigned int coop_net_frame_hash(const unsigned char* data, size_t size)
     }
     return (unsigned int)(hash ^ (hash >> 32));
 }
+// Testing: a client that waits out each round (60 a second) before it
+// reads the host's next picture (as before 1.21).
+static bool coop_net_no_early_frames = getenv("COOP_NET_NO_EARLY_FRAMES") != NULL;
+// A client's round: input sent, pictures read and shown.
+#define COOP_NET_CLIENT_ROUND 16
+// Testing: the host draws the client's cursor on its frames (as before 1.21).
+static bool coop_net_no_own_cursor = getenv("COOP_NET_NO_OWN_CURSOR") != NULL;
 // Testing: a client that doesn't take packed frames.
 static bool coop_net_no_packing = getenv("COOP_NET_NO_PACKING") != NULL;
 // Testing: a client that doesn't move its picture with the camera (as
@@ -417,10 +461,6 @@ static bool coop_net_no_shifts = getenv("COOP_NET_NO_SHIFTS") != NULL;
 // Testing: the host doesn't hold frames back (still measures the delay).
 static bool coop_net_no_flow = getenv("COOP_NET_NO_FLOW") != NULL;
 
-// Flow control (clients that acknowledge frames): at most this many frames
-// on the way, so a slow line can't pile up seconds of delay in the buffers
-// between (the system's, the relay's).
-#define COOP_NET_FRAMES_IN_FLIGHT 2
 
 // Background music playing, for clients joining later.
 static bool coop_music_playing = false;
@@ -856,6 +896,14 @@ void coop_net_send_current_screen()
         return;
     }
 
+    // What the frame shows the result of.
+    if (coop_peer->seesInputs && coop_peer->inputsTaken != coop_peer->inputsTakenSent) {
+        CoopWriter writer;
+        writer.u32(coop_peer->inputsTaken);
+        coop_connection_send(&coop_client, COOP_NET_MSG_INPUT_SEEN, writer.data);
+        coop_peer->inputsTakenSent = coop_peer->inputsTaken;
+    }
+
     unsigned char palette[768];
     SDL_Color* colors = gSdlSurface->format->palette->colors;
     for (int index = 0; index < 256; index++) {
@@ -1055,6 +1103,33 @@ static void coop_host_welcome(bool accepted, const char* reason)
     coop_connection_send(&coop_client, COOP_NET_MSG_WELCOME, writer.data);
 }
 
+// A frame's trip (sent to acknowledged): how many may be on the way.
+static void coop_net_flow_trip(CoopPeer* peer, unsigned int trip)
+{
+    // The shortest trip of the last 10 to 20 seconds (a route can change).
+    if (peer->tripShortest == 0 || trip < peer->tripShortest) {
+        peer->tripShortest = std::max(trip, 1u);
+    }
+    if (peer->tripShortestNext == 0 || trip < peer->tripShortestNext) {
+        peer->tripShortestNext = std::max(trip, 1u);
+    }
+    if (elapsed_time(peer->tripShortestSince) >= 10000) {
+        peer->tripShortest = peer->tripShortestNext;
+        peer->tripShortestNext = 0;
+        peer->tripShortestSince = get_time();
+    }
+    peer->tripSmoothed = peer->tripSmoothed == 0 ? trip : (peer->tripSmoothed * 7 + trip) / 8;
+
+    unsigned int frames = COOP_NET_FRAMES_IN_FLIGHT;
+    if (!coop_net_fixed_flight && peer->tripSmoothed <= peer->tripShortest * 2 + 40) {
+        // A frame every 16 ms over the trip, and one more.
+        frames = std::clamp(peer->tripShortest / 16 + 2, (unsigned int)COOP_NET_FRAMES_IN_FLIGHT, (unsigned int)COOP_NET_FRAMES_IN_FLIGHT_MAX);
+    }
+    if (frames != peer->framesInFlight) {
+        peer->framesInFlight = frames;
+    }
+}
+
 static void coop_host_handle(const CoopMessage& message)
 {
     CoopReader reader(message.payload);
@@ -1074,6 +1149,19 @@ static void coop_host_handle(const CoopMessage& message)
             // Since 1.15 flag 16: the client moves its last picture with
             // the camera (older ones would misread such a frame).
             coop_client_shifts = (flags & 16) != 0;
+            // Since 1.21 flag 32: the client draws its player's cursor and
+            // takes INPUT_SEEN messages.
+            coop_peer->framesInFlight = COOP_NET_FRAMES_IN_FLIGHT;
+            coop_peer->tripShortest = 0;
+            coop_peer->tripShortestNext = 0;
+            coop_peer->tripShortestSince = get_time();
+            coop_peer->tripSmoothed = 0;
+            coop_peer->seesInputs = (flags & 32) != 0;
+            coop_peer->ownCursor = coop_peer->seesInputs && !coop_net_no_own_cursor;
+            coop_peer->cursorSent = false;
+            coop_peer->inputsReceived = 0;
+            coop_peer->inputsTaken = 0;
+            coop_peer->inputsTakenSent = 0;
             // Since 1.9 flag 8: player 2 brings their own character (a
             // CHARACTER message follows).
             coop_client_brings_character = (flags & 8) != 0;
@@ -1163,8 +1251,13 @@ static void coop_host_handle(const CoopMessage& message)
         }
         break;
     case COOP_NET_MSG_INPUT:
-        if (coop_client_ready) {
+        coop_peer->inputsReceived++;
+        if (!coop_client_ready) {
+            // Dropped: counts as acted on.
+            coop_peer->inputsTaken = coop_peer->inputsReceived;
+        } else {
             CoopNetInput input;
+            input.number = coop_peer->inputsReceived;
             input.kind = reader.u8();
             input.x = (short)reader.u16();
             input.y = (short)reader.u16();
@@ -1191,6 +1284,7 @@ static void coop_host_handle(const CoopMessage& message)
                     coop_stats_delay_total += delay;
                     coop_stats_delay_count++;
                     coop_stats_delay_max = std::max(coop_stats_delay_max, delay);
+                    coop_net_flow_trip(coop_peer, delay);
                 }
                 coop_frames_acked++;
             }
@@ -1268,7 +1362,67 @@ bool coop_net_next_input(CoopNetInput* input)
 
     *input = coop_client_input.front();
     coop_client_input.pop_front();
+    coop_peer->inputsTaken = input->number;
     return true;
+}
+
+bool coop_net_peek_input(CoopNetInput* input)
+{
+    if (coop_client_input.empty()) {
+        return false;
+    }
+
+    *input = coop_client_input.front();
+    return true;
+}
+
+bool coop_net_client_draws_cursor()
+{
+    return coop_client_ready && coop_peer->ownCursor;
+}
+
+void coop_net_send_cursor(const unsigned char* shape, int width, int height, int full, int hotx, int hoty, int trans)
+{
+    if (!coop_net_client_draws_cursor()) {
+        return;
+    }
+
+    if (shape == NULL || width <= 0 || height <= 0) {
+        width = 0;
+        height = 0;
+        hotx = 0;
+        hoty = 0;
+        trans = 0;
+    }
+
+    std::vector<unsigned char> pixels;
+    pixels.reserve((size_t)width * height);
+    for (int row = 0; row < height; row++) {
+        pixels.insert(pixels.end(), shape + (size_t)row * full, shape + (size_t)row * full + width);
+    }
+
+    CoopPeer* peer = coop_peer;
+    if (peer->cursorSent && peer->cursorWidth == width && peer->cursorHeight == height && peer->cursorHotX == hotx
+        && peer->cursorHotY == hoty && peer->cursorTrans == trans && peer->cursorShape == pixels) {
+        return;
+    }
+
+    CoopWriter writer;
+    writer.u16((unsigned int)width);
+    writer.u16((unsigned int)height);
+    writer.u16((unsigned int)hotx);
+    writer.u16((unsigned int)hoty);
+    writer.u8((unsigned int)trans & 0xFF);
+    writer.data.insert(writer.data.end(), pixels.begin(), pixels.end());
+    coop_connection_send(&coop_client, COOP_NET_MSG_CURSOR, writer.data);
+
+    peer->cursorSent = true;
+    peer->cursorWidth = width;
+    peer->cursorHeight = height;
+    peer->cursorHotX = hotx;
+    peer->cursorHotY = hoty;
+    peer->cursorTrans = trans;
+    peer->cursorShape.swap(pixels);
 }
 
 // Frame compression: a small LZ77. Tokens: a byte c < 0x80 is followed by
@@ -1403,7 +1557,7 @@ bool coop_net_can_send_frame()
     }
 
     // Enough on the way already: the next frame shows the changes since.
-    if (coop_client_acks && !coop_net_no_flow && coop_frames_sent - coop_frames_acked >= COOP_NET_FRAMES_IN_FLIGHT) {
+    if (coop_client_acks && !coop_net_no_flow && coop_frames_sent - coop_frames_acked >= coop_peer->framesInFlight) {
         return false;
     }
 
@@ -1621,13 +1775,13 @@ void coop_net_send_screen(const unsigned char* pixels, int pitch, int width, int
             coop_stats_since = get_time();
         } else if (elapsed_time(coop_stats_since) >= 10000) {
             unsigned int elapsed = elapsed_time(coop_stats_since);
-            debug_printf("\nCOOP NET: %u frames, %llu KB/s (%llu KB/s unpacked), %llu bytes/frame, delay %u ms (max %u)\n",
+            debug_printf("\nCOOP NET: %u frames, %llu KB/s (%llu KB/s unpacked), %llu bytes/frame, delay %u ms (max %u), %u on the way\n",
                 coop_stats_frames,
                 coop_stats_bytes * 1000 / elapsed / 1024,
                 coop_stats_raw_bytes * 1000 / elapsed / 1024,
                 coop_stats_bytes / coop_stats_frames,
                 coop_stats_delay_count != 0 ? (unsigned int)(coop_stats_delay_total / coop_stats_delay_count) : 0,
-                coop_stats_delay_max);
+                coop_stats_delay_max, coop_peer->framesInFlight);
             coop_stats_delay_total = 0;
             coop_stats_raw_bytes = 0;
             coop_stats_delay_count = 0;
@@ -1718,6 +1872,30 @@ static CoopSocket coop_relay_control = COOP_INVALID_SOCKET;
 static std::string coop_relay_control_in;
 static unsigned int coop_relay_retry_at = 0;
 static std::deque<CoopSocket> coop_relay_incoming;
+
+// Direct connections (1.22): player 1's router opens the game's port
+// (UPnP, in the background), the co-op server tries it, and players who
+// join by code then connect straight to player 1 when it works (the relay
+// otherwise). state: 0 not started, 1 running, 2 done.
+typedef struct CoopDirect {
+    std::atomic<int> state { 0 };
+    int port = 0;
+    std::string log;
+} CoopDirect;
+
+static std::shared_ptr<CoopDirect> coop_direct;
+// The port told to the server on this control connection.
+static bool coop_direct_told = false;
+// What the server found (-1: not known yet, 0: no, 1: yes), and when the
+// router was last asked to keep the port open.
+static int coop_direct_reachable = -1;
+static unsigned int coop_direct_refreshed = 0;
+// Testing: no direct connections (as before 1.22); or the direct one
+// can't be made (a firewall on the way): the relay after all.
+static bool coop_net_no_direct = getenv("COOP_NET_NO_DIRECT") != NULL;
+static bool coop_net_test_direct_fails = getenv("COOP_NET_TEST_DIRECT_FAILS") != NULL;
+// The router keeps the port an hour; asked again every half.
+#define COOP_DIRECT_REFRESH (30 * 60 * 1000)
 
 // Connects to "host:port" (blocking, as before relays existed).
 static CoopSocket coop_connect_direct(const std::string& host, int port, std::string* error)
@@ -1931,6 +2109,7 @@ static void coop_relay_set_control(CoopSocket socket, const std::string& code)
 {
     coop_relay_control = socket;
     coop_relay_control_in.clear();
+    coop_direct_told = false;
     coop_relay_code_value = code;
     debug_printf("\nCOOP NET: relay room %s\n", code.c_str());
 }
@@ -1959,11 +2138,32 @@ bool coop_net_relay_host_start(std::string* error, const std::string& wanted)
         return false;
     }
     coop_relay_set_control(socket, code);
+
+    // The router opens our port meanwhile.
+    if (!coop_net_no_direct) {
+        std::shared_ptr<CoopDirect> direct = std::make_shared<CoopDirect>();
+        direct->state = 1;
+        coop_direct = direct;
+        coop_direct_reachable = -1;
+        int port = coop_net_port_value;
+        std::thread([direct, port]() {
+            std::string log;
+            int mapped = coop_upnp_map(port, &log);
+            direct->port = mapped != 0 ? mapped : port;
+            direct->log = log;
+            direct->state = 2;
+        }).detach();
+    }
     return true;
 }
 
 void coop_net_relay_host_stop()
 {
+    if (coop_direct != NULL) {
+        coop_direct = NULL;
+        coop_upnp_unmap();
+    }
+
     if (coop_relay_control != COOP_INVALID_SOCKET) {
         coop_close_socket(coop_relay_control);
         coop_relay_control = COOP_INVALID_SOCKET;
@@ -2051,10 +2251,37 @@ static void coop_relay_host_pump()
         break;
     }
 
+    // Our port (opened by the router or not: it may be forwarded by
+    // hand), for the server to try.
+    if (coop_direct != NULL && coop_direct->state == 2 && !coop_direct_told && coop_relay_control != COOP_INVALID_SOCKET) {
+        if (coop_direct_reachable == -1) {
+            debug_printf("\nCOOP NET: router: %s\n", coop_direct->log.c_str());
+        }
+        coop_relay_send_line(coop_relay_control, "DIRECT " + std::to_string(coop_direct->port));
+        coop_direct_told = true;
+        coop_direct_refreshed = get_time();
+    }
+    if (coop_direct != NULL && coop_direct->state == 2 && elapsed_time(coop_direct_refreshed) >= COOP_DIRECT_REFRESH) {
+        coop_direct_refreshed = get_time();
+        std::thread([]() {
+            std::string log;
+            coop_upnp_refresh(&log);
+        }).detach();
+    }
+
     size_t end;
     while ((end = coop_relay_control_in.find('\n')) != std::string::npos) {
         std::string line = coop_relay_control_in.substr(0, end);
         coop_relay_control_in.erase(0, end + 1);
+        if (line == "DIRECT OK" || line == "DIRECT NO") {
+            int reachable = line == "DIRECT OK" ? 1 : 0;
+            if (reachable != coop_direct_reachable) {
+                debug_printf("\nCOOP NET: %s\n", reachable ? "players can connect to us directly" : "players can't reach us directly: they join through the relay");
+                display_print((char*)(reachable ? "Players who join connect to you directly." : "Players join through the co-op server (your router keeps the game's port closed)."));
+            }
+            coop_direct_reachable = reachable;
+            continue;
+        }
         if (line.compare(0, 5, "CONN ") != 0) {
             continue; // PING
         }
@@ -2085,6 +2312,40 @@ static CoopSocket coop_relay_take_incoming()
     return socket;
 }
 
+// Joining through the relay after a direct try failed (no second one).
+static bool coop_relay_join_tried_direct = false;
+// How long a direct connection to player 1 may take to answer.
+#define COOP_DIRECT_CONNECT_TIMEOUT 3000
+
+// Connects to `host`:`port` (an IPv4 address), waiting at most `ms`. The
+// socket is left non-blocking.
+static CoopSocket coop_connect_quick(const std::string& host, int port, unsigned int ms)
+{
+    sockaddr_in address;
+    memset(&address, 0, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_port = htons((unsigned short)port);
+    if (inet_pton(AF_INET, host.c_str(), &(address.sin_addr)) != 1) {
+        return COOP_INVALID_SOCKET;
+    }
+    CoopSocket socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (socket == COOP_INVALID_SOCKET) {
+        return COOP_INVALID_SOCKET;
+    }
+    coop_socket_set_non_blocking(socket);
+    bool connected = connect(socket, (sockaddr*)&address, sizeof(address)) == 0;
+    if (!connected && coop_socket_would_block() && coop_socket_wait(socket, true, ms)) {
+        int socketError = 0;
+        socklen_t length = sizeof(socketError);
+        connected = getsockopt(socket, SOL_SOCKET, SO_ERROR, (char*)&socketError, &length) == 0 && socketError == 0;
+    }
+    if (!connected) {
+        coop_close_socket(socket);
+        return COOP_INVALID_SOCKET;
+    }
+    return socket;
+}
+
 static CoopSocket coop_relay_join(std::string* error)
 {
     CoopSocket socket = coop_relay_connect(coop_relay_server, error);
@@ -2092,10 +2353,37 @@ static CoopSocket coop_relay_join(std::string* error)
         return COOP_INVALID_SOCKET;
     }
 
+    // "direct": we can connect to player 1 ourselves (1.22); the server
+    // then says where, when it can be reached.
+    bool direct = !coop_net_no_direct && !coop_relay_join_tried_direct;
     std::string line;
-    if (!coop_relay_send_line(socket, "FCOOP-RELAY JOIN " + coop_relay_join_code + " " + coop_net_game_name() + " " + coop_net_version())
-        || !coop_relay_read_line(socket, COOP_RELAY_JOIN_TIMEOUT, &line)
-        || line != "OK") {
+    if (!coop_relay_send_line(socket, "FCOOP-RELAY JOIN " + coop_relay_join_code + " " + coop_net_game_name() + " " + coop_net_version() + (direct ? " direct" : ""))
+        || !coop_relay_read_line(socket, COOP_RELAY_JOIN_TIMEOUT, &line)) {
+        *error = "No answer through the co-op server.";
+        coop_close_socket(socket);
+        return COOP_INVALID_SOCKET;
+    }
+
+    if (line.compare(0, 7, "DIRECT ") == 0) {
+        coop_close_socket(socket);
+        std::string where = line.substr(7);
+        size_t space = where.find(' ');
+        std::string address = where.substr(0, space);
+        int port = space != std::string::npos ? atoi(where.c_str() + space + 1) : 0;
+        CoopSocket directSocket = port > 0 && !coop_net_test_direct_fails ? coop_connect_quick(address, port, COOP_DIRECT_CONNECT_TIMEOUT) : COOP_INVALID_SOCKET;
+        if (directSocket != COOP_INVALID_SOCKET) {
+            debug_printf("\nCOOP NET: joined %s directly\n", coop_relay_join_code.c_str());
+            return directSocket;
+        }
+        // Through the relay after all.
+        debug_printf("\nCOOP NET: %s couldn't be reached directly, joining through the relay\n", coop_relay_join_code.c_str());
+        coop_relay_join_tried_direct = true;
+        socket = coop_relay_join(error);
+        coop_relay_join_tried_direct = false;
+        return socket;
+    }
+
+    if (line != "OK") {
         *error = line.compare(0, 4, "ERR ") == 0 ? line.substr(4) : "No answer through the co-op server.";
         coop_close_socket(socket);
         return COOP_INVALID_SOCKET;
@@ -2173,9 +2461,9 @@ static bool coop_client_connect(CoopConnection* connection, std::string* error)
     coop_outline_colors_from_config(outlines);
     // Flags: 1 colorblind (1.2), 2 acknowledges frames, 4 packed frames (1.5.7).
     // 8: brings their own character (1.9). 16: moves its picture with the
-    // camera (1.15).
+    // camera (1.15). 32: draws its cursor, takes INPUT_SEEN (1.21).
     hello.u8((outlines[0] == 2 && outlines[1] == 3 ? 1 : 0) | (coop_net_no_acks ? 0 : 2) | (coop_net_no_packing ? 0 : 4)
-        | (coop_bring_character.empty() ? 0 : 8) | (coop_net_no_shifts ? 0 : 16));
+        | (coop_bring_character.empty() ? 0 : 8) | (coop_net_no_shifts ? 0 : 16) | 32);
     hello.u8(outlines[0]);
     hello.u8(outlines[1]);
     hello.u16((unsigned int)screenGetWidth());
@@ -2387,6 +2675,29 @@ int coop_net_client_run()
     bool hostLeft = false;
     bool hostSaidBye = false;
     unsigned int lastPresent = 0;
+    // Our cursor, drawn here (the host sends its shape, 1.21). Static: the
+    // mouse keeps a pointer to it.
+    static std::vector<unsigned char> cursorPixels;
+    unsigned int cursorShapes = 0;
+    int shownX = -1;
+    int shownY = -1;
+    // How long clicks and keys take to show: input messages sent, those
+    // that act (a button pressed or let go, a key) and when, and since when
+    // the frame to come shows one.
+    unsigned int inputsSent = 0;
+    std::deque<std::pair<unsigned int, unsigned int>> actingSent;
+    bool actingShown = false;
+    unsigned int actingSince = 0;
+    unsigned long long inputDelayTotal = 0;
+    unsigned int inputDelayCount = 0;
+    unsigned int inputDelayMax = 0;
+    // How smooth the pictures came: the gaps between them while playing
+    // (not a still screen: only gaps followed by a picture count).
+    unsigned int lastPicture = 0;
+    unsigned int picturesTimed = 0;
+    unsigned long long pictureGapTotal = 0;
+    unsigned int pictureGapsOver50 = 0;
+    unsigned int pictureGapsOver100 = 0;
     // Testing: our window checked against the whole picture now and then.
     unsigned int screensDrawn = 0;
     unsigned int screensChecked = 0;
@@ -2395,56 +2706,70 @@ int coop_net_client_run()
     unsigned long long readTicks = 0;
     unsigned long long drawTicks = 0;
     unsigned long long presentTicks = 0;
+    unsigned int lastRound = get_time() - COOP_NET_CLIENT_ROUND;
     while (!hostLeft) {
         sharedFpsLimiter.mark();
 
-        // Local input goes to the host, except the quit keys: they leave.
-        int keyCode = get_input();
-        if (keyCode == KEY_F10 || keyCode == KEY_CTRL_Q || keyCode == KEY_CTRL_X) {
-            coop_client_exit_requested = true;
-        } else if (keyCode >= 0) {
-            CoopWriter writer;
-            writer.u8(COOP_NET_INPUT_KEY);
-            writer.u16(0);
-            writer.u16(0);
-            writer.u32((unsigned int)keyCode);
-            coop_connection_send(&connection, COOP_NET_MSG_INPUT, writer.data);
-        }
+        // Input once a round, as before 1.21 (the loop also runs when a
+        // picture comes).
+        bool inputRound = coop_net_no_early_frames || elapsed_time(lastRound) >= COOP_NET_CLIENT_ROUND;
+        if (inputRound) {
+            lastRound = get_time();
+            // Local input goes to the host, except the quit keys: they leave.
+            int keyCode = get_input();
+            if (keyCode == KEY_F10 || keyCode == KEY_CTRL_Q || keyCode == KEY_CTRL_X) {
+                coop_client_exit_requested = true;
+            } else if (keyCode >= 0) {
+                CoopWriter writer;
+                writer.u8(COOP_NET_INPUT_KEY);
+                writer.u16(0);
+                writer.u16(0);
+                writer.u32((unsigned int)keyCode);
+                coop_connection_send(&connection, COOP_NET_MSG_INPUT, writer.data);
+                inputsSent++;
+                actingSent.emplace_back(inputsSent, get_time());
+            }
 
-        int x;
-        int y;
-        mouse_get_position(&x, &y);
-        // Window -> frame: also when the frame is shown at its own size but
-        // off the corner (black bars: player 1's screen was scaled down to
-        // fit ours in one direction). Those clicks went that far off, e.g.
-        // 40 pixels with a 1920x1080 player 1 on a 1280x800 Steam Deck.
-        if (drawWidth != 0 && drawHeight != 0) {
-            x = std::clamp((x - drawX) * frameWidth / drawWidth, 0, frameWidth - 1);
-            y = std::clamp((y - drawY) * frameHeight / drawHeight, 0, frameHeight - 1);
-        }
-        int mouseEvents = mouse_get_buttons();
-        int buttons = 0;
-        if ((mouseEvents & MOUSE_EVENT_LEFT_BUTTON_DOWN_REPEAT) != 0) {
-            buttons |= MOUSE_STATE_LEFT_BUTTON_DOWN;
-        }
-        if ((mouseEvents & MOUSE_EVENT_RIGHT_BUTTON_DOWN_REPEAT) != 0) {
-            buttons |= MOUSE_STATE_RIGHT_BUTTON_DOWN;
-        }
+            int x;
+            int y;
+            mouse_get_position(&x, &y);
+            // Window -> frame: also when the frame is shown at its own size
+            // but off the corner (black bars: player 1's screen was scaled
+            // down to fit ours in one direction). Those clicks went that far
+            // off, e.g. 40 pixels with a 1920x1080 player 1 on a 1280x800
+            // Steam Deck.
+            if (drawWidth != 0 && drawHeight != 0) {
+                x = std::clamp((x - drawX) * frameWidth / drawWidth, 0, frameWidth - 1);
+                y = std::clamp((y - drawY) * frameHeight / drawHeight, 0, frameHeight - 1);
+            }
+            int mouseEvents = mouse_get_buttons();
+            int buttons = 0;
+            if ((mouseEvents & MOUSE_EVENT_LEFT_BUTTON_DOWN_REPEAT) != 0) {
+                buttons |= MOUSE_STATE_LEFT_BUTTON_DOWN;
+            }
+            if ((mouseEvents & MOUSE_EVENT_RIGHT_BUTTON_DOWN_REPEAT) != 0) {
+                buttons |= MOUSE_STATE_RIGHT_BUTTON_DOWN;
+            }
 
-        // Also now and then while nothing changes: a quiet connection may
-        // be closed on the way (proxies, the co-op server's relay).
-        static unsigned int lastMouseSent = 0;
-        if (x != sentX || y != sentY || buttons != sentButtons || elapsed_time(lastMouseSent) > COOP_NET_KEEPALIVE) {
-            lastMouseSent = get_time();
-            CoopWriter writer;
-            writer.u8(COOP_NET_INPUT_MOUSE);
-            writer.u16((unsigned int)x);
-            writer.u16((unsigned int)y);
-            writer.u32((unsigned int)buttons);
-            coop_connection_send(&connection, COOP_NET_MSG_INPUT, writer.data);
-            sentX = x;
-            sentY = y;
-            sentButtons = buttons;
+            // Also now and then while nothing changes: a quiet connection
+            // may be closed on the way (proxies, the co-op server's relay).
+            static unsigned int lastMouseSent = 0;
+            if (x != sentX || y != sentY || buttons != sentButtons || elapsed_time(lastMouseSent) > COOP_NET_KEEPALIVE) {
+                lastMouseSent = get_time();
+                CoopWriter writer;
+                writer.u8(COOP_NET_INPUT_MOUSE);
+                writer.u16((unsigned int)x);
+                writer.u16((unsigned int)y);
+                writer.u32((unsigned int)buttons);
+                coop_connection_send(&connection, COOP_NET_MSG_INPUT, writer.data);
+                inputsSent++;
+                if (buttons != sentButtons && sentButtons != -1) {
+                    actingSent.emplace_back(inputsSent, get_time());
+                }
+                sentX = x;
+                sentY = y;
+                sentButtons = buttons;
+            }
         }
 
         // Host output.
@@ -2612,6 +2937,37 @@ int coop_net_client_run()
                     }
                 }
                 break;
+            case COOP_NET_MSG_CURSOR:
+                if (true) {
+                    int width = reader.u16();
+                    int height = reader.u16();
+                    int hotx = reader.u16();
+                    int hoty = reader.u16();
+                    int trans = reader.u8();
+                    const unsigned char* pixels = width > 0 && height > 0 && width <= 256 && height <= 256
+                        ? reader.bytes((size_t)width * height)
+                        : NULL;
+                    if (pixels != NULL) {
+                        cursorShapes++;
+                        cursorPixels.assign(pixels, pixels + (size_t)width * height);
+                        mouse_set_shape(cursorPixels.data(), width, height, width, hotx, hoty, (char)trans);
+                    } else if (reader.ok()) {
+                        mouse_set_shape(&blankCursor, 1, 1, 1, 0, 0, 0);
+                    }
+                }
+                break;
+            case COOP_NET_MSG_INPUT_SEEN:
+                if (true) {
+                    unsigned int seen = reader.u32();
+                    while (reader.ok() && !actingSent.empty() && actingSent.front().first <= seen) {
+                        if (!actingShown) {
+                            actingShown = true;
+                            actingSince = actingSent.front().second;
+                        }
+                        actingSent.pop_front();
+                    }
+                }
+                break;
             case COOP_NET_MSG_BYE:
                 hostLeft = true;
                 hostSaidBye = true;
@@ -2713,15 +3069,63 @@ int coop_net_client_run()
         // otherwise ten times a second, in case the window was covered.
         Uint64 presentStart = SDL_GetPerformanceCounter();
         drawTicks += presentStart - drawStart;
-        if (redraw || elapsed_time(lastPresent) >= 100) {
+        // (Also when our cursor moved.)
+        int mouseX;
+        int mouseY;
+        mouse_get_position(&mouseX, &mouseY);
+        bool cursorMoved = mouseX != shownX || mouseY != shownY;
+        if (redraw) {
+            if (lastPicture != 0) {
+                unsigned int gap = elapsed_time(lastPicture);
+                // (Over a second: nothing moved meanwhile.)
+                if (gap < 1000) {
+                    picturesTimed++;
+                    pictureGapTotal += gap;
+                    pictureGapsOver50 += gap > 50 ? 1 : 0;
+                    pictureGapsOver100 += gap > 100 ? 1 : 0;
+                }
+            }
+            lastPicture = get_time();
+        }
+        if (redraw || cursorMoved || elapsed_time(lastPresent) >= 100) {
             renderPresent();
             lastPresent = get_time();
+            shownX = mouseX;
+            shownY = mouseY;
+            if (redraw && actingShown) {
+                unsigned int delay = elapsed_time(actingSince);
+                inputDelayTotal += delay;
+                inputDelayCount++;
+                inputDelayMax = std::max(inputDelayMax, delay);
+                actingShown = false;
+            }
         }
         presentTicks += SDL_GetPerformanceCounter() - presentStart;
-        sharedFpsLimiter.throttle();
+        if (coop_net_no_early_frames) {
+            sharedFpsLimiter.throttle();
+        } else {
+            // Until the next round is due, or the host's next picture comes:
+            // then it's shown and acknowledged at once (the host sends only a
+            // few before an acknowledgement), not up to a round later.
+            unsigned int spent = elapsed_time(lastRound);
+            if (spent < COOP_NET_CLIENT_ROUND && connection.socket != COOP_INVALID_SOCKET) {
+                coop_socket_wait(connection.socket, false, COOP_NET_CLIENT_ROUND - spent);
+            }
+        }
     }
 
     debug_printf("\nCOOP NET: host left (%d sounds played)\n", soundsPlayed);
+    if (picturesTimed != 0) {
+        debug_printf("\nCOOP NET: pictures every %llu ms on average (%u timed; %u gaps over 50 ms, %u over 100 ms)\n",
+            pictureGapTotal / picturesTimed, picturesTimed, pictureGapsOver50, pictureGapsOver100);
+    }
+    if (cursorShapes != 0) {
+        debug_printf("\nCOOP NET: drew our own cursor (%u shapes)\n", cursorShapes);
+    }
+    if (inputDelayCount != 0) {
+        debug_printf("\nCOOP NET: clicks and keys showed after %llu ms on average (at most %u ms, %u times)\n",
+            inputDelayTotal / inputDelayCount, inputDelayMax, inputDelayCount);
+    }
     if (coop_net_frame_check) {
         debug_printf("\nCOOP NET: %u screens checked, %u wrong\n", screensChecked, screensWrong);
     }

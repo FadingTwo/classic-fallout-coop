@@ -38,6 +38,18 @@
 
 namespace fallout {
 
+// CE: dead, or (co-op, KNOCKOUT on) a knocked out player, who can't be hurt:
+// the AI kept hitting one for nothing instead of the others.
+static bool aiTargetGone(Object* obj)
+{
+    if ((obj->data.critter.combat.results & DAM_DEAD) != 0) {
+        return true;
+    }
+    return coop_knockout_enabled()
+        && coop_player_of(obj) != nullptr
+        && (obj->data.critter.combat.results & DAM_KNOCKED_OUT) != 0;
+}
+
 #define AI_PACKET_CHEM_PRIMARY_DESIRE_COUNT (3)
 
 #define AI_MESSAGE_SIZE 260
@@ -1413,7 +1425,7 @@ static Object* _ai_find_nearest_team(Object* a1, Object* a2, int flags)
     for (int index = 0; index < _curr_crit_num; index++) {
         Object* obj = _curr_crit_list[index];
         if (a1 != obj
-            && (obj->data.critter.combat.results & DAM_DEAD) == 0
+            && !aiTargetGone(obj)
             && (((flags & 0x02) && team != obj->data.critter.combat.team)
                 || ((flags & 0x01) && team == obj->data.critter.combat.team))) {
             return obj;
@@ -1442,7 +1454,7 @@ static Object* _ai_find_nearest_team_in_combat(Object* a1, Object* a2, int flags
     for (int index = 0; index < _curr_crit_num; index++) {
         Object* obj = _curr_crit_list[index];
         if (obj != a1
-            && (obj->data.critter.combat.results & DAM_DEAD) == 0
+            && !aiTargetGone(obj)
             && (((flags & 0x02) != 0 && team != obj->data.critter.combat.team)
                 || ((flags & 0x01) != 0 && team == obj->data.critter.combat.team))) {
             if (obj->data.critter.combat.whoHitMe != nullptr) {
@@ -1485,7 +1497,7 @@ static int aiFindAttackers(Object* critter, Object** whoHitMePtr, Object** whoHi
         Object* candidate = _curr_crit_list[index];
         if (candidate != critter) {
             if (whoHitMePtr != nullptr && *whoHitMePtr == nullptr) {
-                if ((candidate->data.critter.combat.results & DAM_DEAD) == 0
+                if (!aiTargetGone(candidate)
                     && candidate->data.critter.combat.whoHitMe == critter) {
                     foundTargetCount++;
                     *whoHitMePtr = candidate;
@@ -1499,7 +1511,7 @@ static int aiFindAttackers(Object* critter, Object** whoHitMePtr, Object** whoHi
                     if (whoHitCandidate != nullptr
                         && whoHitCandidate != critter
                         && team != whoHitCandidate->data.critter.combat.team
-                        && (whoHitCandidate->data.critter.combat.results & DAM_DEAD) == 0) {
+                        && !aiTargetGone(whoHitCandidate)) {
                         foundTargetCount++;
                         *whoHitFriendPtr = whoHitCandidate;
                         continue;
@@ -1509,7 +1521,7 @@ static int aiFindAttackers(Object* critter, Object** whoHitMePtr, Object** whoHi
 
             if (whoHitByFriendPtr != nullptr && *whoHitByFriendPtr == nullptr) {
                 if (candidate->data.critter.combat.team != team
-                    && (candidate->data.critter.combat.results & DAM_DEAD) == 0) {
+                    && !aiTargetGone(candidate)) {
                     Object* whoHitCandidate = candidate->data.critter.combat.whoHitMe;
                     if (whoHitCandidate != nullptr
                         && whoHitCandidate->data.critter.combat.team == team) {
@@ -1653,7 +1665,7 @@ static Object* _ai_danger_source(Object* a1)
     if (whoHitMe == nullptr || a1 == whoHitMe) {
         targets[0] = nullptr;
     } else {
-        if ((whoHitMe->data.critter.combat.results & DAM_DEAD) == 0) {
+        if (!aiTargetGone(whoHitMe)) {
             if (attackWho == ATTACK_WHO_WHOMEVER || attackWho == -1) {
                 return whoHitMe;
             }
@@ -2729,6 +2741,11 @@ static int _ai_try_attack(Object* attacker, Object* defender)
             break;
         }
 
+        // CE: co-op: no more blows at a player it just knocked out.
+        if (aiTargetGone(defender)) {
+            break;
+        }
+
         int reason = _combat_check_bad_shot(attacker, defender, hitMode, false);
         if (reason == COMBAT_BAD_SHOT_NO_AMMO) {
             // out of ammo
@@ -3085,6 +3102,12 @@ void _combat_ai(Object* a1, Object* a2)
         debugPrint("%s: FLEEING: I need DRUGS!", critterGetName(a1));
         _ai_run_away(a1, a2);
     } else {
+        // CE: co-op: a knocked out player (a script's or the game's pick)
+        // is no target; another one is looked for.
+        if (a2 != nullptr && aiTargetGone(a2)) {
+            a2 = nullptr;
+        }
+
         if (a2 == nullptr) {
             a2 = _ai_danger_source(a1);
         }
@@ -3097,7 +3120,7 @@ void _combat_ai(Object* a1, Object* a2)
     }
 
     if (a2 != nullptr
-        && (a2->data.critter.combat.results & DAM_DEAD) == 0
+        && !aiTargetGone(a2)
         && a1->data.critter.combat.ap != 0
         && objectGetDistanceBetween(a1, a2) > ai->max_dist) {
         Object* friendlyDead = aiInfoGetFriendlyDead(a1);
@@ -3115,7 +3138,7 @@ void _combat_ai(Object* a1, Object* a2)
     if (a2 == nullptr && !objectIsPartyMember(a1)) {
         Object* whoHitMe = combatData->whoHitMe;
         if (whoHitMe != nullptr) {
-            if ((whoHitMe->data.critter.combat.results & DAM_DEAD) == 0 && combatData->damageLastTurn > 0) {
+            if (!aiTargetGone(whoHitMe) && combatData->damageLastTurn > 0) {
                 Object* friendlyDead = aiInfoGetFriendlyDead(a1);
                 if (friendlyDead != nullptr) {
                     _ai_move_away(a1, friendlyDead, 10);

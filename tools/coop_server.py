@@ -54,6 +54,13 @@ connection starts with one line:
     FCOOP-RELAY ACCEPT <code> <id>    player 1's connection for CONN <id>;
                                       no answer, then the game's own bytes
 
+Direct connections (since 1.22): player 1 sends "DIRECT <port>" on its HOST
+connection (its game port, opened on its router by UPnP or by hand); the
+server tries to connect to it and answers "DIRECT OK" or "DIRECT NO". A
+JOIN ending with the word "direct" then gets "DIRECT <address> <port>"
+instead of the relay when player 1 can be reached; the player connects
+there itself, and joins again without "direct" if that fails.
+
 Only the standard library is needed.
 """
 
@@ -95,6 +102,10 @@ RELAY_MAX_ROOMS_PER_ADDRESS = 8
 RELAY_MAX_PIPES = 25
 RELAY_MAX_PENDING = 4
 RELAY_ACCEPT_TIMEOUT = 15
+# How long trying player 1's game port directly may take (seconds), and how
+# often a room may ask for it.
+RELAY_DIRECT_TIMEOUT = 4
+RELAY_DIRECT_EVERY = 10
 RELAY_IDLE_TIMEOUT = int(os.environ.get("COOP_RELAY_IDLE_TIMEOUT", 20 * 60))
 # Testing only: limit each direction of a relayed game to this many bytes a
 # second, like a slow internet line.
@@ -277,13 +288,26 @@ def _relay_host(conn, address, wanted, game="", version=""):
     try:
         conn.sendall(("ROOM %s\n" % code).encode())
         conn.settimeout(25)
+        pending = b""
         while True:
             try:
-                if not conn.recv(64):
+                data = conn.recv(256)
+                if not data:
                     break
             except socket.timeout:
                 with room["send_lock"]:
                     conn.sendall(b"PING\n")
+                continue
+            # Since 1.22: "DIRECT <port>", player 1's game port, tried from
+            # here; players who can then connect straight to it.
+            pending = (pending + data)[-1024:]
+            while b"\n" in pending:
+                line, pending = pending.split(b"\n", 1)
+                parts = line.decode("ascii", "replace").split()
+                if len(parts) == 2 and parts[0] == "DIRECT" and parts[1].isdigit() and 0 < int(parts[1]) < 65536 \
+                        and time.time() - room.get("direct_asked", 0) >= RELAY_DIRECT_EVERY:
+                    room["direct_asked"] = time.time()
+                    threading.Thread(target=_relay_try_direct, args=(room, address, int(parts[1])), daemon=True).start()
     except OSError:
         pass
     with _relay_lock:
@@ -293,7 +317,24 @@ def _relay_host(conn, address, wanted, game="", version=""):
     print("relay: room %s closed" % code, flush=True)
 
 
-def _relay_join(conn, code, address, game="", version=""):
+def _relay_try_direct(room, address, port):
+    reachable = False
+    try:
+        probe = socket.create_connection((address, port), timeout=RELAY_DIRECT_TIMEOUT)
+        probe.close()
+        reachable = True
+    except OSError:
+        pass
+    room["direct"] = port if reachable else None
+    print("relay: %s:%d %s" % (address, port, "reachable directly" if reachable else "not reachable directly"), flush=True)
+    try:
+        with room["send_lock"]:
+            room["control"].sendall(b"DIRECT OK\n" if reachable else b"DIRECT NO\n")
+    except OSError:
+        pass
+
+
+def _relay_join(conn, code, address, game="", version="", direct=False):
     global _relay_next_id, _relay_pipes
     code = code.upper().replace("-", "")
     with _relay_lock:
@@ -322,6 +363,14 @@ def _relay_join(conn, code, address, game="", version=""):
             title = _game_title(room["game"])
             conn.sendall(("ERR That game is %s: start %s to join it.\n" % (title, title)).encode())
             conn.close()
+            return
+        # Straight to player 1 when it can be reached (the player tries,
+        # and asks again without "direct" if it doesn't work for them).
+        if direct and room.get("direct"):
+            print("relay: join %s from %s: direct" % (code, address), flush=True)
+            conn.sendall(("DIRECT %s %d\n" % (room["address"], room["direct"])).encode())
+            conn.close()
+            _stats_add("direct_joins")
             return
         if _relay_pipes >= RELAY_MAX_PIPES:
             conn.sendall(b"ERR Our server is full. Try again later.\n")
@@ -424,7 +473,7 @@ def _relay_connection(conn, address):
                         _version_name(parts[4]) if len(parts) >= 5 else "")
         elif len(parts) >= 3 and parts[0] == "FCOOP-RELAY" and parts[1] == "JOIN":
             _relay_join(conn, parts[2], address, _game_name(parts[3]) if len(parts) >= 4 else "",
-                        _version_name(parts[4]) if len(parts) >= 5 else "")
+                        _version_name(parts[4]) if len(parts) >= 5 else "", len(parts) >= 6 and parts[5] == "direct")
         elif len(parts) >= 4 and parts[0] == "FCOOP-RELAY" and parts[1] == "ACCEPT" and parts[3].isdigit():
             _relay_accept(conn, parts[2], int(parts[3]))
         else:

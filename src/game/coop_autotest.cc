@@ -25,6 +25,7 @@
 #include "game/autotest.h"
 #include "game/combat.h"
 #include "game/combat_defs.h"
+#include "game/combatai.h"
 #include "game/config.h"
 #include "game/coop.h"
 #include "game/coop_crash.h"
@@ -966,6 +967,8 @@ static int coop_autotest_travel(AutotestNewGameProc* newGame)
 // flag and placed when used: a client only knows player 1's frame size
 // once frames arrive, and its frames can be scaled to fit.
 #define COOP_AUTOTEST_CENTERED 0x4000
+// On y: from the top of the interface bar (at the bottom of the screen).
+#define COOP_AUTOTEST_BAR 0x2000
 
 static void coop_autotest_mouse_transform(int* x, int* y)
 {
@@ -982,7 +985,10 @@ static void coop_autotest_mouse_transform(int* x, int* y)
         hostWidth = frameWidth;
         hostHeight = frameHeight;
     }
-    if ((*x & COOP_AUTOTEST_CENTERED) != 0) {
+    if ((*x & COOP_AUTOTEST_CENTERED) != 0 && (*y & COOP_AUTOTEST_BAR) != 0) {
+        *x = (*x & ~COOP_AUTOTEST_CENTERED) + (hostWidth - 640) / 2;
+        *y = (*y & ~COOP_AUTOTEST_BAR) + hostHeight - INTERFACE_BAR_HEIGHT;
+    } else if ((*x & COOP_AUTOTEST_CENTERED) != 0) {
         *x = (*x & ~COOP_AUTOTEST_CENTERED) + (hostWidth - 640) / 2;
         *y += (hostHeight - 480) / 2;
     }
@@ -1602,6 +1608,15 @@ static int coop_autotest_knockout(AutotestNewGameProc* newGame)
     coop_autotest_hit(enemy, p2obj, 500);
     if ((p2obj->data.critter.combat.results & DAM_DEAD) != 0 || critter_get_hits(p2obj) != 1) {
         autotest_fail("a knocked out player was hurt");
+    }
+
+    // Not a target any more, even for an enemy they hit (it kept attacking
+    // a knocked out player for nothing).
+    critter_set_who_hit_me(enemy, p2obj);
+    Object* danger = ai_danger_source(enemy);
+    autotest_log("the enemy's target with player 2 out: %s", danger != NULL ? critter_name(danger) : "none");
+    if (danger == p2obj) {
+        autotest_fail("the enemy still goes for the knocked out player");
     }
 
     // The main loop must not end the game while the other player is up (a
@@ -3082,6 +3097,14 @@ static int coop_autotest_net_play_host(AutotestNewGameProc* newGame)
 
     // Their mouse rested on the map (while they chatted): their 3D cursor
     // showed what's under it, as player 1's does.
+    autotest_log("player 2 sent %u chat messages", coop_host_chat_count(1));
+    if (coop_host_chat_count(1) < 2) {
+        autotest_fail("player 2 sent %u chat messages (one on the map, one in the inventory)", coop_host_chat_count(1));
+    }
+    autotest_log("player 2's inventory opened %d times", coop_inventory_opens(1));
+    if (coop_inventory_opens(1) < 2) {
+        autotest_fail("player 2's inventory opened %d times (the I key, then the bar's button)", coop_inventory_opens(1));
+    }
     autotest_log("player 2's cursor showed what's under it in %u of %u parts", coop_host_view_hover_parts(1), coop_host_view_parts(1));
 
     // Their scroll arrow went when their mouse left the edge.
@@ -3165,8 +3188,33 @@ static int coop_autotest_net_play_client(AutotestNewGameProc* newGame)
     inject_key(KEY_LOWERCASE_I);
     inject_wait(120);
     inject_call(coop_autotest_screenshot);
+    // Chat with the inventory open (T did nothing in a menu).
+    inject_key(KEY_LOWERCASE_T);
+    inject_wait(5);
+    for (const char* c = "in a menu"; *c != '\0'; c++) {
+        inject_key(*c);
+        inject_wait(2);
+    }
+    inject_key(KEY_RETURN);
+    inject_wait(30);
     inject_key(KEY_ESCAPE);
-    inject_wait(360);
+    inject_wait(60);
+
+    // Again with the bar's button, held down like a slow hand: the press
+    // and the release reach the host in different frames (the release did
+    // nothing when player 1's mouse let go of the button in between).
+    inject_set_mouse_transform(coop_autotest_mouse_transform);
+    for (int index = 0; index < 3; index++) {
+        inject_mouse(227 | COOP_AUTOTEST_CENTERED, 51 | COOP_AUTOTEST_BAR, 0);
+    }
+    for (int index = 0; index < 20; index++) {
+        inject_mouse(227 | COOP_AUTOTEST_CENTERED, 51 | COOP_AUTOTEST_BAR, MOUSE_STATE_LEFT_BUTTON_DOWN);
+    }
+    inject_mouse(227 | COOP_AUTOTEST_CENTERED, 51 | COOP_AUTOTEST_BAR, 0);
+    inject_wait(120);
+    inject_call(coop_autotest_screenshot);
+    inject_key(KEY_ESCAPE);
+    inject_wait(300);
 
     // Last (the camera check is done): their mouse at the left edge a while
     // (the map scrolls), then back on the map. Their cursor must not stay a
@@ -3626,6 +3674,9 @@ static void coop_autotest_clear_critters()
         }
     }
 
+    // (Their animations stop first, as the game's destroy_object clears
+    // theirs: one still queued read the freed critter when combat began.)
+    anim_stop();
     for (Object* obj : critters) {
         obj_erase_object(obj, NULL);
     }

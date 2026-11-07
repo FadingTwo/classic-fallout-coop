@@ -257,6 +257,19 @@ int mouseSetFrame(unsigned char* a1, int width, int height, int pitch, int a5, i
     return 0;
 }
 
+// CE: the cursor's shape, as mouseSetFrame took it (co-op: a client draws
+// its player's cursor itself).
+void mouseGetFrame(unsigned char** data, int* width, int* height, int* pitch, int* hotx, int* hoty, char* trans)
+{
+    *data = _mouse_shape;
+    *width = gMouseCursorWidth;
+    *height = gMouseCursorHeight;
+    *pitch = gMouseCursorPitch;
+    *hotx = _mouse_hotx;
+    *hoty = _mouse_hoty;
+    *trans = _mouse_trans;
+}
+
 // NOTE: Looks like this code is not reachable.
 //
 // 0x4CA2D0

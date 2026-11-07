@@ -406,6 +406,8 @@ void handle_inventory()
         return;
     }
 
+    coop_count_inventory_open(inven_dude);
+
     if (isInCombat()) {
         if (inven_dude == obj_dude) {
             int actionPointsRequired = 4 - perk_level(PERK_QUICK_POCKETS);

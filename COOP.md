@@ -201,9 +201,11 @@ both players share it, like they share the mouse.
 2. In the main menu choose **MULTIPLAYER**:
    - **HOST GAME** (player 1): then NEW GAME or LOAD GAME, then one of
      LAN ONLY (same network), LIST ONLINE (in everyone's server browser)
-     or WITH A FRIEND (only with the game code). Online games go through
-     the co-op server's relay, so nobody opens ports; they get a code like
-     KQX472. PLAYERS sets how many can join (2-4) and HARDER makes enemies
+     or WITH A FRIEND (only with the game code). Online games get a code
+     like KQX472. Player 1's game asks the router to open its port (UPnP)
+     and the co-op server checks it can be reached: then players connect
+     straight to player 1 (and learn its address); otherwise through the
+     co-op server's relay. Nobody opens ports by hand either way. PLAYERS sets how many can join (2-4) and HARDER makes enemies
      tougher the more of you play. The others can join any time; they
      create their character when they join (or continue the one in the
      save).
@@ -229,6 +231,12 @@ firewall must allow port 27015 (TCP to play, UDP to be found). Player 1
 sends each other player their picture: only what changed since the last
 one (moved with the camera when they walk), packed, about 0.05-0.15 MB/s,
 and never more than their line takes.
+
+Play is smoothest on one network (LAN): every click goes to player 1's
+computer and the picture comes back, so online it takes at least one trip
+there and back, and through the relay a trip to the server as well. The
+log says how long clicks took to show ("clicks and keys showed after ...")
+and how evenly pictures came.
 
 ## Without the menu
 

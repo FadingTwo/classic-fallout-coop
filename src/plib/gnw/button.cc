@@ -764,6 +764,11 @@ int win_last_button_winID()
     return last_button_winID;
 }
 
+void win_set_last_button_winID(int win)
+{
+    last_button_winID = win;
+}
+
 // 0x4C5374
 int win_delete_button(int btn)
 {

@@ -110,6 +110,11 @@ inline int mouse_set_shape(unsigned char* buf, int width, int length, int full, 
 {
     return mouseSetFrame(buf, width, length, full, hotx, hoty, trans);
 }
+inline void mouse_get_shape(unsigned char** buf, int* width, int* length, int* full, int* hotx, int* hoty, char* trans)
+{
+    mouseGetFrame(buf, width, length, full, hotx, hoty, trans);
+}
+inline bool mouse_hidden() { return cursorIsHidden(); }
 
 inline int obj_attempt_placement(Object* obj, int tile, int elevation, int radius) { return _obj_attempt_placement(obj, tile, elevation, radius); }
 inline int obj_turn_off(Object* obj, Rect* rect) { return objectHide(obj, rect); }

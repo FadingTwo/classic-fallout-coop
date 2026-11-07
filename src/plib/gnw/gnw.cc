@@ -1224,6 +1224,46 @@ Button* GNW_find_button(int btn, Window** windowPtr)
     return NULL;
 }
 
+void win_save_button_state(std::vector<WindowButtonState>* state, int* lastWin)
+{
+    state->clear();
+    for (int index = 0; index < num_windows; index++) {
+        Window* w = window[index];
+        if (w->hoveredButton != NULL || w->clickedButton != NULL) {
+            WindowButtonState entry;
+            entry.win = w->id;
+            entry.hovered = w->hoveredButton != NULL ? w->hoveredButton->id : -1;
+            entry.clicked = w->clickedButton != NULL ? w->clickedButton->id : -1;
+            state->push_back(entry);
+        }
+    }
+    *lastWin = win_last_button_winID();
+}
+
+void win_load_button_state(const std::vector<WindowButtonState>& state, int lastWin)
+{
+    for (int index = 0; index < num_windows; index++) {
+        Window* w = window[index];
+        w->hoveredButton = NULL;
+        w->clickedButton = NULL;
+        for (const WindowButtonState& entry : state) {
+            if (entry.win != w->id) {
+                continue;
+            }
+            // By id: a button deleted since then is no longer in the list.
+            for (Button* button = w->buttonListHead; button != NULL; button = button->next) {
+                if (button->id == entry.hovered) {
+                    w->hoveredButton = button;
+                }
+                if (button->id == entry.clicked) {
+                    w->clickedButton = button;
+                }
+            }
+        }
+    }
+    win_set_last_button_winID(GNW_find(lastWin) != NULL ? lastWin : -1);
+}
+
 // 0x4C3AEC
 int GNW_check_menu_bars(int a1)
 {

@@ -27,7 +27,7 @@ namespace fallout {
 // active (and `gDude` their critter) for the code inside it.
 
 // The co-op version (shared with Classic Fallout Co-op for Fallout 1).
-#define COOP_VERSION "1.20.2"
+#define COOP_VERSION "1.21"
 
 #define COOP_MAX_PLAYERS 4
 
@@ -261,6 +261,10 @@ int coop_viewer_index();
 // The index (0: player 1) of the player whose character `obj` is; -1 for
 // anything else.
 int coop_player_index_of(Object* obj);
+
+// Testing: how many times each player's inventory opened.
+void coop_count_inventory_open(Object* critter);
+int coop_inventory_opens(int index);
 
 // Outline colors, chosen by each player for their own screen: player 1's
 // from [coop] outline_player1/outline_player2, player 2's sent by their

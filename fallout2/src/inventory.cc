@@ -574,6 +574,8 @@ void inventoryOpen()
         return;
     }
 
+    coop_count_inventory_open(_inven_dude);
+
     if (isInCombat()) {
         if (_inven_dude == gDude) {
             int actionPointsRequired = 4 - 2 * perkGetRank(_inven_dude, PERK_QUICK_POCKETS);

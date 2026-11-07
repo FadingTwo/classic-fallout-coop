@@ -34,6 +34,7 @@ extern WINDOWDRAWINGPROC _mouse_blit;
 int mouseInit();
 void mouseFree();
 int mouseSetFrame(unsigned char* a1, int width, int height, int pitch, int a5, int a6, char a7);
+void mouseGetFrame(unsigned char** data, int* width, int* height, int* pitch, int* hotx, int* hoty, char* trans);
 void mouseShowCursor();
 void mouseHideCursor();
 void _mouse_info();

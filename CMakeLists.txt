@@ -83,6 +83,8 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/game/coop_update.h"
     "src/game/coop_net.cc"
     "src/game/coop_net.h"
+    "src/game/coop_upnp.cc"
+    "src/game/coop_upnp.h"
     "src/game/combatai.cc"
     "src/game/combatai.h"
     "src/game/config.cc"

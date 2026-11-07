@@ -2669,7 +2669,10 @@ static void DrawInfoWin()
                     DrawCard(graphicId, title, NULL, description);
                 }
             } else if (info_line - 10 >= 7 && info_line - 10 < 11) {
-                if (trait_count < 2 && info_line - 10 >= 8 && info_line - 10 <= 9) {
+                // CE: not the empty row under a single trait (its name is
+                // NULL: a click there crashed).
+                if (trait_count < 2 && info_line - 10 >= 8 && info_line - 10 <= 9
+                    && temp_trait[info_line - 10 - 8] != -1) {
                     title = trait_name(temp_trait[info_line - 10 - 8]);
                     description = trait_description(temp_trait[info_line - 10 - 8]);
                     graphicId = trait_pic(temp_trait[info_line - 10 - 8]);

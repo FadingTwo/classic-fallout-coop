@@ -496,12 +496,13 @@ int game_handle_input(int eventCode, bool isInCombatMode)
         return 0;
     }
 
-    if (gmouse_is_scrolling()) {
+    // Co-op chat over the network takes the keys while typing (also while
+    // the map scrolls: a mouse resting at the screen's edge ate the keys).
+    if (coop_host_chat_key(eventCode)) {
         return 0;
     }
 
-    // Co-op chat over the network takes the keys while typing.
-    if (coop_host_chat_key(eventCode)) {
+    if (gmouse_is_scrolling()) {
         return 0;
     }
 

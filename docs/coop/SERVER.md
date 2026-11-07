@@ -6,8 +6,11 @@ player 1's port is reachable. A server adds:
 - UPDATE: players download new versions from it.
 - REPORT BUG and crash reports: reports are saved on it.
 - The online server browser (LIST ONLINE).
-- The relay: online games (LIST ONLINE, PRIVATE CODE) go through it, so
-  players don't open ports.
+- The relay: online games (LIST ONLINE, WITH A FRIEND) go through it, so
+  players don't open ports. Since 1.21 it also tries player 1's game port
+  (opened by the game with UPnP, or by hand) and, when it answers, tells
+  joining players to connect there directly; the relay is then only for
+  those who can't.
 
 `tools/coop_server.py` does all of this with only Python's standard
 library.

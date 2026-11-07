@@ -90,6 +90,8 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/coop_menu.h"
     "src/coop_net.cc"
     "src/coop_net.h"
+    "src/coop_upnp.cc"
+    "src/coop_upnp.h"
     "src/coop_setup.cc"
     "src/coop_setup.h"
     "src/coop_setup_font.h"

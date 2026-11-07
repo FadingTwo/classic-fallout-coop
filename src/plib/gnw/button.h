@@ -17,6 +17,7 @@ bool win_button_down(int btn);
 int GNW_check_buttons(Window* window, int* keyCodePtr);
 int win_button_winID(int btn);
 int win_last_button_winID();
+void win_set_last_button_winID(int win);
 int win_delete_button(int btn);
 void GNW_delete_button(Button* ptr);
 void win_delete_button_win(int btn, int inputEvent);

@@ -3,6 +3,8 @@
 
 #include <stddef.h>
 
+#include <vector>
+
 #include "geometry.h"
 
 namespace fallout {
@@ -191,6 +193,20 @@ int buttonSetMask(int btn, unsigned char* mask);
 bool _win_button_down(int btn);
 int buttonGetWindowId(int btn);
 int _win_last_button_winID();
+
+// CE: which button of a window is under the mouse and which one is held
+// down, by id (-1: none).
+typedef struct WindowButtonState {
+    int win;
+    int hovered;
+    int clicked;
+} WindowButtonState;
+
+// CE: the buttons the mouse is over and holds, of every window, for players
+// with a mouse of their own (co-op): one player's mouse elsewhere let go of
+// a button another player held, whose release then did nothing.
+void windowSaveButtonState(std::vector<WindowButtonState>* state, int* lastWin);
+void windowLoadButtonState(const std::vector<WindowButtonState>& state, int lastWin);
 int buttonDestroy(int btn);
 int buttonEnable(int btn);
 int buttonDisable(int btn);

@@ -49,6 +49,12 @@ typedef struct CoopView {
     bool cursorOn;
     // What it shows when the mouse rests over something.
     GmouseHoverState hover;
+    // The buttons their mouse is over and holds down: a click on the
+    // interface bar whose press and release came in two frames did nothing
+    // when player 1's mouse, elsewhere, let go of the button in between
+    // (opening the inventory took several clicks).
+    std::vector<WindowButtonState> buttons;
+    int lastButtonWin;
 } CoopView;
 
 static void coop_host_poll();
@@ -64,6 +70,10 @@ static void coop_host_marker_draw();
 static void coop_host_marker_restore();
 
 static bool coop_host_on = false;
+
+// Testing: shared frames at most 30 a second, also while another player is
+// in a menu (as before 1.21).
+static bool coop_host_slow_shared = getenv("COOP_HOST_SLOW_SHARED") != NULL;
 
 // Inside the main loop's own get_input() call.
 static bool coop_host_main_input = false;
@@ -827,6 +837,9 @@ static void coop_host_poll()
     coop_host_update_status();
 }
 
+// What each player is typing while chatting (see coop_host_chat_key).
+static bool coop_host_chat_typing[COOP_MAX_PLAYERS];
+
 // Moves the client's input into the injection queue.
 // Each player's mouse buttons and position as last fed.
 static int coop_host_fed_buttons[COOP_MAX_PLAYERS];
@@ -842,6 +855,12 @@ static bool coop_host_feed_input(int slot)
     while (coop_net_next_input(&input)) {
         if (input.kind == COOP_NET_INPUT_MOUSE) {
             int fedButtons = coop_host_fed_buttons[slot];
+            // A move with another one after it: only where the mouse ends
+            // up counts (each injected move is a round of game input).
+            CoopNetInput next;
+            if (input.value == fedButtons && coop_net_peek_input(&next) && next.kind == COOP_NET_INPUT_MOUSE && next.value == fedButtons) {
+                continue;
+            }
             // A button pressed somewhere new: the mouse goes there first for
             // two frames. Buttons only take a press once they have seen the
             // mouse over them, and a move and the press that came together
@@ -861,6 +880,17 @@ static bool coop_host_feed_input(int slot)
             inject_mouse(input.x, input.y, input.value);
         } else if (input.kind == COOP_NET_INPUT_KEY) {
             acts = true;
+            // Chat in a menu too (inventory, talk, barter...): T starts it
+            // there before the menu's own T (barter's Talk: it ended the
+            // barter), and while typing every key is the chat's. (Free roam
+            // and combat turns reach the chat through the game's input.)
+            if ((coop_host_turn_slot == 0 || coop_host_turn_menu) && slot < coop_player_count() && input.value > 0
+                && (coop_host_chat_typing[slot] || input.value == KEY_LOWERCASE_T || input.value == KEY_UPPERCASE_T)) {
+                ActivePlayerScope scope(coop_player(slot));
+                if (coop_host_chat_key(input.value)) {
+                    continue;
+                }
+            }
             // Quitting is player 1's (the client uses these keys to leave).
             if (input.value != KEY_F10 && input.value != KEY_CTRL_Q && input.value != KEY_CTRL_X) {
                 inject_key(input.value);
@@ -872,7 +902,13 @@ static bool coop_host_feed_input(int slot)
 
 // What each player is typing while chatting.
 #define COOP_HOST_CHAT_MAX 60
-static bool coop_host_chat_typing[COOP_MAX_PLAYERS];
+// Messages each player sent (tests).
+static unsigned int coop_host_chat_messages[COOP_MAX_PLAYERS];
+
+unsigned int coop_host_chat_count(int slot)
+{
+    return slot >= 0 && slot < COOP_MAX_PLAYERS ? coop_host_chat_messages[slot] : 0;
+}
 static std::string coop_host_chat_text[COOP_MAX_PLAYERS];
 
 static int coop_host_active_index()
@@ -922,6 +958,7 @@ bool coop_host_chat_key(int keyCode)
             std::string message = std::string(coop_player(index)->name) + ": " + text;
             display_print((char*)message.c_str());
             debug_printf("COOP CHAT: %s\n", message.c_str());
+            coop_host_chat_messages[index]++;
         }
     } else if (keyCode == KEY_ESCAPE) {
         coop_host_chat_typing[index] = false;
@@ -1151,6 +1188,37 @@ static void coop_host_set_frame_shift(int slot)
     coop_host_sent_elevation[slot] = map_elevation;
 }
 
+// Sends the screen to the selected client. `ownMouse`: the cursor on it is
+// that player's. A client that draws its own cursor (1.21) gets its shape,
+// and the screen without it: their cursor then moves as their mouse does,
+// not a network trip later. Others' cursors stay on the picture.
+static void coop_host_send_screen(bool ownMouse)
+{
+    if (!coop_net_client_draws_cursor()) {
+        coop_net_send_current_screen();
+        return;
+    }
+
+    if (!ownMouse || mouse_hidden()) {
+        coop_net_send_cursor(NULL, 0, 0, 0, 0, 0, 0);
+        coop_net_send_current_screen();
+        return;
+    }
+
+    unsigned char* shape;
+    int width;
+    int height;
+    int full;
+    int hotx;
+    int hoty;
+    char trans;
+    mouse_get_shape(&shape, &width, &height, &full, &hotx, &hoty, &trans);
+    coop_net_send_cursor(shape, width, height, full, hotx, hoty, (unsigned char)trans);
+    mouse_hide();
+    coop_net_send_current_screen();
+    mouse_show();
+}
+
 // Shares the screen while a menu or combat runs; player 1's free roam
 // frames are not shared (player 2 gets their own view).
 static void coop_host_present()
@@ -1179,13 +1247,17 @@ static void coop_host_present()
 
     // Shared frames at most ~30 per second: map loading presents after
     // every few KB read, and encoding each would slow loading down a lot.
-    // (To every player.)
+    // (To every player.) Up to 60 while another player is in a menu or
+    // turn (what they do shows a frame sooner; maps load in player 1's).
     static unsigned int lastShared = 0;
-    if (!freeRoam && elapsed_time(lastShared) >= 33) {
+    int cursorSlot = coop_host_focus_slot();
+    unsigned int sharedEvery = cursorSlot != 0 && !coop_host_slow_shared ? 16 : 33;
+    if (!freeRoam && elapsed_time(lastShared) >= sharedEvery) {
+        // The cursor on it is that of the player in the menu or turn.
         int selected = coop_net_selected();
         for (int slot = 1; slot < COOP_MAX_PLAYERS; slot++) {
             coop_net_select(slot);
-            coop_net_send_current_screen();
+            coop_host_send_screen(slot == cursorSlot);
             // Not a view of theirs: the next one moves nothing.
             coop_host_sent_center[slot] = -1;
         }
@@ -1222,6 +1294,7 @@ static void coop_host_view_save(CoopView* view, Object* currentObj)
     view->mode = gmouse_3d_get_mode();
     view->cursorOn = gmouse_3d_is_on();
     gmouse_3d_save_hover(&(view->hover));
+    win_save_button_state(&(view->buttons), &(view->lastButtonWin));
 }
 
 // Makes `view` (of `incoming`) the current one.
@@ -1238,6 +1311,8 @@ static void coop_host_view_load(CoopView* view, Object* incoming, const CoopView
         view->cursor = MOUSE_CURSOR_NONE;
         view->mode = GAME_MOUSE_MODE_MOVE;
         view->cursorOn = true;
+        view->buttons.clear();
+        view->lastButtonWin = -1;
     }
 
     // The camera follows its player when they move, like player 1's does,
@@ -1287,6 +1362,8 @@ static void coop_host_view_load(CoopView* view, Object* incoming, const CoopView
 
     // What this player's cursor showed, and how long their mouse rested.
     gmouse_3d_load_hover(&(view->hover));
+
+    win_load_button_state(view->buttons, view->lastButtonWin);
 
     // Roofs open over the incoming player when they are inside.
     obj_follow_viewer(incoming);
@@ -1369,7 +1446,7 @@ static void coop_host_player_turn(int slot)
             coop_host_marker_draw();
             unsigned int sendStart = get_time();
             coop_host_set_frame_shift(slot);
-            coop_net_send_current_screen();
+            coop_host_send_screen(true);
             coop_host_send_ms += elapsed_time(sendStart);
             coop_host_marker_restore();
         } else {

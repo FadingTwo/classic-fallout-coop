@@ -14,7 +14,8 @@
 # (e.g. "[coop]turn_time=3"), CLIENT_EXTRA client settings, HOST_RES and
 # CLIENT_RES screen sizes (e.g. 1024x768). EXTRA_CLIENTS=n starts n more
 # clients (players 3 and up, in <out dir>/client2...) with the same script
-# (EXTRA_CLIENT_BIN: their binary, default CLIENT_BIN).
+# (EXTRA_CLIENT_BIN: their binary, default CLIENT_BIN). LAG_MS puts an
+# internet-like delay between host and clients (tools/lagproxy.py).
 
 set -uo pipefail
 
@@ -53,16 +54,27 @@ host_pid=$!
 # The host computes its data checksum before it listens.
 sleep "${HOST_WAIT:-4}"
 
+# LAG_MS: the clients go through tools/lagproxy.py, as over the internet
+# (that many ms each way; LAG_RATE: at most that many bytes a second).
+client_port=$port
+if [ -n "${LAG_MS:-}" ]; then
+    client_port=$((port + 1000))
+    python3 "$here/lagproxy.py" "$client_port" "$port" "$LAG_MS" "${LAG_RATE:-0}" &
+    lag_pid=$!
+    trap 'rmdir "/tmp/nettest-port-$port" 2>/dev/null; kill $lag_pid 2>/dev/null' EXIT
+    sleep 1
+fi
+
 extra_pids=()
 for n in $(seq 2 $((${EXTRA_CLIENTS:-0} + 1))); do
     AUTOTEST_RES=${CLIENT_RES:-} AUTOTEST_SCRIPT=$client_script "$here/regress.sh" run "${EXTRA_CLIENT_BIN:-${CLIENT_BIN:-$bin}}" "$out/client$n" \
-        "[coop]enabled=1" "[coop]mode=client" "[coop]host=127.0.0.1" "[coop]port=$port" ${CLIENT_EXTRA:-} >"$out.client$n.txt" 2>&1 &
+        "[coop]enabled=1" "[coop]mode=client" "[coop]host=127.0.0.1" "[coop]port=$client_port" ${CLIENT_EXTRA:-} >"$out.client$n.txt" 2>&1 &
     extra_pids+=($!)
     sleep "${CLIENT_STAGGER:-3}"
 done
 
 AUTOTEST_RES=${CLIENT_RES:-} AUTOTEST_TAMPER=$tamper AUTOTEST_SCRIPT=$client_script "$here/regress.sh" run "${CLIENT_BIN:-$bin}" "$out/client" \
-    "[coop]enabled=1" "[coop]mode=client" "[coop]host=127.0.0.1" "[coop]port=$port" ${CLIENT_EXTRA:-}
+    "[coop]enabled=1" "[coop]mode=client" "[coop]host=127.0.0.1" "[coop]port=$client_port" ${CLIENT_EXTRA:-}
 client_rc=$?
 
 for pid in "${extra_pids[@]}"; do

@@ -3668,7 +3668,15 @@ static void damage_object(Object* obj, int damage, bool animated, bool a4)
 
     if ((obj->data.critter.combat.results & DAM_DEAD) != 0) {
         scr_set_objs(obj->sid, obj->data.critter.combat.whoHitMe, NULL);
-        exec_script_proc(obj->sid, SCRIPT_PROC_DESTROY);
+        {
+            // Co-op: death scripts ask "did the player kill me?" as
+            // source_obj == dude_obj: run with the player who made the kill
+            // as the dude (Killian never heard that player 2 stopped his
+            // assassin, the quest got stuck).
+            PlayerState* killer = coop_player_of(obj) == NULL ? coop_player_of(obj->data.critter.combat.whoHitMe) : NULL;
+            ActivePlayerScope scope(killer);
+            exec_script_proc(obj->sid, SCRIPT_PROC_DESTROY);
+        }
 
         // Co-op: no player character counts as a kill.
         if (coop_player_of(obj) == NULL) {

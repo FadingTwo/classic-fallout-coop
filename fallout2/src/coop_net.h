@@ -58,6 +58,15 @@ typedef enum CoopNetMessageType {
     // (with HELLO flag 8): player 2 joins with it, if the game has no
     // player 2 yet.
     COOP_NET_MSG_CHARACTER = 10,
+    // Host -> client (since 1.21, HELLO flag 32): the player's cursor, which
+    // the client draws itself where its mouse is (it moves at once, not a
+    // network trip later): u16 width, u16 height (0: none, it's on the
+    // picture), u16 hotspot x, y, u8 transparent color, the pixels.
+    COOP_NET_MSG_CURSOR = 11,
+    // Host -> client (since 1.21, HELLO flag 32): u32 input messages the
+    // host has acted on, before the frame that shows it (the client
+    // measures how long its clicks take to show).
+    COOP_NET_MSG_INPUT_SEEN = 12,
 } CoopNetMessageType;
 
 typedef enum CoopNetInputKind {
@@ -72,6 +81,8 @@ typedef struct CoopNetInput {
     int x;
     int y;
     int value;
+    // Which input message this is (counted from 1).
+    unsigned int number;
 } CoopNetInput;
 
 CoopNetMode coop_net_mode();
@@ -153,11 +164,23 @@ void coop_net_set_bring_character(const std::vector<unsigned char>& data);
 // Host: next input event received from the client, if any.
 bool coop_net_next_input(CoopNetInput* input);
 
+// Host: the input event after that one, if any (left in the queue).
+bool coop_net_peek_input(CoopNetInput* input);
+
 // Host: sends the current screen (8-bit, with palette) to the client.
 void coop_net_send_screen(const unsigned char* pixels, int pitch, int width, int height, const unsigned char* palette);
 
 // Host: sends the screen as currently composed.
 void coop_net_send_current_screen();
+
+// Host: whether the selected client draws its player's cursor itself
+// (since 1.21): their frames then come without it.
+bool coop_net_client_draws_cursor();
+
+// Host: the selected client's cursor shape (as mouse_get_shape gives it;
+// width 0: none, the cursor on the frames is someone else's). Sent when it
+// changed.
+void coop_net_send_cursor(const unsigned char* shape, int width, int height, int full, int hotx, int hoty, int trans);
 
 // Whether the selected client takes a frame now: frames wait for its
 // acknowledgements (only a few on the way at once) and for a long send

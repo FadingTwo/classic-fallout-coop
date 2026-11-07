@@ -3,6 +3,8 @@
 
 #include <stddef.h>
 
+#include <vector>
+
 #include "plib/gnw/gnw_types.h"
 #include "plib/gnw/rect.h"
 #include "plib/gnw/svga_types.h"
@@ -71,6 +73,20 @@ int GNW_check_menu_bars(int a1);
 void win_set_minimized_title(const char* title);
 void win_set_trans_b2b(int id, WindowBlitProc* trans_b2b);
 bool GNWSystemError(const char* str);
+
+// Which button of a window is under the mouse and which one is held down,
+// by id (-1: none).
+typedef struct WindowButtonState {
+    int win;
+    int hovered;
+    int clicked;
+} WindowButtonState;
+
+// The buttons the mouse is over and holds, of every window, for players
+// with a mouse of their own (co-op): one player's mouse elsewhere let go of
+// a button another player held, whose release then did nothing.
+void win_save_button_state(std::vector<WindowButtonState>* state, int* lastWin);
+void win_load_button_state(const std::vector<WindowButtonState>& state, int lastWin);
 
 } // namespace fallout
 
