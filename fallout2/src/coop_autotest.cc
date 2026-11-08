@@ -94,6 +94,8 @@ static int coop_autotest_join(AutotestNewGameProc* newGame);
 static int coop_autotest_main_menu(AutotestNewGameProc* newGame);
 static int coop_autotest_gamepad(AutotestNewGameProc* newGame);
 static int coop_autotest_give(AutotestNewGameProc* newGame);
+static int coop_autotest_loot(AutotestNewGameProc* newGame);
+static int coop_autotest_noticed(AutotestNewGameProc* newGame);
 static int coop_autotest_knockout(AutotestNewGameProc* newGame);
 static int coop_autotest_character(AutotestNewGameProc* newGame);
 static int coop_autotest_barter(AutotestNewGameProc* newGame);
@@ -206,6 +208,8 @@ void coop_autotest_register()
     autotest_add_script("main_menu", coop_autotest_main_menu);
     autotest_add_script("gamepad", coop_autotest_gamepad);
     autotest_add_script("coop_give", coop_autotest_give);
+    autotest_add_script("coop_loot", coop_autotest_loot);
+    autotest_add_script("coop_noticed", coop_autotest_noticed);
     autotest_add_script("coop_knockout", coop_autotest_knockout);
     autotest_add_script("coop_character", coop_autotest_character);
     autotest_add_script("coop_barter", coop_autotest_barter);
@@ -1073,6 +1077,9 @@ static bool coop_autotest_pass_turn(Object* player)
     return true;
 }
 
+// What coop_autotest_spawn_enemy spawns without COOP_AUTOTEST_ENEMY.
+static const char* coop_autotest_enemy_default = "Rat";
+
 // Spawns a "Rat" next to `nextTo`, with few hit
 // points.
 static Object* coop_autotest_spawn_enemy(Object* nextTo)
@@ -1082,7 +1089,7 @@ static Object* coop_autotest_spawn_enemy(Object* nextTo)
         Proto* proto;
         if (protoGetProto(0x1000000 | index, &proto) != -1) {
             const char* enemyName = getenv("COOP_AUTOTEST_ENEMY");
-            if (compat_stricmp(protoGetName(0x1000000 | index), enemyName != nullptr ? enemyName : "Rat") == 0) {
+            if (compat_stricmp(protoGetName(0x1000000 | index), enemyName != nullptr ? enemyName : coop_autotest_enemy_default) == 0) {
                 pid = 0x1000000 | index;
             }
         }
@@ -2021,6 +2028,196 @@ static void coop_autotest_give_move()
         autotest_fail("could not move the stimpak");
     }
     takeScreenshot();
+}
+
+// The looter and the body of coop_autotest_loot.
+static Object* coop_autotest_loot_by = nullptr;
+static Object* coop_autotest_loot_from = nullptr;
+
+// While the loot screen is open: takes the body's stimpak, as dragging it
+// would, and checks the screen belongs to the looter.
+static void coop_autotest_loot_take()
+{
+    if (gDude != coop_autotest_loot_by) {
+        autotest_fail("loot screen open for the wrong player");
+    }
+    for (int index = 0; index < coop_autotest_loot_from->data.inventory.length; index++) {
+        Object* item = coop_autotest_loot_from->data.inventory.items[index].item;
+        if (item->pid == PROTO_ID_STIMPACK) {
+            if (itemMove(coop_autotest_loot_from, coop_autotest_loot_by, item, 1) != 0) {
+                autotest_fail("could not take the stimpak");
+            }
+            return;
+        }
+    }
+    autotest_fail("no stimpak on the body");
+}
+
+// Player 2 loots a body while player 1 is the active player (as their click
+// over the network is carried out in the main loop): the loot screen is
+// theirs. (It did nothing: only player 1 could loot.)
+// Whether coop_autotest_noticed saw a fight start.
+static bool coop_autotest_noticed_fight = false;
+
+static bool coop_autotest_noticed_turn(Object* player)
+{
+    coop_autotest_noticed_fight = true;
+    return coop_autotest_pass_turn(player);
+}
+
+static bool coop_autotest_noticed_done()
+{
+    return coop_autotest_noticed_fight;
+}
+
+// In Klamath's rat caves player 2 stands by a hostile critter, player 1 far
+// away: it notices player 2 and attacks (enemies' own scripts
+// only looked for player 1 and stayed blind to player 2 until player 1
+// came).
+static int coop_autotest_noticed(AutotestNewGameProc* newGame)
+{
+    if (!coop_is_enabled()) {
+        autotest_fail("needs [coop]enabled=1");
+        return -1;
+    }
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+    PlayerState* p2 = coop_add_player("premade\\stealth.gcd");
+    if (p2 == nullptr) {
+        autotest_fail("coop_add_player failed");
+        return -1;
+    }
+
+    // A map with hostile critters (COOP_AUTOTEST_MAP; Klamath's rat
+    // caves by default).
+    const char* mapName = getenv("COOP_AUTOTEST_MAP") != nullptr ? getenv("COOP_AUTOTEST_MAP") : "KLARATCV.MAP";
+    int mapIndex = coop_autotest_map_index(mapName);
+    if (mapIndex == -1) {
+        autotest_fail("no map %s", mapName);
+        return -1;
+    }
+    MapTransition transition;
+    memset(&transition, 0, sizeof(transition));
+    transition.map = mapIndex;
+    transition.tile = -1;
+    mapSetTransition(&transition);
+    mapHandleTransition();
+
+    Object* enemy = nullptr;
+    int nextTo = -1;
+    for (Object* obj = objectFindFirstAtElevation(gDude->elevation); obj != nullptr && nextTo == -1; obj = objectFindNextAtElevation()) {
+        // (COOP_AUTOTEST_ENEMY: a part of its name.)
+        const char* wanted = getenv("COOP_AUTOTEST_ENEMY") != nullptr ? getenv("COOP_AUTOTEST_ENEMY") : "";
+        if (PID_TYPE(obj->pid) != OBJ_TYPE_CRITTER || coop_player_of(obj) != nullptr || critterIsDead(obj) || obj->sid == -1
+            || obj->data.critter.combat.team == gDude->data.critter.combat.team || strstr(critterGetName(obj), wanted) == nullptr) {
+            continue;
+        }
+        for (int rotation = 0; rotation < ROTATION_COUNT && nextTo == -1; rotation++) {
+            int tile = tileGetTileInDirection(obj->tile, rotation, 2);
+            if (_obj_blocking_at(nullptr, tile, obj->elevation) == nullptr) {
+                enemy = obj;
+                nextTo = tile;
+            }
+        }
+    }
+    if (enemy == nullptr) {
+        for (int elevation = 0; elevation < ELEVATION_COUNT; elevation++) {
+            for (Object* obj = objectFindFirstAtElevation(elevation); obj != nullptr; obj = objectFindNextAtElevation()) {
+                if (PID_TYPE(obj->pid) == OBJ_TYPE_CRITTER) {
+                    autotest_log("critter %s, team %d, script %d, elevation %d", critterGetName(obj), obj->data.critter.combat.team, obj->sid, elevation);
+                }
+            }
+        }
+        autotest_fail("no hostile critter here");
+        return -1;
+    }
+    int farTile = -1;
+    for (int distance = 20; distance < 40 && farTile == -1; distance += 2) {
+        for (int rotation = 0; rotation < ROTATION_COUNT && farTile == -1; rotation++) {
+            int tile = tileGetTileInDirection(enemy->tile, rotation, distance);
+            if (tile >= 0 && tile < HEX_GRID_SIZE && _obj_blocking_at(nullptr, tile, enemy->elevation) == nullptr) {
+                farTile = tile;
+            }
+        }
+    }
+    if (farTile == -1) {
+        autotest_fail("no tile far from the critter");
+        return -1;
+    }
+    objectSetLocation(gDude, farTile, enemy->elevation, nullptr);
+    objectSetLocation(p2->obj, nextTo, enemy->elevation, nullptr);
+    autotest_log("%s: player 2 %d hexes away, player 1 %d", critterGetName(enemy), objectGetDistanceBetween(p2->obj, enemy), objectGetDistanceBetween(gDude, enemy));
+
+    coop_autotest_noticed_fight = false;
+    coop_set_turn_hook(coop_autotest_noticed_turn);
+    bool fought = coop_autotest_frames_until(20000, coop_autotest_noticed_done);
+    coop_set_turn_hook(nullptr);
+    autotest_log("a fight started: %d", fought ? 1 : 0);
+    if (!fought) {
+        autotest_fail("the critter never noticed player 2");
+    }
+    return 0;
+}
+
+static int coop_autotest_loot(AutotestNewGameProc* newGame)
+{
+    if (!coop_is_enabled()) {
+        autotest_fail("needs [coop]enabled=1");
+        return -1;
+    }
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+    PlayerState* p2 = coop_add_player("premade\\stealth.gcd");
+    if (p2 == nullptr) {
+        autotest_fail("coop_add_player failed");
+        return -1;
+    }
+
+    Object* p1obj = coop_player(0)->obj;
+    Object* p2obj = p2->obj;
+    // (Not an animal: in Fallout 2 they have nothing to take.)
+    coop_autotest_enemy_default = "Raider";
+    Object* body = coop_autotest_spawn_enemy(p2obj);
+    coop_autotest_enemy_default = "Rat";
+    if (body == nullptr) {
+        return -1;
+    }
+    Object* stimpak;
+    if (objectCreateWithPid(&stimpak, PROTO_ID_STIMPACK) != 0 || itemAdd(body, stimpak, 1) != 0) {
+        autotest_fail("no stimpak");
+        return -1;
+    }
+    _obj_disconnect(stimpak, nullptr);
+    critterKill(body, -1, true);
+
+    int before = coop_autotest_stimpaks(p2obj);
+    coop_autotest_loot_by = p2obj;
+    coop_autotest_loot_from = body;
+    inject_wait(20);
+    inject_call(coop_autotest_loot_take);
+    inject_wait(3);
+    inject_key(KEY_ESCAPE);
+
+    scriptsRequestLooting(p2obj, body);
+    scriptsHandleRequests();
+
+    while (inject_pending()) {
+        inject_update();
+    }
+
+    autotest_log("player 2 looted: screen opened %d times, stimpaks %d -> %d", coop_loot_opens(1), before, coop_autotest_stimpaks(p2obj));
+    if (coop_loot_opens(1) != 1) {
+        autotest_fail("the loot screen didn't open for player 2");
+    }
+    if (coop_autotest_stimpaks(p2obj) != before + 1) {
+        autotest_fail("the stimpak did not reach player 2");
+    }
+    if (gDude != p1obj || coop_active_player() != coop_player(0)) {
+        autotest_fail("looting left the wrong player active");
+    }
+    return 0;
 }
 
 // Talking to the other player opens the loot screen between the two to
@@ -3645,6 +3842,13 @@ static int coop_autotest_net_combat_host(AutotestNewGameProc* newGame)
         autotest_fail("player 2 never had a turn");
     }
 
+    if (getenv("COOP_AUTOTEST_COMBAT_INV") != nullptr) {
+        autotest_log("player 2's inventory opened %d times in the fight", coop_inventory_opens(1));
+        if (coop_inventory_opens(1) < 1) {
+            autotest_fail("player 2's click on the bar's inventory button in their turn did nothing");
+        }
+    }
+
     if (!critterIsDead(enemy) && !coop_any_player_has(DAM_DEAD)) {
         autotest_fail("combat ended without a result");
     }
@@ -3659,6 +3863,35 @@ static void coop_autotest_press_space_forever()
     inject_wait(60);
     inject_key(KEY_SPACE);
     inject_call(coop_autotest_press_space_forever);
+}
+
+// COOP_AUTOTEST_COMBAT_INV (client): waits for another's turn, then for
+// ours (the status line goes), then clicks the bar's inventory button.
+static bool coop_autotest_combat_inv_seen_other = false;
+
+static void coop_autotest_combat_inv_wait()
+{
+    const char* status = coop_net_client_status();
+    if (strstr(status, "'s turn") != nullptr) {
+        coop_autotest_combat_inv_seen_other = true;
+    } else if (coop_autotest_combat_inv_seen_other && status[0] == '\0') {
+        inject_set_mouse_transform(coop_autotest_mouse_transform);
+        for (int index = 0; index < 3; index++) {
+            inject_mouse(227 | COOP_AUTOTEST_CENTERED, 51 | COOP_AUTOTEST_BAR, 0);
+        }
+        for (int index = 0; index < 8; index++) {
+            inject_mouse(227 | COOP_AUTOTEST_CENTERED, 51 | COOP_AUTOTEST_BAR, MOUSE_STATE_LEFT_BUTTON_DOWN);
+        }
+        inject_mouse(227 | COOP_AUTOTEST_CENTERED, 51 | COOP_AUTOTEST_BAR, 0);
+        inject_wait(90);
+        inject_call(coop_autotest_screenshot);
+        inject_key(KEY_ESCAPE);
+        inject_wait(30);
+        inject_call(coop_autotest_press_space_forever);
+        return;
+    }
+    inject_wait(5);
+    inject_call(coop_autotest_combat_inv_wait);
 }
 
 static int coop_autotest_net_combat_client(AutotestNewGameProc* newGame)
@@ -3685,7 +3918,14 @@ static int coop_autotest_net_combat_client(AutotestNewGameProc* newGame)
         inject_key(KEY_RETURN);
         inject_wait(30);
     }
-    inject_call(coop_autotest_press_space_forever);
+    // COOP_AUTOTEST_COMBAT_INV: in our turn (clicks in another's do
+    // nothing), the bar's inventory button, held like a hand does, then
+    // closed; then the turns pass.
+    if (getenv("COOP_AUTOTEST_COMBAT_INV") != nullptr) {
+        inject_call(coop_autotest_combat_inv_wait);
+    } else {
+        inject_call(coop_autotest_press_space_forever);
+    }
 
     int rc = coop_autotest_client_run();
     autotest_log("client finished with %d", rc);

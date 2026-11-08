@@ -451,6 +451,14 @@ static unsigned int coop_net_frame_hash(const unsigned char* data, size_t size)
 static bool coop_net_no_early_frames = getenv("COOP_NET_NO_EARLY_FRAMES") != NULL;
 // A client's round: input sent, pictures read and shown.
 #define COOP_NET_CLIENT_ROUND 16
+// The status line over the client's picture (tests).
+static std::string coop_client_status_text;
+
+const char* coop_net_client_status()
+{
+    return coop_client_status_text.c_str();
+}
+
 // Testing: the host draws the client's cursor on its frames (as before 1.21).
 static bool coop_net_no_own_cursor = getenv("COOP_NET_NO_OWN_CURSOR") != NULL;
 // Testing: a client that doesn't take packed frames.
@@ -2892,6 +2900,7 @@ int coop_net_client_run()
                 break;
             case COOP_NET_MSG_STATUS:
                 status = reader.str();
+                coop_client_status_text = status;
                 redraw = true;
                 changedAll = true;
                 break;

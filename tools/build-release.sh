@@ -39,8 +39,10 @@ sdl_args=()
 prefix_map="-ffile-prefix-map=$repo/= -ffile-prefix-map=$work/="
 
 echo "== Linux"
+# No runpath: SDL2 comes from the player's system (an SDL2_LIBRARIES given
+# here would otherwise put this machine's folder into the program).
 # zig against glibc 2.31, so the build runs on older distributions too.
-cmake -S "$repo" -B "$work/linux" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCOOP_SERVER="$server" "${extra_args[@]}" \
+cmake -S "$repo" -B "$work/linux" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_SKIP_RPATH=ON -DCOOP_SERVER="$server" "${extra_args[@]}" \
     -DCMAKE_TOOLCHAIN_FILE="$repo/tools/zig-linux/toolchain.cmake" -DCMAKE_C_FLAGS="-g $prefix_map" -DCMAKE_CXX_FLAGS="-g $prefix_map" "${sdl_args[@]}" >/dev/null
 cmake --build "$work/linux"
 
@@ -65,7 +67,7 @@ if [ -f "$fallout2/src/coop.h" ]; then
     prefix_map2="-ffile-prefix-map=$fallout2/= -ffile-prefix-map=$work/="
 
     echo "== Fallout 2, Linux"
-    cmake -S "$fallout2" -B "$work/f2-linux" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCOOP_SERVER="$server" "${extra_args[@]}" \
+    cmake -S "$fallout2" -B "$work/f2-linux" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_SKIP_RPATH=ON -DCOOP_SERVER="$server" "${extra_args[@]}" \
         -DCMAKE_TOOLCHAIN_FILE="$repo/tools/zig-linux/toolchain.cmake" -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
         -DFALLOUT_VENDORED=OFF -DFALLOUT_VENDORED_ZLIB=ON \
         -DCMAKE_C_FLAGS="-g $prefix_map2" -DCMAKE_CXX_FLAGS="-g $prefix_map2" "${sdl_args[@]}" >/dev/null

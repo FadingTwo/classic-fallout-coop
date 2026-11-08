@@ -960,6 +960,21 @@ int coop_inventory_opens(int index)
     return index >= 0 && index < COOP_MAX_PLAYERS ? coop_inventory_open_counts[index] : 0;
 }
 
+static int coop_loot_open_counts[COOP_MAX_PLAYERS];
+
+void coop_count_loot_open(Object* critter)
+{
+    int index = coop_player_index_of(critter);
+    if (index >= 0 && index < COOP_MAX_PLAYERS) {
+        coop_loot_open_counts[index]++;
+    }
+}
+
+int coop_loot_opens(int index)
+{
+    return index >= 0 && index < COOP_MAX_PLAYERS ? coop_loot_open_counts[index] : 0;
+}
+
 int coop_viewer_index()
 {
     PlayerState* viewer = coop_viewer != NULL ? coop_viewer : coop_controlled_player();

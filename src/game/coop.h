@@ -19,7 +19,7 @@ namespace fallout {
 #define COOP_MAX_PLAYERS 4
 
 // Co-op version, for the update check and bug reports.
-#define COOP_VERSION "1.21.1"
+#define COOP_VERSION "1.21.2"
 
 // fallout.cfg [coop] server=http://host[:port] - where UPDATE looks for
 // new versions (<server>/fallout-coop/latest.txt) and REPORT BUG sends
@@ -256,6 +256,9 @@ int coop_player_index_of(Object* obj);
 // Testing: how many times each player's inventory opened.
 void coop_count_inventory_open(Object* critter);
 int coop_inventory_opens(int index);
+// ... and the loot screen (a body, a locker).
+void coop_count_loot_open(Object* critter);
+int coop_loot_opens(int index);
 
 // True if any player character has one of the `results` flags (DAM_*).
 bool coop_any_player_has(int results);

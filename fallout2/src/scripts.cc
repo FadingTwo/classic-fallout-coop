@@ -1,5 +1,6 @@
 #include "scripts.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -48,6 +49,8 @@
 namespace fallout {
 
 static void scriptsOpenGiving();
+static PlayerState* scriptsNearestPlayer(Object* critter);
+static void scriptsOpenLooting(Object* looter, Object* target);
 
 #define SCRIPT_LIST_EXTENT_SIZE 16
 
@@ -730,6 +733,29 @@ static void _doBkProcesses()
     }
 }
 
+// CE: co-op: the player nearest to `critter` on its level, when that isn't
+// player 1 (nullptr otherwise: player 1 as always).
+static PlayerState* scriptsNearestPlayer(Object* critter)
+{
+    if (coop_player_count() < 2 || critter == nullptr) {
+        return nullptr;
+    }
+    PlayerState* nearest = nullptr;
+    int nearestDistance = INT_MAX;
+    for (int index = 0; index < coop_player_count(); index++) {
+        Object* obj = coop_player(index)->obj;
+        if (obj == nullptr || obj->elevation != critter->elevation || (obj->flags & OBJECT_HIDDEN) != 0 || critterIsDead(obj)) {
+            continue;
+        }
+        int distance = objectGetDistanceBetween(critter, obj);
+        if (distance < nearestDistance) {
+            nearestDistance = distance;
+            nearest = coop_player(index);
+        }
+    }
+    return nearest != coop_player(0) ? nearest : nullptr;
+}
+
 // 0x4A3CA0
 static void _script_chk_critters()
 {
@@ -765,6 +791,10 @@ static void _script_chk_critters()
 
             if (scriptListExtent != nullptr) {
                 Script* script = &(scriptListExtent->scripts[scriptIndex]);
+                // CE: co-op: as the player nearest to the critter, so it
+                // notices whoever is there (enemies stayed blind to players
+                // 2-4 until player 1 came near).
+                ActivePlayerScope scope(scriptsNearestPlayer(script->owner));
                 scriptExecProc(script->sid, proc);
             }
         }
@@ -1061,7 +1091,7 @@ int scriptsHandleRequests()
 
     if ((gScriptsRequests & SCRIPT_REQUEST_LOOTING) != 0) {
         gScriptsRequests &= ~SCRIPT_REQUEST_LOOTING;
-        inventoryOpenLooting(gScriptsRequestedLootingBy, gScriptsRequestedLootingFrom);
+        scriptsOpenLooting(gScriptsRequestedLootingBy, gScriptsRequestedLootingFrom);
     }
 
     if ((gScriptsRequests & SCRIPT_REQUEST_STEALING) != 0) {
@@ -1138,7 +1168,7 @@ int _scripts_check_state_in_combat()
     }
 
     if ((gScriptsRequests & SCRIPT_REQUEST_LOOTING) != 0) {
-        inventoryOpenLooting(gScriptsRequestedLootingBy, gScriptsRequestedLootingFrom);
+        scriptsOpenLooting(gScriptsRequestedLootingBy, gScriptsRequestedLootingFrom);
     }
 
     // CE: co-op: see _scripts_check_state.
@@ -1390,6 +1420,26 @@ static void scriptsOpenGiving()
         coop_set_viewer(nullptr);
         tileWindowRefresh();
     }
+}
+
+// CE: co-op: the loot screen in the scope of the player who asked (it
+// opens only for the inventory's owner: another player's looting of a body,
+// a locker or a trunk did nothing), and on their screen.
+static void scriptsOpenLooting(Object* looter, Object* target)
+{
+    PlayerState* player = coop_player_of(looter);
+    if (player == nullptr || player == coop_active_player()) {
+        inventoryOpenLooting(looter, target);
+        return;
+    }
+
+    coop_set_viewer(player);
+    {
+        ActivePlayerScope scope(player);
+        inventoryOpenLooting(looter, target);
+    }
+    coop_set_viewer(nullptr);
+    tileWindowRefresh();
 }
 
 // 0x4A4770

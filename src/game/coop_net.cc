@@ -416,6 +416,16 @@ static unsigned int coop_net_frame_hash(const unsigned char* data, size_t size)
 static bool coop_net_no_early_frames = getenv("COOP_NET_NO_EARLY_FRAMES") != NULL;
 // A client's round: input sent, pictures read and shown.
 #define COOP_NET_CLIENT_ROUND 16
+// The status line over the client's picture (tests).
+static std::string coop_client_status_text;
+
+const char* coop_net_client_status()
+{
+    return coop_client_status_text.c_str();
+}
+
+// Testing: each picture the client shows goes to this directory.
+static const char* coop_net_client_dump = getenv("COOP_CLIENT_DUMP");
 // Testing: the host draws the client's cursor on its frames (as before 1.21).
 static bool coop_net_no_own_cursor = getenv("COOP_NET_NO_OWN_CURSOR") != NULL;
 // Testing: a client that doesn't take packed frames.
@@ -2647,6 +2657,8 @@ int coop_net_client_run()
     // mouse keeps a pointer to it.
     static std::vector<unsigned char> cursorPixels;
     unsigned int cursorShapes = 0;
+    static unsigned char dumpPalette[768];
+    unsigned int dumped = 0;
     int shownX = -1;
     int shownY = -1;
     // How long clicks and keys take to show: input messages sent, those
@@ -2808,6 +2820,7 @@ int coop_net_client_run()
                     if ((flags & 1) != 0) {
                         const unsigned char* rgb = reader.bytes(768);
                         if (rgb != NULL) {
+                            memcpy(dumpPalette, rgb, 768);
                             unsigned char palette[768];
                             for (int index = 0; index < 768; index++) {
                                 palette[index] = rgb[index] >> 2;
@@ -2857,6 +2870,7 @@ int coop_net_client_run()
                 break;
             case COOP_NET_MSG_STATUS:
                 status = reader.str();
+                coop_client_status_text = status;
                 redraw = true;
                 changedAll = true;
                 break;
@@ -2959,6 +2973,22 @@ int coop_net_client_run()
 
         if (connection.failed || coop_client_exit_requested) {
             hostLeft = true;
+        }
+
+        // Testing (COOP_CLIENT_DUMP=dir): each picture as shown, to look
+        // at frame by frame (dump-<ms>.raw: width, height, palette, pixels).
+        if (redraw && frameWidth != 0 && coop_net_client_dump != NULL && dumped < 3000) {
+            char path[512];
+            snprintf(path, sizeof(path), "%s/dump-%010u.raw", coop_net_client_dump, get_time());
+            FILE* stream = fopen(path, "wb");
+            if (stream != NULL) {
+                fwrite(&frameWidth, sizeof(frameWidth), 1, stream);
+                fwrite(&frameHeight, sizeof(frameHeight), 1, stream);
+                fwrite(dumpPalette, 1, 768, stream);
+                fwrite(frame.data(), 1, frame.size(), stream);
+                fclose(stream);
+                dumped++;
+            }
         }
 
         Uint64 drawStart = SDL_GetPerformanceCounter();

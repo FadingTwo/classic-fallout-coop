@@ -3667,6 +3667,8 @@ int loot_container(Object* a1, Object* a2)
         return 0;
     }
 
+    coop_count_loot_open(a1);
+
     target_pud = &(a2->data.inventory);
     target_curr_stack = 0;
     target_stack_offset[0] = 0;

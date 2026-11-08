@@ -162,6 +162,10 @@ void coop_net_set_bring_character(const std::vector<unsigned char>& data);
 // Client: where the copy of player 2's character is kept.
 #define COOP_NET_CHARACTER_FILE "coop-character.dat"
 
+// Client: the status line shown over the picture ("" when it's our own
+// view or turn; tests).
+const char* coop_net_client_status();
+
 // Host: next input event received from the client, if any.
 bool coop_net_next_input(CoopNetInput* input);
 

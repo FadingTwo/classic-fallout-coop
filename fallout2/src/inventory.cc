@@ -4123,6 +4123,8 @@ int inventoryOpenLooting(Object* looter, Object* target)
         return 0;
     }
 
+    coop_count_loot_open(looter);
+
     _target_pud = &(target->data.inventory);
     _target_curr_stack = 0;
     _target_stack_offset[0] = 0;
