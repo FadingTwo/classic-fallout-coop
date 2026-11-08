@@ -1,6 +1,8 @@
 #ifndef FALLOUT_GAME_INVENTRY_H_
 #define FALLOUT_GAME_INVENTRY_H_
 
+#include <vector>
+
 #include "game/art.h"
 #include "game/object_types.h"
 
@@ -91,6 +93,16 @@ int drop_into_container(Object* a1, Object* a2, int a3, Object** a4, int quantit
 int drop_ammo_into_weapon(Object* weapon, Object* ammo, Object** a3, int quantity, int keyCode);
 void draw_amount(int value, int inventoryWindowType);
 int inven_set_timer(Object* a1);
+
+// Co-op: what a player's inventory run on their own computer changed
+// (true: something to do in player 1's game, which then opens it again),
+// and player 1's game doing it, in that player's scope.
+bool inven_coop_take_changes(std::vector<unsigned char>* out);
+void inven_coop_apply(const std::vector<unsigned char>& changes);
+void inven_coop_test_drop_right_hand();
+// Testing: changes for `command` (1 drop, 2 use, 3 unload, 4 reload: `item`
+// the ammo, `other` the weapon, 5 put `item` into `other`).
+void inven_coop_test_changes(int command, Object* item, int quantity, Object* other, std::vector<unsigned char>* out);
 
 } // namespace fallout
 

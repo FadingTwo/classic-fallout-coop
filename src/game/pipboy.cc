@@ -1815,8 +1815,9 @@ static int ListArchive(int a1)
 static void PipAlarm(int a1)
 {
     if (a1 == 1024) {
-        if (!coop_primary_is_active()) {
-            // Co-op: only player 1 rests and waits.
+        if (!coop_primary_is_active() || coop_mirror_object() != NULL) {
+            // Co-op: only player 1 rests and waits (also not in a Pip-Boy
+            // of player 2's run on their computer).
             gsound_play_sfx_file("iisxxxx1");
             dialog_out("Only player 1 can rest.", NULL, 0, 192, 135, colorTable[32328], 0, colorTable[32328], DIALOG_BOX_LARGE);
         } else if (critter_can_obj_dude_rest()) {

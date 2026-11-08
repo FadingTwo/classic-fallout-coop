@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "automap.h"
 #include "autotest.h"
 #include "combat.h"
 #include "config.h"
@@ -96,6 +97,9 @@ static int coop_autotest_gamepad(AutotestNewGameProc* newGame);
 static int coop_autotest_give(AutotestNewGameProc* newGame);
 static int coop_autotest_loot(AutotestNewGameProc* newGame);
 static int coop_autotest_noticed(AutotestNewGameProc* newGame);
+static int coop_autotest_inven_apply(AutotestNewGameProc* newGame);
+static int coop_autotest_count_pid(Object* critter, int pid);
+static void coop_autotest_log_automaps();
 static int coop_autotest_knockout(AutotestNewGameProc* newGame);
 static int coop_autotest_character(AutotestNewGameProc* newGame);
 static int coop_autotest_barter(AutotestNewGameProc* newGame);
@@ -209,6 +213,7 @@ void coop_autotest_register()
     autotest_add_script("gamepad", coop_autotest_gamepad);
     autotest_add_script("coop_give", coop_autotest_give);
     autotest_add_script("coop_loot", coop_autotest_loot);
+    autotest_add_script("coop_inven_apply", coop_autotest_inven_apply);
     autotest_add_script("coop_noticed", coop_autotest_noticed);
     autotest_add_script("coop_knockout", coop_autotest_knockout);
     autotest_add_script("coop_character", coop_autotest_character);
@@ -1144,6 +1149,9 @@ static void coop_autotest_clear_critters()
 #define COOP_AUTOTEST_CENTERED 0x4000
 // On y: from the top of the interface bar (at the bottom of the screen).
 #define COOP_AUTOTEST_BAR 0x2000
+// On x: a point of the inventory window as at 640x480 (it is centered on
+// other screens, up and down too).
+#define COOP_AUTOTEST_INVEN 0x1000
 
 static void coop_autotest_mouse_transform(int* x, int* y)
 {
@@ -1155,12 +1163,24 @@ static void coop_autotest_mouse_transform(int* x, int* y)
     int frameWidth = 0;
     int frameHeight = 0;
     bool frames = client && coop_net_client_frame_size(&frameWidth, &frameHeight);
+    // A menu run here (1.22): centered on this screen.
+    if (client && coop_mirror_object() != nullptr) {
+        frames = false;
+        hostWidth = screenGetWidth();
+        hostHeight = screenGetHeight();
+    }
     // (Before any frames came, e.g. in the menus, this screen.)
     if (frames && (!coop_net_client_host_size(&hostWidth, &hostHeight) || hostWidth <= 0 || hostHeight <= 0)) {
         hostWidth = frameWidth;
         hostHeight = frameHeight;
     }
-    if ((*x & COOP_AUTOTEST_CENTERED) != 0 && (*y & COOP_AUTOTEST_BAR) != 0) {
+    if ((*x & COOP_AUTOTEST_INVEN) != 0) {
+        *x &= ~COOP_AUTOTEST_INVEN;
+        if (hostWidth != 640 || hostHeight != 480) {
+            *x += (hostWidth - 499) / 2 - 80;
+            *y += (hostHeight - 377) / 2;
+        }
+    } else if ((*x & COOP_AUTOTEST_CENTERED) != 0 && (*y & COOP_AUTOTEST_BAR) != 0) {
         *x = (*x & ~COOP_AUTOTEST_CENTERED) + (hostWidth - 640) / 2;
         *y = (*y & ~COOP_AUTOTEST_BAR) + hostHeight - INTERFACE_BAR_HEIGHT;
     } else if ((*x & COOP_AUTOTEST_CENTERED) != 0) {
@@ -1194,6 +1214,26 @@ static void coop_autotest_click_centered(int x, int y)
 static void coop_autotest_screenshot()
 {
     takeScreenshot();
+}
+
+// The automaps this game reads (a Pip-Boy run here shows the host's).
+static void coop_autotest_log_automaps()
+{
+    AutomapHeader* header;
+    if (automapGetHeader(&header) != 0) {
+        autotest_log("automaps: none to read");
+        return;
+    }
+    int maps = 0;
+    for (int map = 0; map < AUTOMAP_MAP_COUNT; map++) {
+        for (int elevation = 0; elevation < ELEVATION_COUNT; elevation++) {
+            if (header->offsets[map][elevation] > 0) {
+                maps++;
+                autotest_log("automap: map %d elevation %d", map, elevation);
+            }
+        }
+    }
+    autotest_log("automaps: version %d, %d bytes, %d maps", header->version, header->dataSize, maps);
 }
 
 // The F9 key: player 2 joins through the character creation screen (driven
@@ -1564,6 +1604,8 @@ static int coop_autotest_net_play_host(AutotestNewGameProc* newGame)
     if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
         return -1;
     }
+    // The Pip-Boy (player 2's runs on their computer).
+    gameMovieSetSeen(MOVIE_VSUIT);
 
     coop_host_init();
     if (!coop_host_active()) {
@@ -1622,6 +1664,18 @@ static int coop_autotest_net_play_host(AutotestNewGameProc* newGame)
             if (startTile == -1) {
                 startTile = p2->tile;
                 autotest_log("player 2 '%s' joined at tile %d", coop_player(1)->name, startTile);
+                // A knife for their inventory (run on their computer) to
+                // take in hand.
+                Object* knife;
+                if (objectCreateWithPid(&knife, 4) == 0 && itemAdd(p2, knife, 1) == 0) {
+                    _obj_disconnect(knife, nullptr);
+                }
+                // COOP_AUTOTEST_P2_POINTS: skill points to spend: their
+                // character screen opens here, not on their computer.
+                if (const char* points = getenv("COOP_AUTOTEST_P2_POINTS")) {
+                    ActivePlayerScope scope(coop_player(1));
+                    pcSetStat(PC_STAT_UNSPENT_SKILL_POINTS, atoi(points));
+                }
             } else if (p2->tile != startTile && !moved) {
                 moved = true;
                 autotest_log("player 2 moving (tile %d)", p2->tile);
@@ -1680,12 +1734,23 @@ static int coop_autotest_net_play_host(AutotestNewGameProc* newGame)
             tile_dist(startTile, coop_player(1)->obj->tile));
     }
 
+    coop_autotest_log_automaps();
+    Object* p2Right = critterGetItem2(coop_player(1)->obj);
+    int knives = coop_autotest_count_pid(coop_player(1)->obj, 4);
+    autotest_log("player 2's right hand: %s; knives carried %d", p2Right != nullptr ? itemGetName(p2Right) : "empty", knives);
+    if (getenv("COOP_NET_NO_LOCAL_MENUS") == nullptr && (p2Right != nullptr || knives != 0)) {
+        autotest_fail("player 2's knife, taken in hand then dropped in their inventory (run on their computer), wasn't dropped here");
+    }
+    autotest_log("player 2's menus run on their computer: %u", coop_net_local_menus_served(1));
+    if (getenv("COOP_NET_NO_LOCAL_MENUS") == nullptr && coop_net_local_menus_served(1) < 5) {
+        autotest_fail("player 2's character screen and Pip-Boy didn't run on their computer (%u)", coop_net_local_menus_served(1));
+    }
     autotest_log("player 2 sent %u chat messages", coop_host_chat_count(1));
-    if (coop_host_chat_count(1) < 2) {
+    if (coop_host_chat_count(1) < (getenv("COOP_NET_NO_LOCAL_MENUS") != nullptr ? 2u : 1u)) {
         autotest_fail("player 2 sent %u chat messages (one on the map, one in the inventory)", coop_host_chat_count(1));
     }
     autotest_log("player 2's inventory opened %d times", coop_inventory_opens(1));
-    if (coop_inventory_opens(1) < 2) {
+    if (getenv("COOP_NET_NO_LOCAL_MENUS") != nullptr && coop_inventory_opens(1) < 2) {
         autotest_fail("player 2's inventory opened %d times (the I key, then the bar's button)", coop_inventory_opens(1));
     }
 
@@ -1765,39 +1830,91 @@ static int coop_autotest_net_play_client(AutotestNewGameProc* newGame)
     inject_wait(30);
     inject_call(coop_autotest_screenshot); // sent
 
-    // Player 2's inventory: open, look, close. Then a while before leaving:
-    // the host checks player 2's camera once they stand still (a slow host
-    // was still at it).
-    inject_key(KEY_LOWERCASE_I);
-    inject_wait(120);
-    inject_call(coop_autotest_screenshot);
-    // Chat with the inventory open (T did nothing in a menu).
-    inject_key(KEY_LOWERCASE_T);
-    inject_wait(5);
-    for (const char* c = "in a menu"; *c != '\0'; c++) {
-        inject_key(*c);
-        inject_wait(2);
-    }
-    inject_key(KEY_RETURN);
-    inject_wait(30);
-    inject_key(KEY_ESCAPE);
-    inject_wait(60);
+    // The menus on the host (COOP_NET_NO_LOCAL_MENUS, as before 1.22 and
+    // for older players), or run here.
+    if (getenv("COOP_NET_NO_LOCAL_MENUS") != nullptr) {
+        // Player 2's inventory: open, look, close. Then a while before leaving:
+        // the host checks player 2's camera once they stand still (a slow host
+        // was still at it).
+        inject_key(KEY_LOWERCASE_I);
+        inject_wait(120);
+        inject_call(coop_autotest_screenshot);
+        // Chat with the inventory open (T did nothing in a menu).
+        inject_key(KEY_LOWERCASE_T);
+        inject_wait(5);
+        for (const char* c = "in a menu"; *c != '\0'; c++) {
+            inject_key(*c);
+            inject_wait(2);
+        }
+        inject_key(KEY_RETURN);
+        inject_wait(30);
+        inject_key(KEY_ESCAPE);
+        inject_wait(60);
 
-    // Again with the bar's button, held down like a slow hand: the press
-    // and the release reach the host in different frames (the release did
-    // nothing when player 1's mouse let go of the button in between).
-    inject_set_mouse_transform(coop_autotest_mouse_transform);
-    for (int index = 0; index < 3; index++) {
+        // Again with the bar's button, held down like a slow hand: the press
+        // and the release reach the host in different frames (the release did
+        // nothing when player 1's mouse let go of the button in between).
+        inject_set_mouse_transform(coop_autotest_mouse_transform);
+        for (int index = 0; index < 3; index++) {
+            inject_mouse(227 | COOP_AUTOTEST_CENTERED, 51 | COOP_AUTOTEST_BAR, 0);
+        }
+        for (int index = 0; index < 20; index++) {
+            inject_mouse(227 | COOP_AUTOTEST_CENTERED, 51 | COOP_AUTOTEST_BAR, MOUSE_STATE_LEFT_BUTTON_DOWN);
+        }
         inject_mouse(227 | COOP_AUTOTEST_CENTERED, 51 | COOP_AUTOTEST_BAR, 0);
+        inject_wait(120);
+        inject_call(coop_autotest_screenshot);
+        inject_key(KEY_ESCAPE);
+        inject_wait(60);
+    } else {
+        // The character screen and the Pip-Boy, run here (1.22): open, look,
+        // close.
+        inject_key(KEY_LOWERCASE_C);
+        inject_wait(90);
+        inject_call(coop_autotest_screenshot);
+        inject_key(KEY_ESCAPE);
+        inject_wait(60);
+        inject_key(KEY_LOWERCASE_P);
+        inject_wait(90);
+        inject_call(coop_autotest_screenshot);
+        // Its automaps (the host's), then out.
+        inject_set_mouse_transform(coop_autotest_mouse_transform);
+        coop_autotest_click_centered(59, 402);
+        inject_wait(60);
+        inject_call(coop_autotest_screenshot);
+        inject_call(coop_autotest_log_automaps);
+        inject_key(KEY_ESCAPE);
+        inject_wait(60);
+
+        // The inventory, run here: the knife from the list into the right hand
+        // (dragged), then out; player 1's game takes it in hand.
+        inject_key(KEY_LOWERCASE_I);
+        inject_wait(90);
+        for (int index = 0; index < 3; index++) {
+            inject_mouse(158 | COOP_AUTOTEST_INVEN, 59, 0);
+        }
+        for (int index = 0; index < 4; index++) {
+            inject_mouse(158 | COOP_AUTOTEST_INVEN, 59, MOUSE_STATE_LEFT_BUTTON_DOWN);
+        }
+        for (int step = 1; step <= 10; step++) {
+            inject_mouse((158 + (370 - 158) * step / 10) | COOP_AUTOTEST_INVEN, 59 + (316 - 59) * step / 10, MOUSE_STATE_LEFT_BUTTON_DOWN);
+        }
+        inject_mouse(370 | COOP_AUTOTEST_INVEN, 316, 0);
+        inject_wait(30);
+        inject_call(coop_autotest_screenshot);
+        inject_key(KEY_ESCAPE);
+        inject_wait(60);
+        // Then it's dropped (its menu's Drop): player 1's game drops it and
+        // the inventory opens again; out.
+        inject_key(KEY_LOWERCASE_I);
+        inject_wait(60);
+        inject_call(inven_coop_test_drop_right_hand);
+        inject_wait(120);
+        inject_call(coop_autotest_screenshot);
+        inject_key(KEY_ESCAPE);
+        inject_wait(60);
     }
-    for (int index = 0; index < 20; index++) {
-        inject_mouse(227 | COOP_AUTOTEST_CENTERED, 51 | COOP_AUTOTEST_BAR, MOUSE_STATE_LEFT_BUTTON_DOWN);
-    }
-    inject_mouse(227 | COOP_AUTOTEST_CENTERED, 51 | COOP_AUTOTEST_BAR, 0);
-    inject_wait(120);
-    inject_call(coop_autotest_screenshot);
-    inject_key(KEY_ESCAPE);
-    inject_wait(300);
+    inject_wait(240);
 
     // Last (the camera check is done): their mouse at the left edge a while
     // (the map scrolls), then back on the map. Their cursor must not stay a
@@ -1814,6 +1931,14 @@ static int coop_autotest_net_play_client(AutotestNewGameProc* newGame)
     autotest_log("client finished with %d", rc);
     if (rc != 0) {
         autotest_fail("client failed");
+    }
+
+    // The character screen and the Pip-Boy ran here (only the Pip-Boy with
+    // skill points to spend).
+    unsigned int expected = getenv("COOP_NET_NO_LOCAL_MENUS") != nullptr ? 0 : getenv("COOP_AUTOTEST_P2_POINTS") != nullptr ? 4 : 5;
+    autotest_log("menus run here: %u", coop_net_client_local_menus_run());
+    if (coop_net_client_local_menus_run() != expected) {
+        autotest_fail("%u menus ran here, not %u", coop_net_client_local_menus_run(), expected);
     }
 
     return 0;
@@ -2156,6 +2281,122 @@ static int coop_autotest_noticed(AutotestNewGameProc* newGame)
     autotest_log("a fight started: %d", fought ? 1 : 0);
     if (!fought) {
         autotest_fail("the critter never noticed player 2");
+    }
+    return 0;
+}
+
+// How many of `pid` `critter` carries.
+static int coop_autotest_count_pid(Object* critter, int pid)
+{
+    int count = 0;
+    for (int index = 0; index < critter->data.inventory.length; index++) {
+        if (critter->data.inventory.items[index].item->pid == pid) {
+            count += critter->data.inventory.items[index].quantity;
+        }
+    }
+    return count;
+}
+
+static Object* coop_autotest_first_pid(Object* critter, int pid)
+{
+    for (int index = 0; index < critter->data.inventory.length; index++) {
+        if (critter->data.inventory.items[index].item->pid == pid) {
+            return critter->data.inventory.items[index].item;
+        }
+    }
+    return nullptr;
+}
+
+// What a player's inventory run on their computer sends is done by player
+// 1's game the way the inventory screen does it: using a stimpak, dropping
+// two of a stack, unloading and reloading a pistol, dropping some caps.
+static int coop_autotest_inven_apply(AutotestNewGameProc* newGame)
+{
+    if (!coop_is_enabled()) {
+        autotest_fail("needs [coop]enabled=1");
+        return -1;
+    }
+    if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
+        return -1;
+    }
+    PlayerState* p2 = coop_add_player("premade\\stealth.gcd");
+    if (p2 == nullptr) {
+        autotest_fail("coop_add_player failed");
+        return -1;
+    }
+    Object* dude = p2->obj;
+    auto give = [&](int pid, int quantity) {
+        Object* item;
+        if (objectCreateWithPid(&item, pid) == 0 && itemAdd(dude, item, quantity) == 0) {
+            _obj_disconnect(item, nullptr);
+            return item;
+        }
+        return (Object*)nullptr;
+    };
+    give(PROTO_ID_STIMPACK, 4);
+    Object* pistol = give(8, 1);
+    give(PROTO_ID_MONEY, 100);
+    if (pistol == nullptr) {
+        autotest_fail("no pistol");
+        return -1;
+    }
+    give(weaponGetAmmoTypePid(pistol), 2);
+
+    ActivePlayerScope scope(p2);
+    std::vector<unsigned char> changes;
+
+    critterAdjustHitPoints(dude, 5 - critterGetHitPoints(dude));
+    int hp = critterGetHitPoints(dude);
+    inven_coop_test_changes(2, coop_autotest_first_pid(dude, PROTO_ID_STIMPACK), 1, nullptr, &changes);
+    inven_coop_apply(changes);
+    autotest_log("use stimpak: hp %d -> %d, stimpaks %d", hp, critterGetHitPoints(dude), coop_autotest_count_pid(dude, PROTO_ID_STIMPACK));
+    if (critterGetHitPoints(dude) <= hp || coop_autotest_count_pid(dude, PROTO_ID_STIMPACK) != 3) {
+        autotest_fail("the stimpak wasn't used");
+    }
+
+    inven_coop_test_changes(1, coop_autotest_first_pid(dude, PROTO_ID_STIMPACK), 2, nullptr, &changes);
+    inven_coop_apply(changes);
+    autotest_log("drop 2 stimpaks: %d left", coop_autotest_count_pid(dude, PROTO_ID_STIMPACK));
+    if (coop_autotest_count_pid(dude, PROTO_ID_STIMPACK) != 1) {
+        autotest_fail("two stimpaks weren't dropped");
+    }
+
+    int loaded = ammoGetQuantity(pistol);
+    inven_coop_test_changes(3, pistol, 1, nullptr, &changes);
+    inven_coop_apply(changes);
+    pistol = coop_autotest_first_pid(dude, 8);
+    autotest_log("unload: pistol %d -> %d rounds", loaded, pistol != nullptr ? ammoGetQuantity(pistol) : -1);
+    if (pistol == nullptr || ammoGetQuantity(pistol) != 0) {
+        autotest_fail("the pistol wasn't unloaded");
+        return 0;
+    }
+
+    Object* ammo = coop_autotest_first_pid(dude, weaponGetAmmoTypePid(pistol));
+    inven_coop_test_changes(4, ammo, 1, pistol, &changes);
+    inven_coop_apply(changes);
+    pistol = coop_autotest_first_pid(dude, 8);
+    autotest_log("reload: pistol %d rounds", pistol != nullptr ? ammoGetQuantity(pistol) : -1);
+    if (pistol == nullptr || ammoGetQuantity(pistol) == 0) {
+        autotest_fail("the pistol wasn't reloaded");
+    }
+
+    // Into the right hand (only the hands and armor sent).
+    pistol = coop_autotest_first_pid(dude, 8);
+    pistol->flags |= OBJECT_IN_RIGHT_HAND;
+    inven_coop_test_changes(0, nullptr, 0, nullptr, &changes);
+    pistol->flags &= ~OBJECT_IN_RIGHT_HAND;
+    inven_coop_apply(changes);
+    autotest_log("right hand: %s", critterGetItem2(dude) != nullptr ? itemGetName(critterGetItem2(dude)) : "empty");
+    if (critterGetItem2(dude) == nullptr || critterGetItem2(dude)->pid != 8) {
+        autotest_fail("the pistol isn't in the right hand");
+    }
+
+    int caps = itemGetTotalCaps(dude);
+    inven_coop_test_changes(1, coop_autotest_first_pid(dude, PROTO_ID_MONEY), 30, nullptr, &changes);
+    inven_coop_apply(changes);
+    autotest_log("drop 30 caps: %d -> %d", caps, itemGetTotalCaps(dude));
+    if (itemGetTotalCaps(dude) != caps - 30) {
+        autotest_fail("30 caps weren't dropped");
     }
     return 0;
 }
@@ -3817,6 +4058,20 @@ static int coop_autotest_net_combat_host(AutotestNewGameProc* newGame)
 
     coop_autotest_clear_critters();
 
+    // COOP_AUTOTEST_LOCAL_CLOSE: the fight begins while player 2's
+    // character screen is open on their computer; it must close for their
+    // turns.
+    if (getenv("COOP_AUTOTEST_LOCAL_CLOSE") != nullptr) {
+        unsigned int waitStart = getTicks();
+        while (getTicksSince(waitStart) < 30000 && coop_net_local_menus_served(1) == 0) {
+            coop_autotest_host_frame();
+        }
+        autotest_log("player 2's menus on their computer before the fight: %u", coop_net_local_menus_served(1));
+        if (coop_net_local_menus_served(1) == 0) {
+            autotest_fail("player 2's character screen never opened on their computer");
+        }
+    }
+
     Object* enemy = coop_autotest_spawn_enemy(coop_player(0)->obj);
     if (enemy == nullptr) {
         return -1;
@@ -3916,6 +4171,12 @@ static int coop_autotest_net_combat_client(AutotestNewGameProc* newGame)
         inject_wait(10);
         inject_call(coop_autotest_screenshot);
         inject_key(KEY_RETURN);
+        inject_wait(30);
+    }
+    // COOP_AUTOTEST_LOCAL_CLOSE: the character screen open (here) when the
+    // fight begins; the fight closes it.
+    if (getenv("COOP_AUTOTEST_LOCAL_CLOSE") != nullptr) {
+        inject_key(KEY_LOWERCASE_C);
         inject_wait(30);
     }
     // COOP_AUTOTEST_COMBAT_INV: in our turn (clicks in another's do

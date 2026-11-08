@@ -42,6 +42,7 @@
 #include "plib/gnw/debug.h"
 #include "plib/gnw/gnw.h"
 #include "plib/gnw/grbuf.h"
+#include "plib/gnw/inject.h"
 #include "plib/gnw/input.h"
 #include "plib/gnw/svga.h"
 #include "plib/gnw/text.h"
@@ -255,6 +256,15 @@ static InventoryWindowDescription iscr_data[INVENTORY_WINDOW_TYPE_COUNT] = {
 
 // 0x5056C8
 static bool dropped_explosive = false;
+static void inven_explosive_dropped();
+// CE: co-op (see inven_coop_apply).
+#define COOP_INVEN_DROP 1
+#define COOP_INVEN_USE 2
+#define COOP_INVEN_UNLOAD 3
+#define COOP_INVEN_RELOAD 4
+#define COOP_INVEN_PUT_IN 5
+static void coop_inven_note(int command, Object* item, int quantity, Object* other);
+static bool coop_inven_noted = false;
 
 // 0x59CD2C
 static CacheEntry* mt_key[8];
@@ -446,6 +456,12 @@ void handle_inventory()
             break;
         }
 
+        // CE: co-op: something noted for player 1's game (see
+        // coop_inven_note): closes, to open again with the result.
+        if (coop_inven_noted && coop_mirror_object() != NULL) {
+            break;
+        }
+
         if (game_user_wants_to_quit != 0) {
             break;
         }
@@ -517,7 +533,10 @@ void handle_inventory()
     if (inven_dude == obj_dude) {
         Rect rect;
         obj_change_fid(inven_dude, i_fid, &rect);
-        tile_refresh_rect(&rect, inven_dude->elevation);
+        // (No map under a player's inventory run on their computer.)
+        if (coop_mirror_object() == NULL) {
+            tile_refresh_rect(&rect, inven_dude->elevation);
+        }
     }
 
     Object* newArmor = inven_worn(inven_dude);
@@ -1248,6 +1267,45 @@ bool setup_inventory(int inventoryWindowType)
 }
 
 // 0x46353C
+// An armed explosive was dropped: who sees it fights.
+static void inven_explosive_dropped()
+{
+    Attack v1;
+    combat_ctd_init(&v1, obj_dude, NULL, HIT_MODE_PUNCH, HIT_LOCATION_TORSO);
+    v1.attackerFlags = DAM_HIT;
+    v1.tile = obj_dude->tile;
+    compute_explosion_on_extras(&v1, 0, 0, 1);
+
+    Object* v2 = NULL;
+    for (int index = 0; index < v1.extrasLength; index++) {
+        Object* critter = v1.extras[index];
+        if (critter != obj_dude
+            && critter->data.critter.combat.team != obj_dude->data.critter.combat.team
+            && stat_result(critter, STAT_PERCEPTION, 0, NULL) >= ROLL_SUCCESS) {
+            critter_set_who_hit_me(critter, obj_dude);
+
+            if (v2 == NULL) {
+                v2 = critter;
+            }
+        }
+    }
+
+    if (v2 != NULL) {
+        if (!isInCombat()) {
+            STRUCT_664980 v3;
+            v3.attacker = v2;
+            v3.defender = obj_dude;
+            v3.actionPointsBonus = 0;
+            v3.accuracyBonus = 0;
+            v3.damageBonus = 0;
+            v3.minDamage = 0;
+            v3.maxDamage = INT_MAX;
+            v3.field_1C = 0;
+            scripts_request_combat(&v3);
+        }
+    }
+}
+
 void exit_inventory(bool shouldEnableIso)
 {
     inven_dude = stack[0];
@@ -1288,41 +1346,7 @@ void exit_inventory(bool shouldEnableIso)
     gmouse_enable();
 
     if (dropped_explosive) {
-        Attack v1;
-        combat_ctd_init(&v1, obj_dude, NULL, HIT_MODE_PUNCH, HIT_LOCATION_TORSO);
-        v1.attackerFlags = DAM_HIT;
-        v1.tile = obj_dude->tile;
-        compute_explosion_on_extras(&v1, 0, 0, 1);
-
-        Object* v2 = NULL;
-        for (int index = 0; index < v1.extrasLength; index++) {
-            Object* critter = v1.extras[index];
-            if (critter != obj_dude
-                && critter->data.critter.combat.team != obj_dude->data.critter.combat.team
-                && stat_result(critter, STAT_PERCEPTION, 0, NULL) >= ROLL_SUCCESS) {
-                critter_set_who_hit_me(critter, obj_dude);
-
-                if (v2 == NULL) {
-                    v2 = critter;
-                }
-            }
-        }
-
-        if (v2 != NULL) {
-            if (!isInCombat()) {
-                STRUCT_664980 v3;
-                v3.attacker = v2;
-                v3.defender = obj_dude;
-                v3.actionPointsBonus = 0;
-                v3.accuracyBonus = 0;
-                v3.damageBonus = 0;
-                v3.minDamage = 0;
-                v3.maxDamage = INT_MAX;
-                v3.field_1C = 0;
-                scripts_request_combat(&v3);
-            }
-        }
-
+        inven_explosive_dropped();
         dropped_explosive = false;
     }
 }
@@ -3467,6 +3491,28 @@ void inven_action_cursor(int keyCode, int inventoryWindowType)
     display_inventory(stack_offset[curr_stack], -1, inventoryWindowType);
 
     int actionMenuItem = actionMenuItems[menuItemIndex];
+
+    // CE: co-op: in a player's inventory run on their computer, what changes
+    // the world is noted for player 1's game (how many to drop is asked
+    // here); the screen then closes and opens again with the result.
+    if (coop_mirror_object() != NULL && inventoryWindowType == INVENTORY_WINDOW_TYPE_NORMAL
+        && (actionMenuItem == GAME_MOUSE_ACTION_MENU_ITEM_DROP
+            || (actionMenuItem == GAME_MOUSE_ACTION_MENU_ITEM_USE && itemType != ITEM_TYPE_CONTAINER)
+            || actionMenuItem == GAME_MOUSE_ACTION_MENU_ITEM_UNLOAD)) {
+        int quantity = 1;
+        if (actionMenuItem == GAME_MOUSE_ACTION_MENU_ITEM_DROP && v43 == NULL && v56 > 1
+            && item->pid != PROTO_ID_DYNAMITE_II && item->pid != PROTO_ID_PLASTIC_EXPLOSIVES_II) {
+            quantity = do_move_timer(INVENTORY_WINDOW_TYPE_MOVE_ITEMS, item, v56);
+        }
+        if (quantity > 0) {
+            coop_inven_note(actionMenuItem == GAME_MOUSE_ACTION_MENU_ITEM_DROP ? COOP_INVEN_DROP
+                    : actionMenuItem == GAME_MOUSE_ACTION_MENU_ITEM_USE        ? COOP_INVEN_USE
+                                                                               : COOP_INVEN_UNLOAD,
+                item, quantity, NULL);
+        }
+        actionMenuItem = -1;
+    }
+
     switch (actionMenuItem) {
     case GAME_MOUSE_ACTION_MENU_ITEM_DROP:
         if (v43 != NULL) {
@@ -5001,6 +5047,12 @@ int drop_into_container(Object* a1, Object* a2, int a3, Object** a4, int quantit
         return -1;
     }
 
+    // CE: co-op: noted for player 1's game (see coop_inven_note).
+    if (coop_mirror_object() != NULL) {
+        coop_inven_note(COOP_INVEN_PUT_IN, a2, quantityToMove, a1);
+        return 0;
+    }
+
     if (a3 != -1) {
         if (item_remove_mult(inven_dude, a2, quantityToMove) == -1) {
             return -1;
@@ -5048,6 +5100,12 @@ int drop_ammo_into_weapon(Object* weapon, Object* ammo, Object** a3, int quantit
 
     if (quantityToMove == -1) {
         return -1;
+    }
+
+    // CE: co-op: noted for player 1's game (see coop_inven_note).
+    if (coop_mirror_object() != NULL) {
+        coop_inven_note(COOP_INVEN_RELOAD, ammo, quantityToMove, weapon);
+        return 0;
     }
 
     Object* v14 = ammo;
@@ -5431,6 +5489,433 @@ int inven_set_timer(Object* a1)
     }
 
     return seconds;
+}
+
+
+// -----------------------------------------------------------------------------
+// CE: co-op (1.22): a player's inventory run on their own computer, on a copy
+// of their character (see coop_mirror_begin). The hands and armor change
+// there at once; what changes the world (drop, use, unload, reload, putting
+// into a container) is noted instead and the screen closes. Player 1's game
+// then sets the hands and armor as they were left and does the noted thing
+// (inven_coop_apply), and the screen opens again with the result. Items are
+// found by what they are (a split stack gets a new id), not by id.
+
+// What an item is: its kind, its ammo (weapons), how many in its stack,
+// where it is worn (1 left hand, 2 right hand, 4 body), or the player
+// themselves (pid 0, a container to put into).
+typedef struct CoopItemPrint {
+    int pid = -1;
+    int ammoPid = -1;
+    int ammo = 0;
+    int quantity = 0;
+    int slot = 0;
+} CoopItemPrint;
+
+static int coop_inven_command = 0;
+static int coop_inven_quantity = 0;
+static CoopItemPrint coop_inven_item;
+static CoopItemPrint coop_inven_other;
+
+// How many of `item` its owner's stack holds (searching containers).
+static int coop_inven_stack_quantity(Object* owner, Object* item)
+{
+    Inventory* inventory = &(owner->data.inventory);
+    for (int index = 0; index < inventory->length; index++) {
+        if (inventory->items[index].item == item) {
+            return inventory->items[index].quantity;
+        }
+        if (item_get_type(inventory->items[index].item) == ITEM_TYPE_CONTAINER) {
+            int quantity = coop_inven_stack_quantity(inventory->items[index].item, item);
+            if (quantity != 0) {
+                return quantity;
+            }
+        }
+    }
+    return 0;
+}
+
+static CoopItemPrint coop_inven_print(Object* item, int slot)
+{
+    CoopItemPrint print;
+    if (item == NULL) {
+        return print;
+    }
+    if (item == stack[0] || coop_player_of(item) != NULL) {
+        print.pid = 0;
+        return print;
+    }
+    print.pid = item->pid;
+    if (item_get_type(item) == ITEM_TYPE_WEAPON) {
+        print.ammoPid = item_w_ammo_pid(item);
+        print.ammo = item_w_curr_ammo(item);
+    }
+    print.quantity = std::max(coop_inven_stack_quantity(stack[0], item), 1);
+    print.slot = slot;
+    return print;
+}
+
+// Where `item` is worn while the screen is open (its slots hold them).
+static int coop_inven_screen_slot(Object* item)
+{
+    int slot = 0;
+    if (item != NULL && item == i_lhand) slot |= 1;
+    if (item != NULL && item == i_rhand) slot |= 2;
+    if (item != NULL && item == i_worn) slot |= 4;
+    return slot;
+}
+
+static void coop_inven_note(int command, Object* item, int quantity, Object* other)
+{
+    coop_inven_command = command;
+    coop_inven_item = coop_inven_print(item, coop_inven_screen_slot(item));
+    coop_inven_quantity = quantity;
+    coop_inven_other = coop_inven_print(other, coop_inven_screen_slot(other));
+    // The screen closes (handle_inventory()); its result comes from player
+    // 1's game.
+    coop_inven_noted = true;
+}
+
+static void coop_inven_write_int(std::vector<unsigned char>* out, int value)
+{
+    for (int shift = 0; shift < 32; shift += 8) {
+        out->push_back((unsigned char)((unsigned int)value >> shift));
+    }
+}
+
+static void coop_inven_write_print(std::vector<unsigned char>* out, const CoopItemPrint& print)
+{
+    coop_inven_write_int(out, print.pid);
+    coop_inven_write_int(out, print.ammoPid);
+    coop_inven_write_int(out, print.ammo);
+    coop_inven_write_int(out, print.quantity);
+    coop_inven_write_int(out, print.slot);
+}
+
+static bool coop_inven_read_int(const std::vector<unsigned char>& data, size_t* at, int* value)
+{
+    if (*at + 4 > data.size()) {
+        return false;
+    }
+    unsigned int v = 0;
+    for (int index = 0; index < 4; index++) {
+        v |= (unsigned int)data[*at + index] << (8 * index);
+    }
+    *at += 4;
+    *value = (int)v;
+    return true;
+}
+
+static bool coop_inven_read_print(const std::vector<unsigned char>& data, size_t* at, CoopItemPrint* print)
+{
+    return coop_inven_read_int(data, at, &(print->pid))
+        && coop_inven_read_int(data, at, &(print->ammoPid))
+        && coop_inven_read_int(data, at, &(print->ammo))
+        && coop_inven_read_int(data, at, &(print->quantity))
+        && coop_inven_read_int(data, at, &(print->slot));
+}
+
+bool inven_coop_take_changes(std::vector<unsigned char>* out)
+{
+    out->clear();
+    Object* dude = obj_dude;
+    out->push_back(1); // version
+    Object* left = inven_left_hand(dude);
+    Object* right = inven_right_hand(dude);
+    Object* worn = inven_worn(dude);
+    stack[0] = dude;
+    coop_inven_write_print(out, coop_inven_print(left, left != NULL && left == right ? 3 : 1));
+    coop_inven_write_print(out, coop_inven_print(right, left != NULL && left == right ? 3 : 2));
+    coop_inven_write_print(out, coop_inven_print(worn, 4));
+    bool noted = coop_inven_noted;
+    coop_inven_write_int(out, noted ? coop_inven_command : 0);
+    coop_inven_write_print(out, coop_inven_item);
+    coop_inven_write_int(out, coop_inven_quantity);
+    coop_inven_write_print(out, coop_inven_other);
+    coop_inven_noted = false;
+    coop_inven_command = 0;
+    return noted;
+}
+
+// Testing: in a player's inventory run on their computer, drops what the
+// right hand holds (as its menu's Drop does).
+void inven_coop_test_drop_right_hand()
+{
+    if (i_rhand != NULL && coop_mirror_object() != NULL) {
+        coop_inven_note(COOP_INVEN_DROP, i_rhand, 1, NULL);
+    }
+}
+
+// Testing: the changes a player's inventory would send for `command` on
+// `item` (and `other`), its hands and armor as they are.
+void inven_coop_test_changes(int command, Object* item, int quantity, Object* other, std::vector<unsigned char>* out)
+{
+    auto slotOf = [](Object* obj) {
+        return obj == NULL ? 0 : ((obj->flags & OBJECT_IN_LEFT_HAND) != 0 ? 1 : 0) | ((obj->flags & OBJECT_IN_RIGHT_HAND) != 0 ? 2 : 0) | ((obj->flags & OBJECT_WORN) != 0 ? 4 : 0);
+    };
+    stack[0] = obj_dude;
+    coop_inven_noted = true;
+    coop_inven_command = command;
+    coop_inven_item = coop_inven_print(item, slotOf(item));
+    coop_inven_quantity = quantity;
+    coop_inven_other = coop_inven_print(other, slotOf(other));
+    inven_coop_take_changes(out);
+}
+
+// The item `print` describes in `owner`'s inventory (and containers in it):
+// the same kind, worn where it says if it does, then the closest ammo and
+// stack.
+static Object* coop_inven_find_in(Object* owner, const CoopItemPrint& print, int* bestScore, Object** containerOut, Object* container)
+{
+    Object* best = NULL;
+    Inventory* inventory = &(owner->data.inventory);
+    for (int index = 0; index < inventory->length; index++) {
+        Object* item = inventory->items[index].item;
+        if (item->pid == print.pid) {
+            int slot = ((item->flags & OBJECT_IN_LEFT_HAND) != 0 ? 1 : 0) | ((item->flags & OBJECT_IN_RIGHT_HAND) != 0 ? 2 : 0) | ((item->flags & OBJECT_WORN) != 0 ? 4 : 0);
+            int score = 1;
+            if (slot == print.slot) score += 1000;
+            if (item_get_type(item) == ITEM_TYPE_WEAPON && item_w_ammo_pid(item) == print.ammoPid) score += 100;
+            if (item_get_type(item) == ITEM_TYPE_WEAPON && item_w_curr_ammo(item) == print.ammo) score += 50;
+            if (inventory->items[index].quantity == print.quantity) score += 10;
+            if (container == NULL) score += 5;
+            if (score > *bestScore) {
+                *bestScore = score;
+                best = item;
+                *containerOut = container;
+            }
+        }
+        if (item_get_type(item) == ITEM_TYPE_CONTAINER) {
+            Object* inner = coop_inven_find_in(item, print, bestScore, containerOut, item);
+            if (inner != NULL) {
+                best = inner;
+            }
+        }
+    }
+    return best;
+}
+
+static Object* coop_inven_find(const CoopItemPrint& print, Object** container = NULL)
+{
+    if (print.pid == -1) {
+        return NULL;
+    }
+    if (print.pid == 0) {
+        return obj_dude;
+    }
+    int bestScore = 0;
+    Object* found = NULL;
+    Object* item = coop_inven_find_in(obj_dude, print, &bestScore, container != NULL ? container : &found, NULL);
+    return item;
+}
+
+// Wears `item` (one of its stack) in `flag`'s place.
+static void coop_inven_wear(Object* dude, Object* item, int flag)
+{
+    if (item == NULL || (item->flags & flag) != 0) {
+        return;
+    }
+    if (coop_inven_stack_quantity(dude, item) > 1) {
+        item_remove_mult(dude, item, 1);
+        item->flags |= flag;
+        item_add_force(dude, item, 1);
+    } else {
+        item->flags |= flag;
+    }
+}
+
+void inven_coop_apply(const std::vector<unsigned char>& data)
+{
+    size_t at = 0;
+    if (data.empty() || data[0] != 1) {
+        return;
+    }
+    at = 1;
+    CoopItemPrint left;
+    CoopItemPrint right;
+    CoopItemPrint worn;
+    int command;
+    CoopItemPrint item;
+    int quantity;
+    CoopItemPrint other;
+    if (!coop_inven_read_print(data, &at, &left) || !coop_inven_read_print(data, &at, &right) || !coop_inven_read_print(data, &at, &worn)
+        || !coop_inven_read_int(data, &at, &command) || !coop_inven_read_print(data, &at, &item) || !coop_inven_read_int(data, &at, &quantity)
+        || !coop_inven_read_print(data, &at, &other)) {
+        return;
+    }
+
+    Object* dude = obj_dude;
+
+    // The hands and armor as they were left.
+    Object* oldArmor = inven_worn(dude);
+    Object* wantLeft = coop_inven_find(left);
+    Object* wantRight = right.slot == 3 ? wantLeft : coop_inven_find(right);
+    Object* wantArmor = coop_inven_find(worn);
+    Object* currentLeft = inven_left_hand(dude);
+    Object* currentRight = inven_right_hand(dude);
+    if (currentLeft != NULL && currentLeft != wantLeft) {
+        currentLeft->flags &= ~OBJECT_IN_LEFT_HAND;
+    }
+    if (currentRight != NULL && currentRight != wantRight) {
+        currentRight->flags &= ~OBJECT_IN_RIGHT_HAND;
+    }
+    if (oldArmor != NULL && oldArmor != wantArmor) {
+        oldArmor->flags &= ~OBJECT_WORN;
+    }
+    coop_inven_wear(dude, wantLeft, OBJECT_IN_LEFT_HAND);
+    coop_inven_wear(dude, wantRight, OBJECT_IN_RIGHT_HAND);
+    coop_inven_wear(dude, wantArmor, OBJECT_WORN);
+    Object* newArmor = inven_worn(dude);
+    if (newArmor != oldArmor) {
+        adjust_ac(dude, oldArmor, newArmor);
+    }
+
+    // Then what was noted.
+    Object* target = coop_inven_find(item);
+    if (target != NULL) {
+        switch (command) {
+        case COOP_INVEN_DROP:
+            if ((target->flags & OBJECT_WORN) != 0) {
+                adjust_ac(dude, target, NULL);
+                target->flags &= ~OBJECT_WORN;
+            }
+            if (target->pid == PROTO_ID_MONEY) {
+                int count = std::min(std::max(quantity, 1), coop_inven_stack_quantity(dude, target));
+                if (count == 1) {
+                    item_caps_set_amount(target, 1);
+                    obj_drop(dude, target);
+                } else if (item_remove_mult(dude, target, count - 1) == 0) {
+                    CoopItemPrint rest = item;
+                    rest.quantity = 0;
+                    Object* caps = coop_inven_find(rest);
+                    if (caps != NULL) {
+                        item_caps_set_amount(caps, count);
+                        obj_drop(dude, caps);
+                    }
+                }
+            } else if (target->pid == PROTO_ID_DYNAMITE_II || target->pid == PROTO_ID_PLASTIC_EXPLOSIVES_II) {
+                obj_drop(dude, target);
+                inven_explosive_dropped();
+            } else {
+                int count = std::min(std::max(quantity, 1), std::max(coop_inven_stack_quantity(dude, target), 1));
+                for (int index = 0; index < count && target != NULL; index++) {
+                    obj_drop(dude, target);
+                    CoopItemPrint rest = item;
+                    rest.slot = 0;
+                    target = index + 1 < count ? coop_inven_find(rest) : NULL;
+                }
+            }
+            break;
+        case COOP_INVEN_USE: {
+            bool held = (target->flags & (OBJECT_IN_ANY_HAND | OBJECT_WORN)) != 0;
+            switch (item_get_type(target)) {
+            case ITEM_TYPE_DRUG:
+                if (item_d_take_drug(dude, target)) {
+                    item_remove_mult(dude, target, 1);
+                    obj_connect(target, dude->tile, dude->elevation, NULL);
+                    obj_destroy(target);
+                }
+                intface_update_hit_points(true);
+                break;
+            case ITEM_TYPE_WEAPON:
+            case ITEM_TYPE_MISC: {
+                item_remove_mult(dude, target, 1);
+                int rc = proto_action_can_use(target->pid) ? protinst_use_item(dude, target) : protinst_use_item_on(dude, dude, target);
+                if (rc == 1) {
+                    obj_connect(target, dude->tile, dude->elevation, NULL);
+                    obj_destroy(target);
+                } else {
+                    item_add_force(dude, target, 1);
+                }
+                (void)held;
+                break;
+            }
+            }
+            break;
+        }
+        case COOP_INVEN_UNLOAD: {
+            item_remove_mult(dude, target, 1);
+            for (;;) {
+                Object* ammo = item_w_unload(target);
+                if (ammo == NULL) {
+                    break;
+                }
+                Rect rect;
+                obj_disconnect(ammo, &rect);
+                item_add_force(dude, ammo, 1);
+            }
+            item_add_force(dude, target, 1);
+            break;
+        }
+        case COOP_INVEN_RELOAD: {
+            // `item` the ammo, `other` the weapon.
+            Object* weapon = coop_inven_find(other);
+            if (weapon == NULL || item_get_type(weapon) != ITEM_TYPE_WEAPON || !item_w_can_reload(weapon, target)) {
+                break;
+            }
+            int rc = item_remove_mult(dude, weapon, 1);
+            bool reloaded = false;
+            CoopItemPrint ammoPrint = item;
+            ammoPrint.slot = 0;
+            ammoPrint.quantity = 0;
+            Object* ammo = target;
+            for (int index = 0; index < std::max(quantity, 1) && ammo != NULL; index++) {
+                int result = item_w_reload(weapon, ammo);
+                if (result != -1) {
+                    reloaded = true;
+                }
+                if (result == 0) {
+                    obj_destroy(ammo);
+                    ammo = coop_inven_find(ammoPrint);
+                    if (ammo != NULL && ammo->pid != item.pid) {
+                        ammo = NULL;
+                    }
+                } else {
+                    break;
+                }
+            }
+            if (rc != -1) {
+                item_add_force(dude, weapon, 1);
+            }
+            if (reloaded) {
+                const char* sfx = gsnd_build_weapon_sfx_name(WEAPON_SOUND_EFFECT_READY, weapon, HIT_MODE_RIGHT_WEAPON_PRIMARY, NULL);
+                gsound_play_sfx_file(sfx);
+            }
+            break;
+        }
+        case COOP_INVEN_PUT_IN: {
+            Object* into = other.pid == 0 ? dude : coop_inven_find(other);
+            if (into == NULL || into == target) {
+                break;
+            }
+            int count = std::min(std::max(quantity, 1), std::max(coop_inven_stack_quantity(dude, target), 1));
+            if ((target->flags & OBJECT_WORN) != 0) {
+                adjust_ac(dude, target, NULL);
+            }
+            target->flags &= ~(OBJECT_IN_ANY_HAND | OBJECT_WORN);
+            if (item_remove_mult(dude, target, count) == 0 && item_add_mult(into, target, count) != 0) {
+                item_add_mult(dude, target, count);
+            }
+            break;
+        }
+        }
+    }
+
+    // The look, armor class and bar, as the screen leaves them.
+    i_lhand = inven_left_hand(dude);
+    i_rhand = inven_right_hand(dude);
+    i_worn = inven_worn(dude);
+    adjust_fid();
+    i_lhand = NULL;
+    i_rhand = NULL;
+    i_worn = NULL;
+    Rect rect;
+    obj_change_fid(dude, i_fid, &rect);
+    tile_refresh_rect(&rect, dude->elevation);
+    if (inven_worn(dude) != oldArmor) {
+        intface_update_ac(true);
+    }
+    intface_update_items(false);
 }
 
 } // namespace fallout

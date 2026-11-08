@@ -1,6 +1,8 @@
 #ifndef INVENTORY_H
 #define INVENTORY_H
 
+#include <vector>
+
 #include "obj_types.h"
 
 namespace fallout {
@@ -42,6 +44,16 @@ int inventoryOpenGiving(Object* giver, Object* receiver);
 void inventoryOpenTrade(int win, Object* barterer, Object* playerTable, Object* bartererTable, int barterMod);
 int _inven_set_timer(Object* item);
 Object* inven_get_current_target_obj();
+
+// Co-op: what a player's inventory run on their own computer changed
+// (true: something to do in player 1's game, which then opens it again),
+// and player 1's game doing it, in that player's scope.
+bool inven_coop_take_changes(std::vector<unsigned char>* out);
+void inven_coop_apply(const std::vector<unsigned char>& changes);
+void inven_coop_test_drop_right_hand();
+// Testing: changes for `command` (1 drop, 2 use, 3 unload, 4 reload: `item`
+// the ammo, `other` the weapon, 5 put `item` into `other`).
+void inven_coop_test_changes(int command, Object* item, int quantity, Object* other, std::vector<unsigned char>* out);
 
 } // namespace fallout
 

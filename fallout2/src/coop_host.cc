@@ -11,6 +11,10 @@
 #include "art.h"
 #include "combat.h"
 #include "coop.h"
+#include "db.h"
+#include "inventory.h"
+#include "scripts.h"
+#include "automap.h"
 #include "coop_compat.h"
 #include "coop_lobby.h"
 #include "critter.h"
@@ -23,6 +27,7 @@
 #include "light.h"
 #include "map.h"
 #include "object.h"
+#include "pipboy.h"
 #include "proto_instance.h"
 #include "tile.h"
 #include "color.h"
@@ -58,6 +63,7 @@ typedef struct CoopView {
 } CoopView;
 
 static void coop_host_poll();
+static void coop_host_serve_local_menus();
 static void coop_host_present();
 static void coop_host_set_frame_shift(int slot);
 static bool coop_host_feed_input(int slot);
@@ -745,6 +751,97 @@ static int coop_host_focus_slot()
     return 0;
 }
 
+// The automaps of this game (the Pip-Boy shows them), as saved so far.
+static void coop_host_read_automaps(std::vector<unsigned char>* data)
+{
+    data->clear();
+    automapSaveCurrent();
+    File* stream = fileOpen("MAPS\\AUTOMAP.DB", "rb");
+    if (stream == nullptr) {
+        return;
+    }
+    long length = fileGetSize(stream);
+    if (length > 0 && length < 4 * 1024 * 1024) {
+        data->resize((size_t)length);
+        if (fileRead(data->data(), 1, data->size(), stream) != data->size()) {
+            data->clear();
+        }
+    }
+    fileClose(stream);
+}
+
+// What player `slot` + 1's inventory, run on their computer, changed: waits
+// for player 1's game to do it.
+static std::vector<unsigned char> coop_host_local_changes[COOP_MAX_PLAYERS];
+static bool coop_host_local_pending[COOP_MAX_PLAYERS];
+
+static void coop_host_apply_local_changes(int slot)
+{
+    coop_host_local_pending[slot] = false;
+    PlayerState* player = coop_player(slot);
+    if (player == nullptr || player->obj == nullptr) {
+        return;
+    }
+    coop_set_viewer(player);
+    {
+        ActivePlayerScope scope(player);
+        inven_coop_apply(coop_host_local_changes[slot]);
+    }
+    coop_set_viewer(nullptr);
+    coop_host_local_changes[slot].clear();
+    debug_printf("\nCOOP HOST: player %d's inventory changes done\n", slot + 1);
+}
+
+// Menus the other players run on their own computers (1.22): a copy of
+// their character and the world for one asked for (not in a fight, nor in
+// the middle of their part of a frame); closed again when a fight begins.
+static void coop_host_serve_local_menus()
+{
+    int selected = coop_net_selected();
+    for (int slot = 1; slot < COOP_MAX_PLAYERS; slot++) {
+        coop_net_select(slot);
+        // What a closed inventory changed: done in their part of a frame
+        // (now in a fight); the menu opens again after that.
+        std::vector<unsigned char> changes;
+        if (coop_net_take_local_done(&changes)) {
+            debug_printf("\nCOOP HOST: player %d's menu closed\n", slot + 1);
+            if (!changes.empty() && slot < coop_player_count()) {
+                coop_host_local_changes[slot].swap(changes);
+                coop_host_local_pending[slot] = true;
+            }
+        }
+        if (coop_host_local_pending[slot] && isInCombat() && coop_host_turn_slot == 0) {
+            coop_host_apply_local_changes(slot);
+        }
+        if (coop_host_local_pending[slot]) {
+            continue;
+        }
+        int menu = coop_net_take_local_request();
+        if (menu != 0) {
+            PlayerState* player = slot < coop_player_count() ? coop_player(slot) : NULL;
+            bool allowed = player != NULL && player->obj != NULL && !isInCombat() && coop_host_turn_slot == 0
+                && !critter_is_dead(player->obj) && (player->obj->data.critter.combat.results & DAM_KNOCKED_OUT) == 0
+                // (No Pip-Boy yet: it says so here.)
+                && (menu != COOP_LOCAL_MENU_PIPBOY || pipboyIsAvailable());
+            std::vector<unsigned char> character;
+            if (allowed && coop_export_player(slot, &character)) {
+                std::vector<unsigned char> automap;
+                if (menu == COOP_LOCAL_MENU_PIPBOY) {
+                    coop_host_read_automaps(&automap);
+                }
+                coop_net_local_answer(menu, &character, gGameGlobalVars, gGameGlobalVarsLength, gameTimeGetTime(), &automap);
+                debug_printf("\nCOOP HOST: player %d's menu %d runs on their computer\n", slot + 1, menu);
+            } else {
+                coop_net_local_answer(menu, NULL, NULL, 0, 0, NULL);
+            }
+        }
+        if (isInCombat() && coop_net_local_menu() != 0) {
+            coop_net_local_close();
+        }
+    }
+    coop_net_select(selected);
+}
+
 // For LAN searches and the server browser.
 static void coop_host_pump_lobby()
 {
@@ -761,6 +858,7 @@ static void coop_host_poll()
 {
     coop_net_host_pump();
     coop_host_pump_lobby();
+    coop_host_serve_local_menus();
 
     // The main loop's own input is player 1's; the client's waits for
     // player 2's part of the frame. (That part reads input without polling,
@@ -1374,6 +1472,11 @@ static void coop_host_player_turn(int slot)
     coop_host_turn_menu = false;
     coop_host_view_centers[slot] = tile_center_tile;
     coop_host_view_part_count[slot]++;
+
+    // What their inventory (run on their computer) changed, first.
+    if (coop_host_local_pending[slot]) {
+        coop_host_apply_local_changes(slot);
+    }
 
     {
         ActivePlayerScope scope(player2);

@@ -171,6 +171,14 @@ Olympus games.
 - When a player is in a menu (inventory, character screen, Pip-Boy,
   dialog, barter...) or it is their combat turn, the game waits for them
   and the other player sees their screen with a status line.
+- Over the network (since 1.22), players 2-4's character screen, Pip-Boy
+  and inventory open on their own computer: no delay, and the game goes
+  on for the others meanwhile. Taking items in hand and putting armor on
+  happen there; dropping, using, unloading, reloading and putting items
+  into a bag are done in player 1's game, then the inventory opens again
+  with the result. With points to spend the character screen opens in
+  player 1's game, a fight closes these menus, and chat waits until
+  they are closed.
 
 ## Controller
 

@@ -25,6 +25,8 @@
 #include "game/gdialog.h"
 #include "game/gmouse.h"
 #include "game/map.h"
+#include "platform_compat.h"
+#include "game/message.h"
 #include "game/object.h"
 #include "game/palette.h"
 #include "game/party.h"
@@ -657,6 +659,166 @@ static int coop_read_player(DB_FILE* stream, PlayerState* player, int* pidPtr, C
     if (critter_read_data(stream, protoData) == -1) return -1;
 
     return 0;
+}
+
+// Client: the player's own character, from a copy the host sent, made the
+// one the game shows (obj_dude, the player's proto, per-player data, the
+// world's global variables and time) while a menu of theirs runs here (the
+// character screen, the Pip-Boy, the inventory); all put back after.
+typedef struct CoopMirror {
+    bool on = false;
+    Object* obj = NULL;
+    PlayerState saved;
+    Object* savedDude = NULL;
+    int savedProtoFid = 0;
+    CritterProtoData savedProtoData;
+    std::vector<int> savedGlobals;
+    int savedTime = 0;
+    bool mapNamesLoaded = false;
+} CoopMirror;
+
+static CoopMirror coop_mirror;
+
+bool coop_mirror_begin(const std::vector<unsigned char>& character, const std::vector<int>& globals, int time, std::string* error)
+{
+    if (coop_mirror.on || coop_scope_stack_depth != 0 || coop_active != &(coop_players[0])) {
+        *error = "busy";
+        return false;
+    }
+
+    DB_FILE* stream = db_fopen(COOP_CHARACTER_TEMP, "wb");
+    if (stream == NULL || db_fwrite(character.data(), 1, character.size(), stream) != character.size()) {
+        if (stream != NULL) {
+            db_fclose(stream);
+        }
+        *error = "can't write a temporary file";
+        return false;
+    }
+    db_fclose(stream);
+
+    stream = db_fopen(COOP_CHARACTER_TEMP, "rb");
+    if (stream == NULL) {
+        *error = "can't read the temporary file";
+        return false;
+    }
+    int magic;
+    int version;
+    char fileName[DUDE_NAME_MAX_LENGTH];
+    int fileLevel;
+    PlayerState state;
+    memset(&state, 0, sizeof(state));
+    int pid;
+    int protoFid;
+    CritterProtoData protoData;
+    Object* obj = NULL;
+    bool ok = db_freadInt(stream, &magic) != -1
+        && (unsigned int)magic == COOP_CHARACTER_MAGIC
+        && db_freadInt(stream, &version) != -1
+        && version == COOP_CHARACTER_VERSION
+        && db_fread(fileName, DUDE_NAME_MAX_LENGTH, 1, stream) == 1
+        && db_freadInt(stream, &fileLevel) != -1
+        && coop_read_player(stream, &state, &pid, &protoData, &protoFid) != -1
+        && obj_load_obj(stream, &obj, 0, NULL) == 0;
+    db_fclose(stream);
+    if (!ok || obj == NULL) {
+        if (obj != NULL) {
+            obj_erase_object(obj, NULL);
+        }
+        *error = "the character copy is damaged";
+        return false;
+    }
+
+    Proto* proto;
+    if (proto_ptr(0x1000000, &proto) == -1) {
+        obj_erase_object(obj, NULL);
+        *error = "no player proto";
+        return false;
+    }
+
+    coop_sync_base();
+    coop_mirror.saved = coop_players[0];
+    coop_mirror.savedDude = obj_dude;
+    coop_mirror.savedProtoFid = proto->fid;
+    critter_copy(&(coop_mirror.savedProtoData), &(proto->critter.data));
+
+    // As this game's player (its proto, its id).
+    obj->pid = 0x1000000;
+    obj->sid = -1;
+    proto->fid = protoFid;
+    critter_copy(&(proto->critter.data), &protoData);
+
+    coop_players[0] = state;
+    coop_players[0].obj = obj;
+    coop_players[0].inventoryOwner = obj;
+    coop_players[0].inventoryPid = 0x1000000;
+    obj_dude = obj;
+
+    coop_mirror.savedGlobals.clear();
+    if (game_global_vars != NULL && (int)globals.size() == num_game_global_vars) {
+        coop_mirror.savedGlobals.assign(game_global_vars, game_global_vars + num_game_global_vars);
+        memcpy(game_global_vars, globals.data(), sizeof(int) * globals.size());
+        // The addictions are the player's own, not the host player's.
+        for (int index = 0; index < COOP_ADDICTION_COUNT; index++) {
+            game_global_vars[coop_addiction_gvars[index]] = state.addictions[index];
+        }
+    }
+    coop_mirror.savedTime = game_time();
+    if (time > 0) {
+        set_game_time(time);
+    }
+
+    // The map names (the Pip-Boy's automaps): loaded with a map, and there
+    // is none here.
+    coop_mirror.mapNamesLoaded = false;
+    if (map_msg_file.entries_num == 0 && message_init(&map_msg_file)) {
+        char path[COMPAT_MAX_PATH];
+        snprintf(path, sizeof(path), "%smap.msg", msg_path);
+        coop_mirror.mapNamesLoaded = message_load(&map_msg_file, path) == 1;
+    }
+
+    coop_mirror.obj = obj;
+    coop_mirror.on = true;
+    return true;
+}
+
+// A level gained and not yet taken (its perk, if any, chosen) on the
+// character shown.
+bool coop_mirror_level_pending()
+{
+    return coop_mirror.on && (coop_players[0].freePerk != 0 || coop_players[0].lastLevel < coop_players[0].pcStats[PC_STAT_LEVEL]);
+}
+
+Object* coop_mirror_object()
+{
+    return coop_mirror.on ? coop_mirror.obj : NULL;
+}
+
+void coop_mirror_end()
+{
+    if (!coop_mirror.on) {
+        return;
+    }
+
+    Proto* proto;
+    if (proto_ptr(0x1000000, &proto) != -1) {
+        proto->fid = coop_mirror.savedProtoFid;
+        critter_copy(&(proto->critter.data), &(coop_mirror.savedProtoData));
+    }
+    coop_players[0] = coop_mirror.saved;
+    obj_dude = coop_mirror.savedDude;
+    if (!coop_mirror.savedGlobals.empty() && game_global_vars != NULL && (int)coop_mirror.savedGlobals.size() == num_game_global_vars) {
+        memcpy(game_global_vars, coop_mirror.savedGlobals.data(), sizeof(int) * coop_mirror.savedGlobals.size());
+    }
+    set_game_time(coop_mirror.savedTime);
+
+    if (coop_mirror.mapNamesLoaded) {
+        message_exit(&map_msg_file);
+        coop_mirror.mapNamesLoaded = false;
+    }
+
+    obj_erase_object(coop_mirror.obj, NULL);
+    coop_mirror.obj = NULL;
+    coop_mirror.on = false;
 }
 
 bool coop_any_player_has(int results)

@@ -67,7 +67,26 @@ typedef enum CoopNetMessageType {
     // host has acted on, before the frame that shows it (the client
     // measures how long its clicks take to show).
     COOP_NET_MSG_INPUT_SEEN = 12,
+    // Client -> host (1.22): u8 menu (COOP_LOCAL_MENU_*): the player opens
+    // it on their own computer. The host answers with CHARACTER, WORLD and
+    // LOCAL_OK, and sends no pictures until LOCAL_DONE.
+    COOP_NET_MSG_LOCAL_MENU = 13,
+    // Host -> client: u32 game time, u32 count, the global variables.
+    COOP_NET_MSG_WORLD = 14,
+    // Host -> client: u8 1 (go ahead) or 0 (not now: the key goes to the
+    // host as before).
+    COOP_NET_MSG_LOCAL_OK = 15,
+    // Client -> host: the menu closed (then what it changed, 1.22 step 2);
+    // a whole picture follows.
+    COOP_NET_MSG_LOCAL_DONE = 16,
+    // Host -> client: close it now (a fight began).
+    COOP_NET_MSG_LOCAL_CLOSE = 17,
 } CoopNetMessageType;
+
+// The menus a client runs itself (COOP_NET_MSG_LOCAL_MENU).
+#define COOP_LOCAL_MENU_CHARACTER 1
+#define COOP_LOCAL_MENU_PIPBOY 2
+#define COOP_LOCAL_MENU_INVENTORY 3
 
 typedef enum CoopNetInputKind {
     // x, y: absolute screen position; value: mouse buttons (MOUSE_STATE_*).
@@ -161,6 +180,25 @@ void coop_net_set_bring_character(const std::vector<unsigned char>& data);
 
 // Client: where the copy of player 2's character is kept.
 #define COOP_NET_CHARACTER_FILE "coop-character.dat"
+
+// Client: the local menu open now (COOP_LOCAL_MENU_*, 0: none), and how
+// many ran (tests).
+int coop_net_client_local_menu_open();
+unsigned int coop_net_client_local_menus_run();
+
+// Host: menus of player `slot` + 1 run on their own computer (tests).
+unsigned int coop_net_local_menus_served(int slot);
+
+// Host, for the selected client: a menu it asked to run itself (0: none;
+// taken), the answer (`character` NULL: not now; else their character, the
+// world's global variables and time, and for the Pip-Boy the automaps), the
+// menu open there (0: none), telling
+// it to close (once), and what a closed one changed (taken).
+int coop_net_take_local_request();
+void coop_net_local_answer(int menu, const std::vector<unsigned char>* character, const int* globals, int count, int time, const std::vector<unsigned char>* automap);
+int coop_net_local_menu();
+void coop_net_local_close();
+bool coop_net_take_local_done(std::vector<unsigned char>* changes);
 
 // Client: the status line shown over the picture ("" when it's our own
 // view or turn; tests).

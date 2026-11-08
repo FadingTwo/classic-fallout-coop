@@ -401,9 +401,16 @@ static bool pipboy_available_at_game_start = false;
 static FrmImage _pipboyFrmImages[PIPBOY_FRM_COUNT];
 
 // 0x497004
+// CE: whether the player has their Pip-Boy (in co-op a player's Pip-Boy run
+// on their computer: player 1's game said so, see coop_host.cc).
+bool pipboyIsAvailable()
+{
+    return wmMapPipboyActive() || pipboy_available_at_game_start || coop_mirror_object() != nullptr;
+}
+
 int pipboyOpen(int intent)
 {
-    if (!wmMapPipboyActive() && !pipboy_available_at_game_start) {
+    if (!pipboyIsAvailable()) {
         // You aren't wearing the pipboy!
         const char* text = getmsg(&gMiscMessageList, &gPipboyMessageListItem, 7000);
         showDialogBox(text, nullptr, 0, 192, 135, _colorTable[32328], nullptr, _colorTable[32328], 1);
@@ -1770,9 +1777,10 @@ static int pipboyRenderVideoArchive(int a1)
 static void pipboyHandleAlarmClock(int eventCode)
 {
     if (eventCode == 1024) {
-        if (!coop_primary_is_active()) {
+        if (!coop_primary_is_active() || coop_mirror_object() != nullptr) {
             // CE: co-op: only player 1 rests and waits (as in Fallout 1
-            // co-op): time passes for everyone.
+            // co-op): time passes for everyone (also not in a Pip-Boy of
+            // player 2's run on their computer).
             soundPlayFile("iisxxxx1");
             showDialogBox("Only player 1 can rest.", nullptr, 0, 192, 135, _colorTable[32328], nullptr, _colorTable[32328], DIALOG_BOX_LARGE);
             gPipboyTab = gPipboyPrevTab;

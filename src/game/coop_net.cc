@@ -39,14 +39,20 @@
 #include "game/coop.h"
 #include "game/coop_upnp.h"
 #include "game/cycle.h"
+#include "game/editor.h"
+#include "game/inventry.h"
+#include "game/pipboy.h"
+#include "game/stat.h"
 #include "game/display.h"
 #include "game/gconfig.h"
 #include "game/gmouse.h"
 #include "game/gsound.h"
 #include "platform_compat.h"
 #include "plib/color/color.h"
+#include "plib/db/db.h"
 #include "plib/gnw/debug.h"
 #include "plib/gnw/gnw.h"
+#include "plib/gnw/inject.h"
 #include "plib/gnw/input.h"
 #include "plib/gnw/kb.h"
 #include "plib/gnw/mouse.h"
@@ -320,6 +326,15 @@ typedef struct CoopPeer {
     unsigned int inputsReceived = 0;
     unsigned int inputsTaken = 0;
     unsigned int inputsTakenSent = 0;
+    // A menu the player runs on their own computer (1.22): asked for and
+    // not yet answered, open (no pictures meanwhile), told to close.
+    int localRequest = 0;
+    int localMenu = 0;
+    bool localCloseSent = false;
+    unsigned int localServed = 0;
+    // What a closed one changed, for the game to carry out (step 2).
+    std::vector<unsigned char> localDone;
+    bool localDoneWaiting = false;
     // Takes INPUT_SEEN and draws its own cursor (flag 32, 1.21); the last
     // shape sent to it.
     bool seesInputs = false;
@@ -1059,6 +1074,9 @@ void coop_net_host_pump()
             coop_connection_close(&coop_client);
             coop_client_ready = false;
             coop_client_input.clear();
+            coop_peer->localRequest = 0;
+            coop_peer->localMenu = 0;
+            coop_peer->localDoneWaiting = false;
         }
     }
 
@@ -1131,6 +1149,9 @@ static void coop_host_handle(const CoopMessage& message)
             coop_peer->tripShortestNext = 0;
             coop_peer->tripShortestSince = get_time();
             coop_peer->tripSmoothed = 0;
+            coop_peer->localRequest = 0;
+            coop_peer->localMenu = 0;
+            coop_peer->localCloseSent = false;
             coop_peer->seesInputs = (flags & 32) != 0;
             coop_peer->ownCursor = coop_peer->seesInputs && !coop_net_no_own_cursor;
             coop_peer->cursorSent = false;
@@ -1223,6 +1244,28 @@ static void coop_host_handle(const CoopMessage& message)
                 coop_net_joins++;
                 debug_printf("\nCOOP NET: client joined\n");
             }
+        }
+        break;
+    case COOP_NET_MSG_LOCAL_MENU:
+        if (coop_client_ready) {
+            int menu = reader.u8();
+            if (reader.ok() && menu >= COOP_LOCAL_MENU_CHARACTER && menu <= COOP_LOCAL_MENU_INVENTORY) {
+                coop_peer->localRequest = menu;
+            }
+        }
+        break;
+    case COOP_NET_MSG_LOCAL_DONE:
+        if (coop_peer->localMenu != 0) {
+            coop_peer->localMenu = 0;
+            coop_peer->localCloseSent = false;
+            // A whole picture next (none went while the menu was open), and
+            // the cursor again.
+            coop_sent_frame.clear();
+            coop_sent_width = 0;
+            coop_sent_height = 0;
+            coop_peer->cursorSent = false;
+            coop_peer->localDone = message.payload;
+            coop_peer->localDoneWaiting = true;
         }
         break;
     case COOP_NET_MSG_INPUT:
@@ -1350,6 +1393,73 @@ bool coop_net_peek_input(CoopNetInput* input)
 
     *input = coop_client_input.front();
     return true;
+}
+
+int coop_net_take_local_request()
+{
+    int menu = coop_peer->localRequest;
+    coop_peer->localRequest = 0;
+    return coop_client_ready ? menu : 0;
+}
+
+void coop_net_local_answer(int menu, const std::vector<unsigned char>* character, const int* globals, int count, int time, const std::vector<unsigned char>* automap)
+{
+    if (!coop_client_ready) {
+        return;
+    }
+    CoopWriter answer;
+    if (character == NULL) {
+        answer.u8(0);
+        coop_connection_send(&coop_client, COOP_NET_MSG_LOCAL_OK, answer.data);
+        return;
+    }
+    coop_connection_send(&coop_client, COOP_NET_MSG_CHARACTER, *character);
+    CoopWriter world;
+    world.u32((unsigned int)time);
+    world.u32((unsigned int)count);
+    for (int index = 0; index < count; index++) {
+        world.u32((unsigned int)globals[index]);
+    }
+    // The automaps (the Pip-Boy's maps), when there are.
+    if (automap != NULL && !automap->empty()) {
+        world.u32((unsigned int)automap->size());
+        world.data.insert(world.data.end(), automap->begin(), automap->end());
+    }
+    coop_connection_send(&coop_client, COOP_NET_MSG_WORLD, world.data);
+    answer.u8(1);
+    coop_connection_send(&coop_client, COOP_NET_MSG_LOCAL_OK, answer.data);
+    coop_peer->localMenu = menu;
+    coop_peer->localCloseSent = false;
+    coop_peer->localServed++;
+}
+
+int coop_net_local_menu()
+{
+    return coop_client_ready ? coop_peer->localMenu : 0;
+}
+
+void coop_net_local_close()
+{
+    if (coop_client_ready && coop_peer->localMenu != 0 && !coop_peer->localCloseSent) {
+        coop_connection_send(&coop_client, COOP_NET_MSG_LOCAL_CLOSE, std::vector<unsigned char>());
+        coop_peer->localCloseSent = true;
+    }
+}
+
+bool coop_net_take_local_done(std::vector<unsigned char>* changes)
+{
+    if (!coop_peer->localDoneWaiting) {
+        return false;
+    }
+    coop_peer->localDoneWaiting = false;
+    changes->swap(coop_peer->localDone);
+    coop_peer->localDone.clear();
+    return true;
+}
+
+unsigned int coop_net_local_menus_served(int slot)
+{
+    return slot >= 1 && slot < COOP_MAX_PLAYERS ? coop_peers[slot].localServed : 0;
 }
 
 bool coop_net_client_draws_cursor()
@@ -1529,6 +1639,11 @@ static std::vector<unsigned char> coop_frame_scratch;
 bool coop_net_can_send_frame()
 {
     if (!coop_client_ready || coop_client.out.size() > COOP_NET_MAX_BACKLOG) {
+        return false;
+    }
+
+    // A menu of theirs open on their computer.
+    if (coop_peer->localMenu != 0) {
         return false;
     }
 
@@ -2397,6 +2512,362 @@ bool coop_net_parse_code(const char* text, std::string* code)
 // -----------------------------------------------------------------------------
 // Client
 
+// Client: a sound the host played (SOUND message); false if damaged.
+static bool coop_client_sound(CoopReader* reader)
+{
+    int event = reader->u8();
+    std::string name = reader->str();
+    int a = (int)reader->u32();
+    int b = (int)reader->u32();
+    int c = (int)reader->u32();
+    if (!reader->ok()) {
+        return false;
+    }
+    switch (event) {
+    case GSOUND_EVENT_SFX:
+        gsound_play_sfx_file_volume(name.c_str(), a);
+        break;
+    case GSOUND_EVENT_MUSIC:
+        gsound_background_play(name.c_str(), a, b, c);
+        break;
+    case GSOUND_EVENT_MUSIC_STOP:
+        gsound_background_stop();
+        break;
+    case GSOUND_EVENT_SPEECH:
+        if (a == 0 && b == 0 && c == 0) {
+            // A conversation's lip-synced speech.
+            gsound_speech_play(name.c_str(), 10, 14, 15);
+        } else {
+            gsound_speech_play(name.c_str(), a, b, c);
+        }
+        break;
+    case GSOUND_EVENT_SPEECH_STOP:
+        gsound_speech_stop();
+        break;
+    }
+    return true;
+}
+
+// Client: a copy of our character to keep (CHARACTER message); the last
+// one stays as a backup.
+static void coop_client_keep_character(const std::vector<unsigned char>& data)
+{
+    if (data.empty()) {
+        return;
+    }
+    remove(COOP_NET_CHARACTER_FILE ".bak");
+    rename(COOP_NET_CHARACTER_FILE, COOP_NET_CHARACTER_FILE ".bak");
+    FILE* stream = fopen(COOP_NET_CHARACTER_FILE, "wb");
+    if (stream != NULL) {
+        fwrite(data.data(), 1, data.size(), stream);
+        fclose(stream);
+        debug_printf("\nCOOP NET: saved a copy of our character (%d bytes)\n", (int)data.size());
+    }
+}
+
+// How long a client waits for the host's answer to a menu of its own.
+#define COOP_LOCAL_MENU_WAIT 3000
+
+// Client: a menu of ours (character screen, Pip-Boy, inventory) run on this
+// computer from a copy of our character (1.22): it opens at once and the
+// others play on meanwhile. What it needs while it runs; the connection is
+// looked after from the menu's input loop (input_poll_hook).
+typedef struct CoopLocalMenu {
+    CoopConnection* connection;
+    unsigned int* framesReceived;
+    unsigned int* framesAcked;
+    std::string* status;
+    bool* hostLeft;
+    bool* hostSaidBye;
+    int* soundsPlayed;
+    // The host's answer.
+    bool answered = false;
+    bool ok = false;
+    std::vector<unsigned char> character;
+    std::vector<int> globals;
+    int time = 0;
+    std::vector<unsigned char> automap;
+    // The host wants it closed (a fight), or left.
+    bool closeRequested = false;
+    unsigned int lastEscape = 0;
+    unsigned int swallowEscapeUntil = 0;
+    // A chat line being typed: T sent, no Enter or Escape yet (the status
+    // line saying so comes later on a slow line, after the next keys).
+    bool chatTyping = false;
+    // A cursor the host sent meanwhile (for after).
+    bool cursorChanged = false;
+    std::vector<unsigned char> cursor;
+} CoopLocalMenu;
+
+static CoopLocalMenu* coop_local_menu_ctx = NULL;
+// The host answered no or not at all: keys go to it as before.
+static bool coop_local_menus_unsupported = false;
+// Testing: the menus run on the host as before 1.22.
+static bool coop_net_no_local_menus = getenv("COOP_NET_NO_LOCAL_MENUS") != NULL;
+// A menu of ours open here (tests).
+static int coop_local_menu_open = 0;
+static unsigned int coop_local_menus_run = 0;
+
+int coop_net_client_local_menu_open()
+{
+    return coop_local_menu_open;
+}
+
+unsigned int coop_net_client_local_menus_run()
+{
+    return coop_local_menus_run;
+}
+
+// Reads what the host sent while a menu of ours runs: pictures are only
+// acknowledged (a whole one comes after), sounds play, a fight or the host
+// leaving closes the menu.
+static void coop_local_menu_pump()
+{
+    CoopLocalMenu* ctx = coop_local_menu_ctx;
+    if (ctx == NULL) {
+        return;
+    }
+    CoopConnection* connection = ctx->connection;
+    coop_connection_flush(connection);
+    coop_connection_receive(connection);
+    CoopMessage message;
+    while (coop_connection_next(connection, &message)) {
+        CoopReader reader(message.payload);
+        switch (message.type) {
+        case COOP_NET_MSG_FRAME:
+        case COOP_NET_MSG_FRAME_PACKED:
+            (*ctx->framesReceived)++;
+            break;
+        case COOP_NET_MSG_STATUS:
+            *ctx->status = reader.str();
+            break;
+        case COOP_NET_MSG_SOUND:
+            if (coop_client_sound(&reader)) {
+                (*ctx->soundsPlayed)++;
+            }
+            break;
+        case COOP_NET_MSG_CHARACTER:
+            if (!ctx->answered) {
+                ctx->character = message.payload;
+            }
+            coop_client_keep_character(message.payload);
+            break;
+        case COOP_NET_MSG_WORLD:
+            if (true) {
+                int time = (int)reader.u32();
+                unsigned int count = reader.u32();
+                std::vector<int> globals;
+                for (unsigned int index = 0; index < count && reader.ok() && index < 100000; index++) {
+                    globals.push_back((int)reader.u32());
+                }
+                if (reader.ok()) {
+                    ctx->time = time;
+                    ctx->globals.swap(globals);
+                }
+                ctx->automap.clear();
+                if (reader.ok() && !reader.atEnd()) {
+                    unsigned int size = reader.u32();
+                    const unsigned char* bytes = size <= COOP_NET_MAX_MESSAGE ? reader.bytes(size) : NULL;
+                    if (bytes != NULL) {
+                        ctx->automap.assign(bytes, bytes + size);
+                    }
+                }
+            }
+            break;
+        case COOP_NET_MSG_LOCAL_OK:
+            ctx->answered = true;
+            ctx->ok = reader.u8() != 0 && reader.ok();
+            break;
+        case COOP_NET_MSG_LOCAL_CLOSE:
+            ctx->closeRequested = true;
+            break;
+        case COOP_NET_MSG_CURSOR:
+            ctx->cursorChanged = true;
+            ctx->cursor = message.payload;
+            break;
+        case COOP_NET_MSG_BYE:
+            *ctx->hostLeft = true;
+            *ctx->hostSaidBye = true;
+            ctx->closeRequested = true;
+            break;
+        }
+    }
+    if (*ctx->framesReceived != *ctx->framesAcked && !coop_net_no_acks) {
+        CoopWriter writer;
+        writer.u32(*ctx->framesReceived);
+        coop_connection_send(connection, COOP_NET_MSG_ACK, writer.data);
+        *ctx->framesAcked = *ctx->framesReceived;
+    }
+    if (connection->failed) {
+        *ctx->hostLeft = true;
+        ctx->closeRequested = true;
+    }
+    coop_connection_flush(connection);
+
+    // Closing: Escape until the menu's loop ends (each menu leaves on it).
+    if (ctx->closeRequested && coop_local_menu_open != 0 && elapsed_time(ctx->lastEscape) > 300) {
+        inject_key(KEY_ESCAPE);
+        ctx->lastEscape = get_time();
+    }
+}
+
+// Client: the menu key `keyCode` opens here (COOP_LOCAL_MENU_*; 0: none).
+static int coop_client_local_key(int keyCode)
+{
+    switch (keyCode) {
+    case KEY_LOWERCASE_C:
+    case KEY_UPPERCASE_C:
+        return COOP_LOCAL_MENU_CHARACTER;
+    case KEY_LOWERCASE_P:
+    case KEY_UPPERCASE_P:
+        return COOP_LOCAL_MENU_PIPBOY;
+    case KEY_LOWERCASE_I:
+    case KEY_UPPERCASE_I:
+        return COOP_LOCAL_MENU_INVENTORY;
+    }
+    return 0;
+}
+
+// Client: a menu may run here now: our own view, not another's turn or
+// menu, not typing a chat line (the status line says, or we just began
+// one), the host can.
+static bool coop_client_local_allowed(const CoopLocalMenu& ctx)
+{
+    return ctx.status->empty() && !ctx.chatTyping && !coop_local_menus_unsupported && !coop_net_no_local_menus;
+}
+
+// Runs menu `menu` (COOP_LOCAL_MENU_*) here; false when the host can't let
+// it (a fight, an old host, a level to spend): then the key goes to the
+// host as before.
+static bool coop_client_local_menu(CoopLocalMenu* ctx, int menu, int window)
+{
+    if (coop_local_menus_unsupported || coop_net_no_local_menus) {
+        return false;
+    }
+
+    ctx->answered = false;
+    ctx->ok = false;
+    ctx->character.clear();
+    ctx->globals.clear();
+    ctx->time = 0;
+    ctx->closeRequested = false;
+    ctx->lastEscape = 0;
+    ctx->cursorChanged = false;
+    coop_local_menu_ctx = ctx;
+
+    CoopWriter request;
+    request.u8((unsigned int)menu);
+    coop_connection_send(ctx->connection, COOP_NET_MSG_LOCAL_MENU, request.data);
+
+    unsigned int start = get_time();
+    while (!ctx->answered && !*ctx->hostLeft && elapsed_time(start) < COOP_LOCAL_MENU_WAIT) {
+        coop_local_menu_pump();
+        SDL_Delay(2);
+    }
+    if (!ctx->answered) {
+        // A host before 1.22 doesn't answer.
+        debug_printf("\nCOOP NET: the host doesn't run menus here; they go to it\n");
+        coop_local_menus_unsupported = true;
+        coop_local_menu_ctx = NULL;
+        return false;
+    }
+    if (!ctx->ok || ctx->character.empty()) {
+        coop_local_menu_ctx = NULL;
+        return false;
+    }
+
+    std::string error;
+    if (!coop_mirror_begin(ctx->character, ctx->globals, ctx->time, &error)) {
+        debug_printf("\nCOOP NET: our character couldn't be shown here: %s\n", error.c_str());
+        coop_connection_send(ctx->connection, COOP_NET_MSG_LOCAL_DONE, std::vector<unsigned char>());
+        coop_local_menu_ctx = NULL;
+        return false;
+    }
+
+    // A level to spend: the character screen of the host (the choices are
+    // made there).
+    if (menu == COOP_LOCAL_MENU_CHARACTER
+        && (stat_pc_get(PC_STAT_UNSPENT_SKILL_POINTS) > 0 || coop_mirror_level_pending())) {
+        coop_mirror_end();
+        coop_connection_send(ctx->connection, COOP_NET_MSG_LOCAL_DONE, std::vector<unsigned char>());
+        coop_local_menu_ctx = NULL;
+        return false;
+    }
+
+    // The host's automaps for the Pip-Boy (a game started or loaded here
+    // makes its own again).
+    if (menu == COOP_LOCAL_MENU_PIPBOY && !ctx->automap.empty()) {
+        // (Its folder too: a game never played here has none.)
+        char* masterPatchesPath;
+        if (config_get_string(&game_config, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_MASTER_PATCHES_KEY, &masterPatchesPath)) {
+            char path[COMPAT_MAX_PATH];
+            snprintf(path, sizeof(path), "%s\\%s", masterPatchesPath, "MAPS");
+            compat_mkdir(path);
+        }
+        debug_printf("\nCOOP NET: the host's automaps, %d bytes\n", (int)ctx->automap.size());
+        DB_FILE* stream = db_fopen("MAPS\\AUTOMAP.DB", "wb");
+        if (stream != NULL) {
+            db_fwrite(ctx->automap.data(), 1, ctx->automap.size(), stream);
+            db_fclose(stream);
+        }
+    }
+
+    debug_printf("\nCOOP NET: menu %d here\n", menu);
+    // Our picture's window steps aside: hidden, and neither modal (a modal
+    // window takes every click, hidden or not) nor kept on top.
+    Window* pictureWindow = GNW_find(window);
+    int pictureFlags = pictureWindow != NULL ? pictureWindow->flags : 0;
+    if (pictureWindow != NULL) {
+        pictureWindow->flags &= ~(WINDOW_MODAL | WINDOW_MOVE_ON_TOP);
+    }
+    win_hide(window);
+    gmouse_set_cursor(MOUSE_CURSOR_ARROW);
+    void (*previousHook)() = input_poll_hook;
+    input_poll_hook = coop_local_menu_pump;
+    coop_local_menu_open = menu;
+    coop_local_menus_run++;
+
+    switch (menu) {
+    case COOP_LOCAL_MENU_CHARACTER:
+        editor_design(false);
+        break;
+    case COOP_LOCAL_MENU_PIPBOY:
+        pipboy(PIPBOY_OPEN_INTENT_UNSPECIFIED);
+        break;
+    case COOP_LOCAL_MENU_INVENTORY:
+        handle_inventory();
+        break;
+    }
+    // What the inventory changed, for the host (and whether it does
+    // something there, after which it opens again).
+    std::vector<unsigned char> changes;
+    bool again = menu == COOP_LOCAL_MENU_INVENTORY && inven_coop_take_changes(&changes);
+
+    coop_local_menu_open = 0;
+    input_poll_hook = previousHook;
+    // An Escape the closing pressed that the menu didn't take must not
+    // reach the host (it would open the options).
+    if (ctx->lastEscape != 0) {
+        ctx->swallowEscapeUntil = get_time() + 500;
+    }
+    coop_mirror_end();
+    coop_local_menu_ctx = NULL;
+
+    pictureWindow = GNW_find(window);
+    if (pictureWindow != NULL) {
+        pictureWindow->flags |= pictureFlags & (WINDOW_MODAL | WINDOW_MOVE_ON_TOP);
+    }
+    win_show(window);
+    win_draw(window);
+    coop_connection_send(ctx->connection, COOP_NET_MSG_LOCAL_DONE, changes);
+    debug_printf("\nCOOP NET: menu %d closed%s\n", menu, again ? " (something for the host to do)" : "");
+    if (again && !ctx->closeRequested && !*ctx->hostLeft) {
+        coop_client_local_menu(ctx, menu, window);
+    }
+    return true;
+}
+
+
 static bool coop_client_connect(CoopConnection* connection, std::string* error)
 {
     if (!coop_socket_startup()) {
@@ -2509,6 +2980,31 @@ static int coop_client_draw_x = 0;
 static int coop_client_draw_y = 0;
 static int coop_client_draw_width = 0;
 static int coop_client_draw_height = 0;
+
+// Client: the bar's button under picture position `x`, `y` that opens a
+// menu we run here (COOP_LOCAL_MENU_*; 0: none). The bar is at the bottom
+// of player 1's screen, centered; the picture may be that screen scaled.
+static int coop_client_local_button(int x, int y)
+{
+    int width = coop_client_host_width > 0 ? coop_client_host_width : coop_client_frame_width;
+    int height = coop_client_host_height > 0 ? coop_client_host_height : coop_client_frame_height;
+    if (coop_client_frame_width <= 0 || coop_client_frame_height <= 0 || width <= 0 || height <= 0) {
+        return 0;
+    }
+    int hostX = x * width / coop_client_frame_width - (width - 640) / 2;
+    int hostY = y * height / coop_client_frame_height - (height - 100);
+    if (hostX >= 526 && hostX < 526 + 41 && hostY >= 59 && hostY < 59 + 19) {
+        return COOP_LOCAL_MENU_CHARACTER;
+    }
+    if (hostX >= 526 && hostX < 526 + 41 && hostY >= 78 && hostY < 78 + 19) {
+        return COOP_LOCAL_MENU_PIPBOY;
+    }
+    if (hostX >= 211 && hostX < 211 + 32 && hostY >= 41 && hostY < 41 + 21) {
+        return COOP_LOCAL_MENU_INVENTORY;
+    }
+    return 0;
+}
+
 
 bool coop_net_client_host_size(int* width, int* height)
 {
@@ -2657,6 +3153,17 @@ int coop_net_client_run()
     // mouse keeps a pointer to it.
     static std::vector<unsigned char> cursorPixels;
     unsigned int cursorShapes = 0;
+    // Our own menus, run here (1.22).
+    CoopLocalMenu localMenu;
+    localMenu.connection = &connection;
+    localMenu.framesReceived = &framesReceived;
+    localMenu.framesAcked = &framesAcked;
+    localMenu.status = &status;
+    localMenu.hostLeft = &hostLeft;
+    localMenu.hostSaidBye = &hostSaidBye;
+    localMenu.soundsPlayed = &soundsPlayed;
+    // A press on a bar button of a menu we run here: its release opens it.
+    int localButton = 0;
     static unsigned char dumpPalette[768];
     unsigned int dumped = 0;
     int shownX = -1;
@@ -2700,8 +3207,16 @@ int coop_net_client_run()
             lastRound = get_time();
             // Local input goes to the host, except the quit keys: they leave.
             int keyCode = get_input();
+            if (keyCode == KEY_ESCAPE && localMenu.swallowEscapeUntil != 0 && (int)(localMenu.swallowEscapeUntil - get_time()) > 0) {
+                keyCode = -1;
+            }
             if (keyCode == KEY_F10 || keyCode == KEY_CTRL_Q || keyCode == KEY_CTRL_X) {
                 coop_client_exit_requested = true;
+            } else if (keyCode >= 0 && coop_client_local_key(keyCode) != 0 && coop_client_local_allowed(localMenu)
+                && coop_client_local_menu(&localMenu, coop_client_local_key(keyCode), window)) {
+                // Ran here (the cursor comes again with the next picture).
+                mouse_set_shape(&blankCursor, 1, 1, 1, 0, 0, 0);
+                lastRound = get_time();
             } else if (keyCode >= 0) {
                 CoopWriter writer;
                 writer.u8(COOP_NET_INPUT_KEY);
@@ -2711,6 +3226,13 @@ int coop_net_client_run()
                 coop_connection_send(&connection, COOP_NET_MSG_INPUT, writer.data);
                 inputsSent++;
                 actingSent.emplace_back(inputsSent, get_time());
+                // The host's chat takes T and then every key until Enter or
+                // Escape (see coop_host_chat_key).
+                if (keyCode == KEY_RETURN || keyCode == KEY_ESCAPE) {
+                    localMenu.chatTyping = false;
+                } else if ((keyCode == KEY_LOWERCASE_T || keyCode == KEY_UPPERCASE_T) && status.empty()) {
+                    localMenu.chatTyping = true;
+                }
             }
 
             int x;
@@ -2732,6 +3254,37 @@ int coop_net_client_run()
             }
             if ((mouseEvents & MOUSE_EVENT_RIGHT_BUTTON_DOWN_REPEAT) != 0) {
                 buttons |= MOUSE_STATE_RIGHT_BUTTON_DOWN;
+            }
+
+            // The bar's CHA and PIP buttons: menus we run here. The press
+            // isn't sent; its release on the button opens the menu (or, if
+            // it can't run here, sends the button's key).
+            int barMenu = coop_client_local_button(x, y);
+            bool pressed = (buttons & MOUSE_STATE_LEFT_BUTTON_DOWN) != 0;
+            bool wasPressed = sentButtons > 0 && (sentButtons & MOUSE_STATE_LEFT_BUTTON_DOWN) != 0;
+            if (localButton == 0 && pressed && !wasPressed && barMenu != 0 && coop_client_local_allowed(localMenu)) {
+                localButton = barMenu;
+            }
+            if (localButton != 0) {
+                if (!pressed) {
+                    int menu = localButton;
+                    localButton = 0;
+                    if (barMenu == menu) {
+                        if (coop_client_local_menu(&localMenu, menu, window)) {
+                            mouse_set_shape(&blankCursor, 1, 1, 1, 0, 0, 0);
+                            lastRound = get_time();
+                        } else {
+                            CoopWriter writer;
+                            writer.u8(COOP_NET_INPUT_KEY);
+                            writer.u16(0);
+                            writer.u16(0);
+                            writer.u32(menu == COOP_LOCAL_MENU_CHARACTER ? KEY_LOWERCASE_C : menu == COOP_LOCAL_MENU_PIPBOY ? KEY_LOWERCASE_P : KEY_LOWERCASE_I);
+                            coop_connection_send(&connection, COOP_NET_MSG_INPUT, writer.data);
+                            inputsSent++;
+                        }
+                    }
+                }
+                buttons = 0;
             }
 
             // Also now and then while nothing changes: a quiet connection
@@ -2871,56 +3424,20 @@ int coop_net_client_run()
             case COOP_NET_MSG_STATUS:
                 status = reader.str();
                 coop_client_status_text = status;
+                // (From now on the status line says whether we type.)
+                if (!status.empty()) {
+                    localMenu.chatTyping = false;
+                }
                 redraw = true;
                 changedAll = true;
                 break;
             case COOP_NET_MSG_SOUND:
-                if (true) {
-                    int event = reader.u8();
-                    std::string name = reader.str();
-                    int a = (int)reader.u32();
-                    int b = (int)reader.u32();
-                    int c = (int)reader.u32();
-                    if (reader.ok()) {
-                        soundsPlayed++;
-                        switch (event) {
-                        case GSOUND_EVENT_SFX:
-                            gsound_play_sfx_file_volume(name.c_str(), a);
-                            break;
-                        case GSOUND_EVENT_MUSIC:
-                            gsound_background_play(name.c_str(), a, b, c);
-                            break;
-                        case GSOUND_EVENT_MUSIC_STOP:
-                            gsound_background_stop();
-                            break;
-                        case GSOUND_EVENT_SPEECH:
-                            if (a == 0 && b == 0 && c == 0) {
-                                // A conversation's lip-synced speech.
-                                gsound_speech_play(name.c_str(), 10, 14, 15);
-                            } else {
-                                gsound_speech_play(name.c_str(), a, b, c);
-                            }
-                            break;
-                        case GSOUND_EVENT_SPEECH_STOP:
-                            gsound_speech_stop();
-                            break;
-                        }
-                    }
+                if (coop_client_sound(&reader)) {
+                    soundsPlayed++;
                 }
                 break;
             case COOP_NET_MSG_CHARACTER:
-                // A copy of our character to keep; the last one stays as a
-                // backup.
-                if (!message.payload.empty()) {
-                    remove(COOP_NET_CHARACTER_FILE ".bak");
-                    rename(COOP_NET_CHARACTER_FILE, COOP_NET_CHARACTER_FILE ".bak");
-                    FILE* stream = fopen(COOP_NET_CHARACTER_FILE, "wb");
-                    if (stream != NULL) {
-                        fwrite(message.payload.data(), 1, message.payload.size(), stream);
-                        fclose(stream);
-                        debug_printf("\nCOOP NET: saved a copy of our character (%d bytes)\n", (int)message.payload.size());
-                    }
-                }
+                coop_client_keep_character(message.payload);
                 break;
             case COOP_NET_MSG_CURSOR:
                 if (true) {
