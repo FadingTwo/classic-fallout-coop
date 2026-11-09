@@ -636,11 +636,14 @@ typedef struct CoopMirror {
     std::vector<int> savedGlobals;
     int savedTime = 0;
     bool mapNamesLoaded = false;
+    // Other objects loaded for it (a container to loot).
+    std::vector<Object*> others;
 } CoopMirror;
 
 static CoopMirror coop_mirror;
 
 static int coop_read_player(File* stream, PlayerState* player, int* pidPtr, CritterProtoData* protoData, int* protoFidPtr);
+static void coop_character_scripts(Object* obj, std::vector<int>* saved, bool clear);
 bool coop_mirror_begin(const std::vector<unsigned char>& character, const std::vector<int>& globals, int time, std::string* error)
 {
     if (coop_mirror.on || coop_scope_stack_depth != 0 || coop_active != &(coop_players[0])) {
@@ -778,9 +781,74 @@ void coop_mirror_end()
         coop_mirror.mapNamesLoaded = false;
     }
 
+    for (Object* other : coop_mirror.others) {
+        objectDestroy(other, nullptr);
+    }
+    coop_mirror.others.clear();
     objectDestroy(coop_mirror.obj, nullptr);
     coop_mirror.obj = nullptr;
     coop_mirror.on = false;
+}
+
+#define COOP_OBJECT_TEMP "coop-object.tmp"
+
+bool coop_export_object(Object* obj, std::vector<unsigned char>* out)
+{
+    out->clear();
+    File* stream = fileOpen(COOP_OBJECT_TEMP, "wb");
+    if (stream == nullptr) {
+        return false;
+    }
+    std::vector<int> scripts;
+    coop_character_scripts(obj, &scripts, true);
+    bool ok = _obj_save_obj(stream, obj) != -1;
+    coop_character_scripts(obj, &scripts, false);
+    fileClose(stream);
+    if (ok) {
+        stream = fileOpen(COOP_OBJECT_TEMP, "rb");
+        if (stream == nullptr) {
+            ok = false;
+        } else {
+            long length = fileGetSize(stream);
+            out->resize(length > 0 ? (size_t)length : 0);
+            ok = length > 0 && fileRead(out->data(), 1, out->size(), stream) == out->size();
+            fileClose(stream);
+        }
+    }
+    if (!ok) {
+        out->clear();
+    }
+    return ok;
+}
+
+Object* coop_mirror_load_object(const std::vector<unsigned char>& data)
+{
+    if (!coop_mirror.on || data.empty()) {
+        return nullptr;
+    }
+    File* stream = fileOpen(COOP_OBJECT_TEMP, "wb");
+    if (stream == nullptr) {
+        return nullptr;
+    }
+    bool written = fileWrite(data.data(), 1, data.size(), stream) == data.size();
+    fileClose(stream);
+    if (!written) {
+        return nullptr;
+    }
+    stream = fileOpen(COOP_OBJECT_TEMP, "rb");
+    if (stream == nullptr) {
+        return nullptr;
+    }
+    Object* obj = nullptr;
+    if (_obj_load_obj(stream, &obj, 0, nullptr) != 0) {
+        obj = nullptr;
+    }
+    fileClose(stream);
+    if (obj != nullptr) {
+        obj->sid = -1;
+        coop_mirror.others.push_back(obj);
+    }
+    return obj;
 }
 
 bool coop_any_player_has(int results)

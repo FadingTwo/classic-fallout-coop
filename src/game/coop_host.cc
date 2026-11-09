@@ -791,6 +791,94 @@ static void coop_host_read_automaps(std::vector<unsigned char>* data)
 // for player 1's game to do it.
 static std::vector<unsigned char> coop_host_local_changes[COOP_MAX_PLAYERS];
 static bool coop_host_local_pending[COOP_MAX_PLAYERS];
+// What a player loots on their own computer (1.22.1), and where it lay.
+static Object* coop_host_loot_target[COOP_MAX_PLAYERS];
+static int coop_host_loot_tile[COOP_MAX_PLAYERS];
+static int coop_host_loot_elevation[COOP_MAX_PLAYERS];
+
+// The container player `slot` + 1 loots on their computer, if it's still
+// where it was (else NULL).
+static Object* coop_host_loot_container(int slot)
+{
+    Object* target = coop_host_loot_target[slot];
+    if (target == NULL) {
+        return NULL;
+    }
+    Object** objects;
+    int count = obj_create_list(coop_host_loot_tile[slot], coop_host_loot_elevation[slot], PID_TYPE(target->pid), &objects);
+    bool found = false;
+    for (int index = 0; index < count; index++) {
+        if (objects[index] == target) {
+            found = true;
+        }
+    }
+    if (count > 0) {
+        obj_delete_list(objects);
+    }
+    return found ? target : NULL;
+}
+
+bool coop_host_local_loot(Object* looter, Object* container)
+{
+    int slot = coop_player_index_of(looter);
+    if (!coop_host_on || slot < 1 || slot >= coop_player_count() || isInCombat() || container == NULL) {
+        return false;
+    }
+    PlayerState* player = coop_player(slot);
+    // A body (not several on one spot: the screen goes through them) or a
+    // container item; not stealing.
+    int type = PID_TYPE(container->pid);
+    if (type == OBJ_TYPE_CRITTER) {
+        if (!critter_is_dead(container)) {
+            return false;
+        }
+        Object** critters;
+        int count = obj_create_list(container->tile, container->elevation, OBJ_TYPE_CRITTER, &critters);
+        int bodies = 0;
+        for (int index = 0; index < count; index++) {
+            if ((critters[index]->data.critter.combat.results & (DAM_DEAD | DAM_KNOCKED_OUT)) != 0) {
+                bodies++;
+            }
+        }
+        if (count > 0) {
+            obj_delete_list(critters);
+        }
+        if (bodies > 1) {
+            return false;
+        }
+    } else if (type != OBJ_TYPE_ITEM) {
+        return false;
+    }
+
+    int selected = coop_net_selected();
+    coop_net_select(slot);
+    bool ok = coop_net_local_loot_ok();
+    std::vector<unsigned char> character;
+    std::vector<unsigned char> bytes;
+    if (ok) {
+        // Its own script says whether it opens (here, as for player 1).
+        bool opens;
+        {
+            ActivePlayerScope scope(player);
+            opens = inven_coop_loot_may_open(looter, container);
+        }
+        if (!opens) {
+            coop_net_select(selected);
+            return true;
+        }
+        ok = coop_export_player(slot, &character) && coop_export_object(container, &bytes);
+    }
+    if (ok) {
+        coop_count_loot_open(looter);
+        coop_net_local_loot(character, game_global_vars, num_game_global_vars, game_time(), bytes);
+        coop_host_loot_target[slot] = container;
+        coop_host_loot_tile[slot] = container->tile;
+        coop_host_loot_elevation[slot] = container->elevation;
+        debug_printf("\nCOOP HOST: player %d loots on their computer\n", slot + 1);
+    }
+    coop_net_select(selected);
+    return ok;
+}
 
 static void coop_host_apply_local_changes(int slot)
 {
@@ -802,8 +890,9 @@ static void coop_host_apply_local_changes(int slot)
     coop_set_viewer(player);
     {
         ActivePlayerScope scope(player);
-        inven_coop_apply(coop_host_local_changes[slot]);
+        inven_coop_apply(coop_host_local_changes[slot], coop_host_loot_container(slot));
     }
+    coop_host_loot_target[slot] = NULL;
     coop_set_viewer(NULL);
     coop_host_local_changes[slot].clear();
     debug_printf("\nCOOP HOST: player %d's inventory changes done\n", slot + 1);
@@ -825,6 +914,8 @@ static void coop_host_serve_local_menus()
             if (!changes.empty() && slot < coop_player_count()) {
                 coop_host_local_changes[slot].swap(changes);
                 coop_host_local_pending[slot] = true;
+            } else {
+                coop_host_loot_target[slot] = NULL;
             }
         }
         if (coop_host_local_pending[slot] && isInCombat() && coop_host_turn_slot == 0) {
@@ -837,6 +928,7 @@ static void coop_host_serve_local_menus()
         if (menu != 0) {
             PlayerState* player = slot < coop_player_count() ? coop_player(slot) : NULL;
             bool allowed = player != NULL && player->obj != NULL && !isInCombat() && coop_host_turn_slot == 0
+                && coop_net_local_menu() == 0
                 && !critter_is_dead(player->obj) && (player->obj->data.critter.combat.results & DAM_KNOCKED_OUT) == 0;
             std::vector<unsigned char> character;
             if (allowed && coop_export_player(slot, &character)) {

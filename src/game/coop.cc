@@ -675,10 +675,13 @@ typedef struct CoopMirror {
     std::vector<int> savedGlobals;
     int savedTime = 0;
     bool mapNamesLoaded = false;
+    // Other objects loaded for it (a container to loot).
+    std::vector<Object*> others;
 } CoopMirror;
 
 static CoopMirror coop_mirror;
 
+static void coop_character_scripts(Object* obj, std::vector<int>* saved, bool clear);
 bool coop_mirror_begin(const std::vector<unsigned char>& character, const std::vector<int>& globals, int time, std::string* error)
 {
     if (coop_mirror.on || coop_scope_stack_depth != 0 || coop_active != &(coop_players[0])) {
@@ -816,9 +819,74 @@ void coop_mirror_end()
         coop_mirror.mapNamesLoaded = false;
     }
 
+    for (Object* other : coop_mirror.others) {
+        obj_erase_object(other, NULL);
+    }
+    coop_mirror.others.clear();
     obj_erase_object(coop_mirror.obj, NULL);
     coop_mirror.obj = NULL;
     coop_mirror.on = false;
+}
+
+#define COOP_OBJECT_TEMP "coop-object.tmp"
+
+bool coop_export_object(Object* obj, std::vector<unsigned char>* out)
+{
+    out->clear();
+    DB_FILE* stream = db_fopen(COOP_OBJECT_TEMP, "wb");
+    if (stream == NULL) {
+        return false;
+    }
+    std::vector<int> scripts;
+    coop_character_scripts(obj, &scripts, true);
+    bool ok = obj_save_obj(stream, obj) != -1;
+    coop_character_scripts(obj, &scripts, false);
+    db_fclose(stream);
+    if (ok) {
+        stream = db_fopen(COOP_OBJECT_TEMP, "rb");
+        if (stream == NULL) {
+            ok = false;
+        } else {
+            long length = db_filelength(stream);
+            out->resize(length > 0 ? (size_t)length : 0);
+            ok = length > 0 && db_fread(out->data(), 1, out->size(), stream) == out->size();
+            db_fclose(stream);
+        }
+    }
+    if (!ok) {
+        out->clear();
+    }
+    return ok;
+}
+
+Object* coop_mirror_load_object(const std::vector<unsigned char>& data)
+{
+    if (!coop_mirror.on || data.empty()) {
+        return NULL;
+    }
+    DB_FILE* stream = db_fopen(COOP_OBJECT_TEMP, "wb");
+    if (stream == NULL) {
+        return NULL;
+    }
+    bool written = db_fwrite(data.data(), 1, data.size(), stream) == data.size();
+    db_fclose(stream);
+    if (!written) {
+        return NULL;
+    }
+    stream = db_fopen(COOP_OBJECT_TEMP, "rb");
+    if (stream == NULL) {
+        return NULL;
+    }
+    Object* obj = NULL;
+    if (obj_load_obj(stream, &obj, 0, NULL) != 0) {
+        obj = NULL;
+    }
+    db_fclose(stream);
+    if (obj != NULL) {
+        obj->sid = -1;
+        coop_mirror.others.push_back(obj);
+    }
+    return obj;
 }
 
 bool coop_any_player_has(int results)

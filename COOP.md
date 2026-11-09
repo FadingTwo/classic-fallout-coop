@@ -172,8 +172,9 @@ Olympus games.
   dialog, barter...) or it is their combat turn, the game waits for them
   and the other player sees their screen with a status line.
 - Over the network (since 1.22), players 2-4's character screen, Pip-Boy
-  and inventory open on their own computer: no delay, and the game goes
-  on for the others meanwhile. Taking items in hand and putting armor on
+  and inventory open on their own computer, and since 1.22.1 their loot
+  screen too (not for stealing, or a spot with several bodies): no delay,
+  and the game goes on for the others meanwhile. Taking items in hand and putting armor on
   happen there; dropping, using, unloading, reloading and putting items
   into a bag are done in player 1's game, then the inventory opens again
   with the result. With points to spend the character screen opens in

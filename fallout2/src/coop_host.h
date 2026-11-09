@@ -1,6 +1,8 @@
 #ifndef FALLOUT_COOP_HOST_H_
 #define FALLOUT_COOP_HOST_H_
 
+#include "obj_types.h"
+
 namespace fallout {
 
 // Co-op host (see coop_net.h): plays player 2 from the client's input and
@@ -48,6 +50,10 @@ unsigned int coop_host_view_hover_parts(int slot);
 // player, Enter sends ("Name: text" in the message window), Esc cancels.
 // Returns true when the key was used for chat (also every key typed).
 bool coop_host_chat_key(int keyCode);
+
+// A player's loot screen run on their own computer (1.22.1): true when it
+// went there (or the container's script said no); false: run it here.
+bool coop_host_local_loot(Object* looter, Object* container);
 
 } // namespace fallout
 

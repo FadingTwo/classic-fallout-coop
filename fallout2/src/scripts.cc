@@ -14,6 +14,7 @@
 #include "automap.h"
 #include "combat.h"
 #include "coop.h"
+#include "coop_host.h"
 #include "critter.h"
 #include "db.h"
 #include "debug.h"
@@ -1427,6 +1428,11 @@ static void scriptsOpenGiving()
 // a locker or a trunk did nothing), and on their screen.
 static void scriptsOpenLooting(Object* looter, Object* target)
 {
+    // Players 2-4's on their own computer when it can (1.22.1).
+    if (coop_host_local_loot(looter, target)) {
+        return;
+    }
+
     PlayerState* player = coop_player_of(looter);
     if (player == nullptr || player == coop_active_player()) {
         inventoryOpenLooting(looter, target);

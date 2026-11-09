@@ -100,6 +100,7 @@ static int coop_autotest_noticed(AutotestNewGameProc* newGame);
 static int coop_autotest_inven_apply(AutotestNewGameProc* newGame);
 static int coop_autotest_count_pid(Object* critter, int pid);
 static void coop_autotest_log_automaps();
+static int coop_autotest_local_menu_of(int slot);
 static int coop_autotest_knockout(AutotestNewGameProc* newGame);
 static int coop_autotest_character(AutotestNewGameProc* newGame);
 static int coop_autotest_barter(AutotestNewGameProc* newGame);
@@ -1216,6 +1217,16 @@ static void coop_autotest_screenshot()
     takeScreenshot();
 }
 
+// The menu player `slot` + 1 has open on their computer (0: none).
+static int coop_autotest_local_menu_of(int slot)
+{
+    int selected = coop_net_selected();
+    coop_net_select(slot);
+    int menu = coop_net_local_menu();
+    coop_net_select(selected);
+    return menu;
+}
+
 // The automaps this game reads (a Pip-Boy run here shows the host's).
 static void coop_autotest_log_automaps()
 {
@@ -1619,6 +1630,10 @@ static int coop_autotest_net_play_host(AutotestNewGameProc* newGame)
 
     int startTile = -1;
     bool moved = false;
+    // The body player 2 loots (below).
+    Object* lootBody = nullptr;
+    bool lootTried = false;
+    int lootBefore = 0;
     // The camera check (below).
     int lastTile = -1;
     int settledFrames = 0;
@@ -1681,6 +1696,29 @@ static int coop_autotest_net_play_host(AutotestNewGameProc* newGame)
                 autotest_log("player 2 moving (tile %d)", p2->tile);
             }
 
+            // Then (their menus done) a body for them to loot on their
+            // computer: three stimpaks (1.22.1).
+            if (lootBody == nullptr && !lootTried && getenv("COOP_NET_NO_LOCAL_MENUS") == nullptr && coop_net_local_menus_served(1) >= 5
+                && coop_autotest_local_menu_of(1) == 0) {
+                lootTried = true;
+                // (Not an animal: in Fallout 2 they have nothing to take.)
+                coop_autotest_enemy_default = "Raider";
+                lootBody = coop_autotest_spawn_enemy(p2);
+                coop_autotest_enemy_default = "Rat";
+                if (lootBody != nullptr) {
+                    for (int index = 0; index < 3; index++) {
+                        Object* stimpak;
+                        if (objectCreateWithPid(&stimpak, PROTO_ID_STIMPACK) == 0 && itemAdd(lootBody, stimpak, 1) == 0) {
+                            _obj_disconnect(stimpak, nullptr);
+                        }
+                    }
+                    critterKill(lootBody, -1, true);
+                    lootBefore = coop_autotest_count_pid(p2, PROTO_ID_STIMPACK);
+                    scriptsRequestLooting(p2, lootBody);
+                    autotest_log("a body with %d stimpaks for player 2 to loot", coop_autotest_count_pid(lootBody, PROTO_ID_STIMPACK));
+                }
+            }
+
             // Player 2's camera follows them far from player 1 too (scroll
             // limits count from the player the view is for). Once player 2
             // stands still after walking, they are put some 24 hexes from
@@ -1741,8 +1779,16 @@ static int coop_autotest_net_play_host(AutotestNewGameProc* newGame)
     if (getenv("COOP_NET_NO_LOCAL_MENUS") == nullptr && (p2Right != nullptr || knives != 0)) {
         autotest_fail("player 2's knife, taken in hand then dropped in their inventory (run on their computer), wasn't dropped here");
     }
+    if (getenv("COOP_NET_NO_LOCAL_MENUS") == nullptr) {
+        int left = lootBody != nullptr ? coop_autotest_count_pid(lootBody, PROTO_ID_STIMPACK) : -1;
+        int carried = coop_autotest_count_pid(coop_player(1)->obj, PROTO_ID_STIMPACK);
+        autotest_log("player 2 looted on their computer: stimpaks %d -> %d, %d left on the body", lootBefore, carried, left);
+        if (lootBody == nullptr || left != 0 || carried != lootBefore + 3) {
+            autotest_fail("player 2's loot screen (on their computer) didn't take the body's stimpaks here");
+        }
+    }
     autotest_log("player 2's menus run on their computer: %u", coop_net_local_menus_served(1));
-    if (getenv("COOP_NET_NO_LOCAL_MENUS") == nullptr && coop_net_local_menus_served(1) < 5) {
+    if (getenv("COOP_NET_NO_LOCAL_MENUS") == nullptr && coop_net_local_menus_served(1) < 6) {
         autotest_fail("player 2's character screen and Pip-Boy didn't run on their computer (%u)", coop_net_local_menus_served(1));
     }
     autotest_log("player 2 sent %u chat messages", coop_host_chat_count(1));
@@ -1913,6 +1959,16 @@ static int coop_autotest_net_play_client(AutotestNewGameProc* newGame)
         inject_call(coop_autotest_screenshot);
         inject_key(KEY_ESCAPE);
         inject_wait(60);
+
+        // A body to loot (the host puts it there): its loot screen opens
+        // here; A takes everything, then out.
+        inject_wait(240);
+        inject_call(coop_autotest_screenshot);
+        inject_key(KEY_UPPERCASE_A);
+        inject_wait(30);
+        inject_call(coop_autotest_screenshot);
+        inject_key(KEY_ESCAPE);
+        inject_wait(60);
     }
     inject_wait(240);
 
@@ -1935,7 +1991,7 @@ static int coop_autotest_net_play_client(AutotestNewGameProc* newGame)
 
     // The character screen and the Pip-Boy ran here (only the Pip-Boy with
     // skill points to spend).
-    unsigned int expected = getenv("COOP_NET_NO_LOCAL_MENUS") != nullptr ? 0 : getenv("COOP_AUTOTEST_P2_POINTS") != nullptr ? 4 : 5;
+    unsigned int expected = getenv("COOP_NET_NO_LOCAL_MENUS") != nullptr ? 0 : getenv("COOP_AUTOTEST_P2_POINTS") != nullptr ? 5 : 6;
     autotest_log("menus run here: %u", coop_net_client_local_menus_run());
     if (coop_net_client_local_menus_run() != expected) {
         autotest_fail("%u menus ran here, not %u", coop_net_client_local_menus_run(), expected);

@@ -367,6 +367,8 @@ typedef struct CoopPeer {
     int localRequest = 0;
     int localMenu = 0;
     bool localCloseSent = false;
+    // Its loot screens run there (HELLO flag 64, 1.22.1).
+    bool localLoot = false;
     unsigned int localServed = 0;
     // What a closed one changed, for the game to carry out (step 2).
     std::vector<unsigned char> localDone;
@@ -1187,6 +1189,8 @@ static void coop_host_handle(const CoopMessage& message)
             coop_peer->localMenu = 0;
             coop_peer->localCloseSent = false;
             coop_peer->seesInputs = (flags & 32) != 0;
+            // Since 1.22.1 flag 64: runs its loot screens itself.
+            coop_peer->localLoot = (flags & 64) != 0;
             coop_peer->ownCursor = coop_peer->seesInputs && !coop_net_no_own_cursor;
             coop_peer->cursorSent = false;
             coop_peer->inputsReceived = 0;
@@ -1489,6 +1493,32 @@ bool coop_net_take_local_done(std::vector<unsigned char>* changes)
     changes->swap(coop_peer->localDone);
     coop_peer->localDone.clear();
     return true;
+}
+
+bool coop_net_local_loot_ok()
+{
+    return coop_client_ready && coop_peer->localLoot && coop_peer->localMenu == 0 && coop_peer->localRequest == 0;
+}
+
+void coop_net_local_loot(const std::vector<unsigned char>& character, const int* globals, int count, int time, const std::vector<unsigned char>& container)
+{
+    if (!coop_client_ready) {
+        return;
+    }
+    CoopWriter loot;
+    loot.u32((unsigned int)time);
+    loot.u32((unsigned int)count);
+    for (int index = 0; index < count; index++) {
+        loot.u32((unsigned int)globals[index]);
+    }
+    loot.u32((unsigned int)character.size());
+    loot.data.insert(loot.data.end(), character.begin(), character.end());
+    loot.u32((unsigned int)container.size());
+    loot.data.insert(loot.data.end(), container.begin(), container.end());
+    coop_connection_send(&coop_client, COOP_NET_MSG_LOCAL_LOOT, loot.data);
+    coop_peer->localMenu = COOP_LOCAL_MENU_LOOT;
+    coop_peer->localCloseSent = false;
+    coop_peer->localServed++;
 }
 
 unsigned int coop_net_local_menus_served(int slot)
@@ -2621,6 +2651,8 @@ typedef struct CoopLocalMenu {
     std::vector<int> globals;
     int time = 0;
     std::vector<unsigned char> automap;
+    // A container to loot (COOP_NET_MSG_LOCAL_LOOT).
+    std::vector<unsigned char> container;
     // The host wants it closed (a fight), or left.
     bool closeRequested = false;
     unsigned int lastEscape = 0;
@@ -2770,6 +2802,45 @@ static bool coop_client_local_allowed(const CoopLocalMenu& ctx)
     return ctx.status->empty() && !ctx.chatTyping && !coop_local_menus_unsupported && !coop_net_no_local_menus;
 }
 
+static bool coop_client_local_menu_run(CoopLocalMenu* ctx, int menu, int window);
+
+// Our loot screen the host has us run (COOP_NET_MSG_LOCAL_LOOT); the host
+// hears LOCAL_DONE whatever happens.
+static bool coop_client_local_loot(CoopLocalMenu* ctx, const std::vector<unsigned char>& payload, int window)
+{
+    CoopReader reader(payload);
+    int time = (int)reader.u32();
+    unsigned int count = reader.u32();
+    std::vector<int> globals;
+    for (unsigned int index = 0; index < count && reader.ok() && index < 100000; index++) {
+        globals.push_back((int)reader.u32());
+    }
+    unsigned int size = reader.u32();
+    const unsigned char* bytes = reader.ok() && size <= COOP_NET_MAX_MESSAGE ? reader.bytes(size) : nullptr;
+    std::vector<unsigned char> character;
+    if (bytes != nullptr) {
+        character.assign(bytes, bytes + size);
+    }
+    size = reader.u32();
+    bytes = reader.ok() && size <= COOP_NET_MAX_MESSAGE ? reader.bytes(size) : nullptr;
+    if (bytes == nullptr || character.empty()) {
+        coop_connection_send(ctx->connection, COOP_NET_MSG_LOCAL_DONE, std::vector<unsigned char>());
+        return false;
+    }
+    ctx->container.assign(bytes, bytes + size);
+    ctx->character.swap(character);
+    ctx->globals.swap(globals);
+    ctx->time = time;
+    ctx->automap.clear();
+    ctx->answered = true;
+    ctx->ok = true;
+    ctx->closeRequested = false;
+    ctx->lastEscape = 0;
+    ctx->cursorChanged = false;
+    coop_local_menu_ctx = ctx;
+    return coop_client_local_menu_run(ctx, COOP_LOCAL_MENU_LOOT, window);
+}
+
 // Runs menu `menu` (COOP_LOCAL_MENU_*) here; false when the host can't let
 // it (a fight, an old host, a level to spend): then the key goes to the
 // host as before.
@@ -2810,6 +2881,12 @@ static bool coop_client_local_menu(CoopLocalMenu* ctx, int menu, int window)
         return false;
     }
 
+    return coop_client_local_menu_run(ctx, menu, window);
+}
+
+// Runs menu `menu` from what the host sent (in `ctx`).
+static bool coop_client_local_menu_run(CoopLocalMenu* ctx, int menu, int window)
+{
     std::string error;
     if (!coop_mirror_begin(ctx->character, ctx->globals, ctx->time, &error)) {
         debug_printf("\nCOOP NET: our character couldn't be shown here: %s\n", error.c_str());
@@ -2843,6 +2920,19 @@ static bool coop_client_local_menu(CoopLocalMenu* ctx, int menu, int window)
         }
     }
 
+    // The container to loot.
+    Object* container = nullptr;
+    if (menu == COOP_LOCAL_MENU_LOOT) {
+        container = coop_mirror_load_object(ctx->container);
+        if (container == nullptr) {
+            debug_printf("\nCOOP NET: the container to loot couldn't be shown here\n");
+            coop_mirror_end();
+            coop_connection_send(ctx->connection, COOP_NET_MSG_LOCAL_DONE, std::vector<unsigned char>());
+            coop_local_menu_ctx = nullptr;
+            return false;
+        }
+    }
+
     debug_printf("\nCOOP NET: menu %d here\n", menu);
     // Our picture's window steps aside: hidden, and neither modal (a modal
     // window takes every click, hidden or not) nor kept on top.
@@ -2868,11 +2958,16 @@ static bool coop_client_local_menu(CoopLocalMenu* ctx, int menu, int window)
     case COOP_LOCAL_MENU_INVENTORY:
         inventoryOpen();
         break;
+    case COOP_LOCAL_MENU_LOOT:
+        inven_coop_loot(container);
+        break;
     }
-    // What the inventory changed, for the host (and whether it does
-    // something there, after which it opens again).
+    // What the inventory (or loot screen) changed, for the host (and
+    // whether it does something there, after which the inventory opens
+    // again).
     std::vector<unsigned char> changes;
-    bool again = menu == COOP_LOCAL_MENU_INVENTORY && inven_coop_take_changes(&changes);
+    bool noted = (menu == COOP_LOCAL_MENU_INVENTORY || menu == COOP_LOCAL_MENU_LOOT) && inven_coop_take_changes(&changes);
+    bool again = menu == COOP_LOCAL_MENU_INVENTORY && noted;
 
     coop_local_menu_open = 0;
     input_poll_hook = previousHook;
@@ -2941,9 +3036,10 @@ static bool coop_client_connect(CoopConnection* connection, std::string* error)
     coop_outline_colors_from_config(outlines);
     // Flags: 1 colorblind (1.2), 2 acknowledges frames, 4 packed frames (1.5.7).
     // 8: brings their own character (1.9). 16: moves its picture with the
-    // camera (1.15). 32: draws its cursor, takes INPUT_SEEN (1.21).
+    // camera (1.15). 32: draws its cursor, takes INPUT_SEEN (1.21). 64: runs
+    // its loot screens (1.22.1).
     hello.u8((outlines[0] == 2 && outlines[1] == 3 ? 1 : 0) | (coop_net_no_acks ? 0 : 2) | (coop_net_no_packing ? 0 : 4)
-        | (coop_bring_character.empty() ? 0 : 8) | (coop_net_no_shifts ? 0 : 16) | 32);
+        | (coop_bring_character.empty() ? 0 : 8) | (coop_net_no_shifts ? 0 : 16) | 32 | (coop_net_no_local_menus ? 0 : 64));
     hello.u8(outlines[0]);
     hello.u8(outlines[1]);
     hello.u16((unsigned int)screenGetWidth());
@@ -3195,6 +3291,8 @@ int coop_net_client_run()
     localMenu.soundsPlayed = &soundsPlayed;
     // A press on a bar button of a menu we run here: its release opens it.
     int localButton = 0;
+    // A loot screen the host has us run (COOP_NET_MSG_LOCAL_LOOT).
+    std::vector<unsigned char> pendingLoot;
     int shownX = -1;
     int shownY = -1;
     // How long clicks and keys take to show: input messages sent, those
@@ -3486,6 +3584,9 @@ int coop_net_client_run()
                     }
                 }
                 break;
+            case COOP_NET_MSG_LOCAL_LOOT:
+                pendingLoot.swap(message.payload);
+                break;
             case COOP_NET_MSG_INPUT_SEEN:
                 if (true) {
                     unsigned int seen = reader.u32();
@@ -3518,6 +3619,16 @@ int coop_net_client_run()
 
         if (connection.failed || coop_client_exit_requested) {
             hostLeft = true;
+        }
+
+        // Our loot screen, run here.
+        if (!pendingLoot.empty() && !hostLeft) {
+            std::vector<unsigned char> loot;
+            loot.swap(pendingLoot);
+            if (coop_client_local_loot(&localMenu, loot, window)) {
+                mouse_set_shape(&blankCursor, 1, 1, 1, 0, 0, 0);
+                lastRound = get_time();
+            }
         }
 
         Uint64 drawStart = SDL_GetPerformanceCounter();

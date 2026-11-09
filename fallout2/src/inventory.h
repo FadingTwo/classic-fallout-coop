@@ -49,7 +49,12 @@ Object* inven_get_current_target_obj();
 // (true: something to do in player 1's game, which then opens it again),
 // and player 1's game doing it, in that player's scope.
 bool inven_coop_take_changes(std::vector<unsigned char>* out);
-void inven_coop_apply(const std::vector<unsigned char>& changes);
+// `lootContainer`: what a loot screen run there looted (its moves).
+void inven_coop_apply(const std::vector<unsigned char>& changes, Object* lootContainer = nullptr);
+// The loot screen of `container` run on a player's own computer (1.22.1),
+// and whether player 1's game lets it open (the container's own script).
+int inven_coop_loot(Object* container);
+bool inven_coop_loot_may_open(Object* looter, Object* container);
 void inven_coop_test_drop_right_hand();
 // Testing: changes for `command` (1 drop, 2 use, 3 unload, 4 reload: `item`
 // the ammo, `other` the weapon, 5 put `item` into `other`).

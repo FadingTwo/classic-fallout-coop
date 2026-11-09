@@ -81,12 +81,18 @@ typedef enum CoopNetMessageType {
     COOP_NET_MSG_LOCAL_DONE = 16,
     // Host -> client: close it now (a fight began).
     COOP_NET_MSG_LOCAL_CLOSE = 17,
+    // Host -> client (since 1.22.1, HELLO flag 64): the player's loot screen
+    // runs on their computer: u32 game time, u32 count, the global
+    // variables, u32 size + their character, u32 size + the container.
+    // LOCAL_DONE answers as for the inventory (with the loot's moves).
+    COOP_NET_MSG_LOCAL_LOOT = 18,
 } CoopNetMessageType;
 
 // The menus a client runs itself (COOP_NET_MSG_LOCAL_MENU).
 #define COOP_LOCAL_MENU_CHARACTER 1
 #define COOP_LOCAL_MENU_PIPBOY 2
 #define COOP_LOCAL_MENU_INVENTORY 3
+#define COOP_LOCAL_MENU_LOOT 4
 
 typedef enum CoopNetInputKind {
     // x, y: absolute screen position; value: mouse buttons (MOUSE_STATE_*).
@@ -199,6 +205,10 @@ void coop_net_local_answer(int menu, const std::vector<unsigned char>* character
 int coop_net_local_menu();
 void coop_net_local_close();
 bool coop_net_take_local_done(std::vector<unsigned char>* changes);
+// Host, for the selected client: whether its loot screens can run there now,
+// and running one there.
+bool coop_net_local_loot_ok();
+void coop_net_local_loot(const std::vector<unsigned char>& character, const int* globals, int count, int time, const std::vector<unsigned char>& container);
 
 // Client: the status line shown over the picture ("" when it's our own
 // view or turn; tests).

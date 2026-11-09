@@ -12,6 +12,7 @@
 #include "game/automap.h"
 #include "game/combat.h"
 #include "game/coop.h"
+#include "game/coop_host.h"
 #include "game/critter.h"
 #include "game/elevator.h"
 #include "game/endgame.h"
@@ -1211,6 +1212,11 @@ void scripts_request_endgame_slideshow()
 // a locker or a trunk did nothing), and on their screen.
 static void scripts_loot(Object* looter, Object* container)
 {
+    // Players 2-4's on their own computer when it can (1.22.1).
+    if (coop_host_local_loot(looter, container)) {
+        return;
+    }
+
     PlayerState* player = coop_player_of(looter);
     if (player == NULL || player == coop_active_player()) {
         loot_container(looter, container);

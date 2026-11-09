@@ -5,6 +5,9 @@
 #include <string.h>
 
 #include <algorithm>
+#include <map>
+#include <set>
+#include <tuple>
 
 #include "actions.h"
 #include "animation.h"
@@ -357,6 +360,7 @@ static void _inven_explosive_dropped();
 #define COOP_INVEN_RELOAD 4
 #define COOP_INVEN_PUT_IN 5
 static void coop_inven_note(int command, Object* item, int quantity, Object* other);
+static int coop_inven_stack_quantity(Object* owner, Object* item);
 static bool coop_inven_noted = false;
 
 // 0x5190E4
@@ -3943,16 +3947,21 @@ static void inventoryWindowOpenContextMenu(int keyCode, int inventoryWindowType)
     // CE: co-op: in a player's inventory run on their computer, what changes
     // the world is noted for player 1's game (how many to drop is asked
     // here); the screen then closes and opens again with the result.
-    if (coop_mirror_object() != nullptr && inventoryWindowType == INVENTORY_WINDOW_TYPE_NORMAL
+    if (coop_mirror_object() != nullptr
+        && (inventoryWindowType == INVENTORY_WINDOW_TYPE_NORMAL || inventoryWindowType == INVENTORY_WINDOW_TYPE_LOOT)
         && (actionMenuItem == GAME_MOUSE_ACTION_MENU_ITEM_DROP
             || (actionMenuItem == GAME_MOUSE_ACTION_MENU_ITEM_USE && itemType != ITEM_TYPE_CONTAINER)
             || actionMenuItem == GAME_MOUSE_ACTION_MENU_ITEM_UNLOAD)) {
+        // (In a loot screen only our own: the other side's stay as they are.)
+        if (itemSlot == nullptr && coop_inven_stack_quantity(_stack[0], item) == 0) {
+            actionMenuItem = -1;
+        }
         int count = 1;
         if (actionMenuItem == GAME_MOUSE_ACTION_MENU_ITEM_DROP && itemSlot == nullptr && quantity > 1
             && !explosiveIsActiveExplosive(item->pid)) {
             count = inventoryQuantitySelect(INVENTORY_WINDOW_TYPE_MOVE_ITEMS, item, quantity);
         }
-        if (count > 0) {
+        if (count > 0 && actionMenuItem != -1) {
             coop_inven_note(actionMenuItem == GAME_MOUSE_ACTION_MENU_ITEM_DROP ? COOP_INVEN_DROP
                     : actionMenuItem == GAME_MOUSE_ACTION_MENU_ITEM_USE        ? COOP_INVEN_USE
                                                                                : COOP_INVEN_UNLOAD,
@@ -4108,20 +4117,18 @@ static void inventoryWindowOpenContextMenu(int keyCode, int inventoryWindowType)
     _adjust_fid();
 }
 
-// 0x473904
-int inventoryOpenLooting(Object* looter, Object* target)
+// CE: whether `looter`'s loot screen of `target` opens: not a critter with
+// nothing to take, a container being opened (its animation), or one whose
+// script says no (it runs here). Split out of inventoryOpenLooting for co-op:
+// player 1's game asks for a player whose loot screen runs on their own
+// computer.
+static bool inventoryLootMayOpen(Object* looter, Object* target)
 {
-    int arrowFrmIds[INVENTORY_ARROW_FRM_COUNT];
-    FrmImage arrowFrmImages[INVENTORY_ARROW_FRM_COUNT];
     MessageListItem messageListItem;
 
-    memcpy(arrowFrmIds, gInventoryArrowFrmIds, sizeof(gInventoryArrowFrmIds));
-
     if (looter != _inven_dude) {
-        return 0;
+        return false;
     }
-
-    ScopedGameMode gm(GameMode::kLoot);
 
     if (FID_TYPE(target->fid) == OBJ_TYPE_CRITTER) {
         if (_critter_flag_check(target->pid, CRITTER_NO_STEAL)) {
@@ -4130,7 +4137,7 @@ int inventoryOpenLooting(Object* looter, Object* target)
             if (messageListGetItem(&gInventoryMessageList, &messageListItem)) {
                 displayMonitorAddMessage(messageListItem.text);
             }
-            return 0;
+            return false;
         }
     }
 
@@ -4143,7 +4150,7 @@ int inventoryOpenLooting(Object* looter, Object* target)
                     int frameCount = artGetFrameCount(frm);
                     artUnlock(handle);
                     if (frameCount > 1) {
-                        return 0;
+                        return false;
                     }
                 }
             }
@@ -4159,12 +4166,37 @@ int inventoryOpenLooting(Object* looter, Object* target)
             Script* script;
             if (scriptGetScript(sid, &script) != -1) {
                 if (script->scriptOverrides) {
-                    return 0;
+                    return false;
                 }
             }
         }
     }
 
+
+    return true;
+}
+
+bool inven_coop_loot_may_open(Object* looter, Object* container)
+{
+    return inventoryLootMayOpen(looter, container);
+}
+
+// 0x473904
+int inventoryOpenLooting(Object* looter, Object* target)
+{
+    int arrowFrmIds[INVENTORY_ARROW_FRM_COUNT];
+    FrmImage arrowFrmImages[INVENTORY_ARROW_FRM_COUNT];
+    MessageListItem messageListItem;
+
+    memcpy(arrowFrmIds, gInventoryArrowFrmIds, sizeof(gInventoryArrowFrmIds));
+
+    ScopedGameMode gm(GameMode::kLoot);
+
+    if (!inventoryLootMayOpen(looter, target)) {
+        return 0;
+    }
+
+    int sid = -1;
     if (inventoryCommonInit() == -1) {
         return 0;
     }
@@ -4298,6 +4330,7 @@ int inventoryOpenLooting(Object* looter, Object* target)
 
     _display_target_inventory(_target_stack_offset[_target_curr_stack], -1, _target_pud, INVENTORY_WINDOW_TYPE_LOOT);
     _display_inventory(_stack_offset[_curr_stack], -1, INVENTORY_WINDOW_TYPE_LOOT);
+    gInventoryWindowDudeRotationTimestamp = 0;
     _display_body(target->fid, INVENTORY_WINDOW_TYPE_LOOT);
     inventorySetCursor(INVENTORY_WINDOW_CURSOR_HAND);
 
@@ -4312,6 +4345,12 @@ int inventoryOpenLooting(Object* looter, Object* target)
         }
 
         if (isCaughtStealing) {
+            break;
+        }
+
+        // CE: co-op: something noted for player 1's game (see
+        // coop_inven_note): closes.
+        if (coop_inven_noted && coop_mirror_object() != nullptr) {
             break;
         }
 
@@ -4362,6 +4401,7 @@ int inventoryOpenLooting(Object* looter, Object* target)
                 _target_stack_offset[0] = 0;
                 _display_target_inventory(0, -1, _target_pud, INVENTORY_WINDOW_TYPE_LOOT);
                 _display_inventory(_stack_offset[_curr_stack], -1, INVENTORY_WINDOW_TYPE_LOOT);
+                gInventoryWindowDudeRotationTimestamp = 0;
                 _display_body(target->fid, INVENTORY_WINDOW_TYPE_LOOT);
             }
         } else if (keyCode == KEY_ARROW_DOWN) {
@@ -4384,6 +4424,7 @@ int inventoryOpenLooting(Object* looter, Object* target)
                 _target_stack_offset[0] = 0;
                 _display_target_inventory(0, -1, _target_pud, INVENTORY_WINDOW_TYPE_LOOT);
                 _display_inventory(_stack_offset[_curr_stack], -1, INVENTORY_WINDOW_TYPE_LOOT);
+                gInventoryWindowDudeRotationTimestamp = 0;
                 _display_body(target->fid, INVENTORY_WINDOW_TYPE_LOOT);
             }
         } else if (keyCode == KEY_CTRL_ARROW_UP) {
@@ -5162,6 +5203,7 @@ void inventoryOpenTrade(int win, Object* barterer, Object* playerTable, Object* 
     bool isoWasEnabled = _setup_inventory(INVENTORY_WINDOW_TYPE_TRADE);
     _display_target_inventory(_target_stack_offset[_target_curr_stack], -1, _target_pud, INVENTORY_WINDOW_TYPE_TRADE);
     _display_inventory(_stack_offset[0], -1, INVENTORY_WINDOW_TYPE_TRADE);
+    gInventoryWindowDudeRotationTimestamp = 0;
     _display_body(barterer->fid, INVENTORY_WINDOW_TYPE_TRADE);
     windowRefresh(_barter_back_win);
     inventoryWindowRenderInnerInventories(win, playerTable, bartererTable, -1);
@@ -6209,6 +6251,72 @@ static bool coop_inven_read_print(const std::vector<unsigned char>& data, size_t
         && coop_inven_read_int(data, at, &(print->slot));
 }
 
+// A loot screen run here (since 1.22.1): what it moved between the player
+// and the container is what the container holds less (or more) of after,
+// by kind; bags count with what's in them.
+typedef std::map<std::tuple<int, int, int>, int> CoopLootCounts;
+static Object* coop_inven_loot_container = nullptr;
+static CoopLootCounts coop_inven_loot_before;
+static std::set<int> coop_inven_loot_bags;
+
+static void coop_inven_loot_count(Object* owner, CoopLootCounts* counts)
+{
+    Inventory* inventory = &(owner->data.inventory);
+    for (int index = 0; index < inventory->length; index++) {
+        Object* item = inventory->items[index].item;
+        int ammoPid = -1;
+        int ammo = 0;
+        if (itemGetType(item) == ITEM_TYPE_WEAPON) {
+            ammoPid = weaponGetAmmoTypePid(item);
+            ammo = ammoGetQuantity(item);
+        }
+        (*counts)[std::make_tuple(item->pid, ammoPid, ammo)] += inventory->items[index].quantity;
+        if (itemGetType(item) == ITEM_TYPE_CONTAINER) {
+            coop_inven_loot_bags.insert(item->pid);
+            coop_inven_loot_count(item, counts);
+        }
+    }
+}
+
+int inven_coop_loot(Object* container)
+{
+    coop_inven_loot_container = container;
+    coop_inven_loot_before.clear();
+    coop_inven_loot_bags.clear();
+    coop_inven_loot_count(container, &coop_inven_loot_before);
+    return inventoryOpenLooting(gDude, container);
+}
+
+// The moves (bags first): u32 count, then pid, ammo pid, ammo, how many
+// the player took (less than 0: put in).
+static void coop_inven_write_loot(std::vector<unsigned char>* out)
+{
+    CoopLootCounts after;
+    coop_inven_loot_count(coop_inven_loot_container, &after);
+    std::vector<std::pair<std::tuple<int, int, int>, int>> moves;
+    CoopLootCounts all = coop_inven_loot_before;
+    for (auto& entry : after) {
+        all[entry.first] += 0;
+    }
+    for (auto& entry : all) {
+        int before = coop_inven_loot_before.count(entry.first) != 0 ? coop_inven_loot_before[entry.first] : 0;
+        int now = after.count(entry.first) != 0 ? after[entry.first] : 0;
+        if (before != now) {
+            moves.push_back(std::make_pair(entry.first, before - now));
+        }
+    }
+    std::stable_sort(moves.begin(), moves.end(), [](const std::pair<std::tuple<int, int, int>, int>& a, const std::pair<std::tuple<int, int, int>, int>& b) {
+        return coop_inven_loot_bags.count(std::get<0>(a.first)) > coop_inven_loot_bags.count(std::get<0>(b.first));
+    });
+    coop_inven_write_int(out, (int)moves.size());
+    for (auto& move : moves) {
+        coop_inven_write_int(out, std::get<0>(move.first));
+        coop_inven_write_int(out, std::get<1>(move.first));
+        coop_inven_write_int(out, std::get<2>(move.first));
+        coop_inven_write_int(out, move.second);
+    }
+}
+
 bool inven_coop_take_changes(std::vector<unsigned char>* out)
 {
     out->clear();
@@ -6226,6 +6334,11 @@ bool inven_coop_take_changes(std::vector<unsigned char>* out)
     coop_inven_write_print(out, coop_inven_item);
     coop_inven_write_int(out, coop_inven_quantity);
     coop_inven_write_print(out, coop_inven_other);
+    if (coop_inven_loot_container != nullptr) {
+        (*out)[0] = 2;
+        coop_inven_write_loot(out);
+        coop_inven_loot_container = nullptr;
+    }
     coop_inven_noted = false;
     coop_inven_command = 0;
     return noted;
@@ -6318,10 +6431,39 @@ static void coop_inven_wear(Object* dude, Object* item, int flag)
     }
 }
 
-void inven_coop_apply(const std::vector<unsigned char>& data)
+// Moves `count` of the kind `print` says from `from` to `to` (a bag's
+// contents with it), as a loot screen does.
+static void coop_inven_loot_move(Object* dude, Object* from, Object* to, CoopItemPrint print, int count)
+{
+    print.slot = 0;
+    print.quantity = 0;
+    while (count > 0) {
+        int bestScore = 0;
+        Object* bag = nullptr;
+        Object* item = coop_inven_find_in(from, print, &bestScore, &bag, nullptr);
+        if (item == nullptr) {
+            break;
+        }
+        Object* owner = bag != nullptr ? bag : from;
+        int quantity = std::min(count, coop_inven_stack_quantity(owner, item));
+        if (quantity <= 0) {
+            break;
+        }
+        if (owner == dude && (item->flags & OBJECT_WORN) != 0) {
+            _adjust_ac(dude, item, nullptr);
+        }
+        item->flags &= ~(OBJECT_IN_ANY_HAND | OBJECT_WORN);
+        if (itemMove(owner, to, item, quantity) != 0) {
+            break;
+        }
+        count -= quantity;
+    }
+}
+
+void inven_coop_apply(const std::vector<unsigned char>& data, Object* lootContainer)
 {
     size_t at = 0;
-    if (data.empty() || data[0] != 1) {
+    if (data.empty() || (data[0] != 1 && data[0] != 2)) {
         return;
     }
     at = 1;
@@ -6336,6 +6478,23 @@ void inven_coop_apply(const std::vector<unsigned char>& data)
         || !coop_inven_read_int(data, &at, &command) || !coop_inven_read_print(data, &at, &item) || !coop_inven_read_int(data, &at, &quantity)
         || !coop_inven_read_print(data, &at, &other)) {
         return;
+    }
+    // A loot screen's moves.
+    std::vector<std::pair<CoopItemPrint, int>> lootMoves;
+    if (data[0] == 2) {
+        int count;
+        if (!coop_inven_read_int(data, &at, &count) || count < 0 || count > 10000) {
+            return;
+        }
+        for (int index = 0; index < count; index++) {
+            CoopItemPrint print;
+            int moved;
+            if (!coop_inven_read_int(data, &at, &print.pid) || !coop_inven_read_int(data, &at, &print.ammoPid)
+                || !coop_inven_read_int(data, &at, &print.ammo) || !coop_inven_read_int(data, &at, &moved)) {
+                return;
+            }
+            lootMoves.push_back(std::make_pair(print, moved));
+        }
     }
 
     Object* dude = gDude;
@@ -6362,6 +6521,17 @@ void inven_coop_apply(const std::vector<unsigned char>& data)
     Object* newArmor = critterGetArmor(dude);
     if (newArmor != oldArmor) {
         _adjust_ac(dude, oldArmor, newArmor);
+    }
+
+    // What the loot screen moved.
+    if (lootContainer != nullptr) {
+        for (auto& move : lootMoves) {
+            if (move.second > 0) {
+                coop_inven_loot_move(dude, lootContainer, dude, move.first, move.second);
+            } else {
+                coop_inven_loot_move(dude, dude, lootContainer, move.first, -move.second);
+            }
+        }
     }
 
     // Then what was noted.

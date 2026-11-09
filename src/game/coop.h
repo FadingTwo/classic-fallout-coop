@@ -19,7 +19,7 @@ namespace fallout {
 #define COOP_MAX_PLAYERS 4
 
 // Co-op version, for the update check and bug reports.
-#define COOP_VERSION "1.22"
+#define COOP_VERSION "1.22.1"
 
 // fallout.cfg [coop] server=http://host[:port] - where UPDATE looks for
 // new versions (<server>/fallout-coop/latest.txt) and REPORT BUG sends
@@ -261,6 +261,11 @@ bool coop_mirror_begin(const std::vector<unsigned char>& character, const std::v
 void coop_mirror_end();
 Object* coop_mirror_object();
 bool coop_mirror_level_pending();
+// Host: `obj` and what it holds, without their scripts (a container a
+// player loots on their own computer); client: loaded for the mirror's
+// time (coop_mirror_end erases it).
+bool coop_export_object(Object* obj, std::vector<unsigned char>* out);
+Object* coop_mirror_load_object(const std::vector<unsigned char>& data);
 
 // Testing: how many times each player's inventory opened.
 void coop_count_inventory_open(Object* critter);
