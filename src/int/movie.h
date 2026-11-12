@@ -48,6 +48,8 @@ int movieRunRect(int win, char* filePath, int a3, int a4, int a5, int a6);
 void movieSetSubtitleFunc(MovieSubtitleFunc* proc);
 void movieSetVolume(int volume);
 void movieUpdate();
+// CE: a cutscene's sound only, for a co-op client (no frames, palette or subtitles).
+int movieRunAudioOnly(int win, char* filePath);
 int moviePlaying();
 
 } // namespace fallout

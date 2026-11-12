@@ -189,6 +189,10 @@ static int subtitleH;
 // 0x6373E0
 static int running;
 
+// CE: a co-op client plays a cutscene's sound only, while it shows the host's pictures (Nexus, 2026-11-12: player 2
+// heard no cutscenes): no frames drawn, no palette changes, no subtitles.
+static bool movieAudioOnly = false;
+
 // 0x6373E8
 static DB_FILE* handle;
 
@@ -249,6 +253,10 @@ static bool movieRead(void* handle, void* buf, int count)
 // 0x478464
 static void movie_MVE_ShowFrame(SDL_Surface* surface, int srcWidth, int srcHeight, int srcX, int srcY, int destWidth, int destHeight, int a8, int a9)
 {
+    if (movieAudioOnly) {
+        return;
+    }
+
     int v14;
     int v15;
 
@@ -326,6 +334,10 @@ static void movie_MVE_ShowFrame(SDL_Surface* surface, int srcWidth, int srcHeigh
 // 0x478710
 static void movieShowFrame(SDL_Surface* a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8, int a9)
 {
+    if (movieAudioOnly) {
+        return;
+    }
+
     if (GNWWin == -1) {
         return;
     }
@@ -476,6 +488,10 @@ static int blitNormal(int win, unsigned char* data, int width, int height, int p
 // 0x478BEC
 static void movieSetPalette(unsigned char* palette, int start, int end)
 {
+    if (movieAudioOnly) {
+        return;
+    }
+
     if (end != 0) {
         paletteFunc(palette + start * 3, start, end + start - 1);
     }
@@ -502,6 +518,8 @@ static void cleanupMovie(int a1)
     if (!running) {
         return;
     }
+
+    movieAudioOnly = false;
 
     if (endMovieFunc != NULL) {
         endMovieFunc(GNWWin, movieX, movieY, movieW, movieH);
@@ -927,6 +945,22 @@ int movieRun(int win, char* filePath)
 }
 
 // 0x479920
+// CE: the cutscene's sound only (see movieAudioOnly); `win` is never drawn into. Driven by movieUpdate().
+int movieRunAudioOnly(int win, char* filePath)
+{
+    if (running) {
+        return 1;
+    }
+
+    movieFlags = 0; // buffered, no subtitles
+    movieAudioOnly = true;
+    int rc = movieRun(win, filePath);
+    if (rc != 0) {
+        movieAudioOnly = false;
+    }
+    return rc;
+}
+
 int movieRunRect(int win, char* filePath, int a3, int a4, int a5, int a6)
 {
     if (running) {

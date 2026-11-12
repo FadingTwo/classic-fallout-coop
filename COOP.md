@@ -153,7 +153,7 @@ Olympus games.
   Aid, Doctor). The last player standing dies as usual.
 - Each player's camera follows their own character, however far apart
   you are, and each hears sound effects as loud as they are where they
-  stand (music and speech are the same for everyone).
+  stand (music, speech and, since 1.22.2, cutscenes are the same for everyone).
 - Press T to chat (over the network). Enter sends, Esc cancels.
 - Press G to mark the spot under your mouse for the other player; it
   blinks on both screens for five seconds.

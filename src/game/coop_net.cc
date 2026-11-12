@@ -47,6 +47,7 @@
 #include "game/gconfig.h"
 #include "game/gmouse.h"
 #include "game/gsound.h"
+#include "int/movie.h"
 #include "platform_compat.h"
 #include "plib/color/color.h"
 #include "plib/db/db.h"
@@ -2542,6 +2543,70 @@ bool coop_net_parse_code(const char* text, std::string* code)
 // -----------------------------------------------------------------------------
 // Client
 
+// Client: music and speech the host played that started here, and that didn't.
+static int coop_client_streams_started = 0;
+static int coop_client_streams_failed = 0;
+
+int coop_net_client_streams_started()
+{
+    return coop_client_streams_started;
+}
+
+int coop_net_client_streams_failed()
+{
+    return coop_client_streams_failed;
+}
+
+// Client: a cutscene's sound, played here while the host's pictures of it come in (Nexus, 2026-11-12: player 2 heard
+// no cutscenes). The movie draws into a hidden window it never shows; coop_client_movie_pump() steps it each round.
+static int coop_client_movie_window = -1;
+
+static void coop_client_movie_stop()
+{
+    if (moviePlaying()) {
+        movieStop();
+        movieUpdate();
+    }
+}
+
+static void coop_client_movie_start(const char* path)
+{
+    coop_client_movie_stop();
+    if (coop_client_movie_window == -1) {
+        coop_client_movie_window = win_add(0, 0, 640, 480, 0, WINDOW_HIDDEN);
+    }
+    if (coop_client_movie_window == -1) {
+        debug_printf("COOP NET: cutscene %s: no window for its sound\n", path);
+        return;
+    }
+    char copy[COMPAT_MAX_PATH];
+    snprintf(copy, sizeof(copy), "%s", path);
+    if (movieRunAudioOnly(coop_client_movie_window, copy) != 0) {
+        coop_client_streams_failed++;
+        debug_printf("COOP NET: cutscene %s didn't start\n", path);
+    } else {
+        coop_client_streams_started++;
+    }
+}
+
+static void coop_client_movie_pump()
+{
+    if (moviePlaying()) {
+        movieUpdate();
+    }
+}
+
+// Client: stops a cutscene's sound and removes its window (the host left): a window left over, hidden or not, would sit
+// over the map's when this process plays on.
+static void coop_client_movie_close()
+{
+    coop_client_movie_stop();
+    if (coop_client_movie_window != -1) {
+        win_delete(coop_client_movie_window);
+        coop_client_movie_window = -1;
+    }
+}
+
 // Client: a sound the host played (SOUND message); false if damaged.
 static bool coop_client_sound(CoopReader* reader)
 {
@@ -2558,21 +2623,45 @@ static bool coop_client_sound(CoopReader* reader)
         gsound_play_sfx_file_volume(name.c_str(), a);
         break;
     case GSOUND_EVENT_MUSIC:
-        gsound_background_play(name.c_str(), a, b, c);
+        // Logged when it doesn't start: a player 2 without music (Nexus, 2026-11-12) leaves the reason in debug.log.
+        if (gsound_background_play(name.c_str(), a, b, c) != 0) {
+            coop_client_streams_failed++;
+            debug_printf("COOP NET: music %s didn't start (%s)\n", name.c_str(), gsound_why_not());
+        } else {
+            coop_client_streams_started++;
+        }
         break;
     case GSOUND_EVENT_MUSIC_STOP:
         gsound_background_stop();
         break;
-    case GSOUND_EVENT_SPEECH:
+    case GSOUND_EVENT_SPEECH: {
+        // A conversation's lip-synced speech comes with no arguments. Mode 10 only loads it, so it is started here
+        // (until 1.22.2 it wasn't: player 2 heard no talking heads).
+        int rc;
         if (a == 0 && b == 0 && c == 0) {
-            // A conversation's lip-synced speech.
-            gsound_speech_play(name.c_str(), 10, 14, 15);
+            rc = gsound_speech_play(name.c_str(), 10, 14, 15);
+            if (rc == 0) {
+                rc = gsound_speech_play_preloaded();
+            }
         } else {
-            gsound_speech_play(name.c_str(), a, b, c);
+            rc = gsound_speech_play(name.c_str(), a, b, c);
+        }
+        if (rc != 0) {
+            coop_client_streams_failed++;
+            debug_printf("COOP NET: speech %s didn't start (%s)\n", name.c_str(), gsound_why_not());
+        } else {
+            coop_client_streams_started++;
         }
         break;
+    }
     case GSOUND_EVENT_SPEECH_STOP:
         gsound_speech_stop();
+        break;
+    case GSOUND_EVENT_MOVIE:
+        coop_client_movie_start(name.c_str());
+        break;
+    case GSOUND_EVENT_MOVIE_STOP:
+        coop_client_movie_stop();
         break;
     }
     return true;
@@ -3296,6 +3385,7 @@ int coop_net_client_run()
     bool inputNow = false;
     while (!hostLeft) {
         sharedFpsLimiter.mark();
+        coop_client_movie_pump();
 
         // Input once a round, as before 1.21 (the loop also runs when a
         // picture comes).
@@ -3757,7 +3847,9 @@ int coop_net_client_run()
         }
     }
 
-    debug_printf("\nCOOP NET: host left (%d sounds played)\n", soundsPlayed);
+    coop_client_movie_close();
+    debug_printf("\nCOOP NET: host left (%d sounds played; music, speech and cutscenes: %d started, %d didn't)\n", soundsPlayed,
+        coop_client_streams_started, coop_client_streams_failed);
     if (picturesTimed != 0) {
         debug_printf("\nCOOP NET: pictures every %llu ms on average (%u timed; %u gaps over 50 ms, %u over 100 ms)\n",
             pictureGapTotal / picturesTimed, picturesTimed, pictureGapsOver50, pictureGapsOver100);

@@ -186,6 +186,11 @@ static unsigned char* _alphaBuf;
 
 static unsigned char* MVE_lastBuffer = nullptr;
 
+// CE: a co-op client plays a cutscene's sound only, while it shows the host's
+// pictures (Nexus, 2026-11-12: player 2 heard no cutscenes): no frames drawn,
+// no palette changes, no subtitles.
+static bool gMovieAudioOnly = false;
+
 // 0x4865FC
 static void* movieMallocImpl(size_t size)
 {
@@ -207,6 +212,10 @@ static bool movieReadImpl(void* handle, void* buf, int count)
 // 0x486654
 static void movieDirectImpl(unsigned char* pixels, int src_width, int src_height, int src_x, int src_y, int dst_width, int dst_height, int dst_x, int dst_y)
 {
+    if (gMovieAudioOnly) {
+        return;
+    }
+
     int v14;
     int v15;
 
@@ -268,6 +277,10 @@ static void movieDirectImpl(unsigned char* pixels, int src_width, int src_height
 // 0x486900
 static void movieBufferedImpl(unsigned char* pixels, int src_width, int src_height, int src_x, int src_y, int dst_width, int dst_height, int dst_x, int dst_y)
 {
+    if (gMovieAudioOnly) {
+        return;
+    }
+
     if (gMovieWindow == -1) {
         return;
     }
@@ -388,6 +401,10 @@ int _blitNormal(int win, unsigned char* data, int width, int height, int pitch)
 // 0x486DDC
 static void movieSetPaletteEntriesImpl(unsigned char* palette, int start, int end)
 {
+    if (gMovieAudioOnly) {
+        return;
+    }
+
     if (end != 0) {
         gMovieSetPaletteEntriesProc(palette + start * 3, start, end + start - 1);
     }
@@ -409,6 +426,8 @@ static void _cleanupMovie(int a1)
     if (!_running) {
         return;
     }
+
+    gMovieAudioOnly = false;
 
     int frame;
     int dropped;
@@ -797,6 +816,24 @@ int _movieRunRect(int win, char* filePath, int a3, int a4, int a5, int a6)
     return _movieStart(win, filePath);
 }
 
+// CE: the cutscene's sound only (see gMovieAudioOnly); `win` is never drawn
+// into. Driven by _movieUpdate().
+int movieRunAudioOnly(int win, char* filePath)
+{
+    if (_running) {
+        return 1;
+    }
+
+    gMovieFlags = 0; // buffered, no subtitles
+    _movieScaleFlag = 0;
+    gMovieAudioOnly = true;
+    int rc = _movieRun(win, filePath);
+    if (rc != 0) {
+        gMovieAudioOnly = false;
+    }
+    return rc;
+}
+
 // 0x487B7C
 static int _stepMovie()
 {
@@ -851,7 +888,8 @@ void _movieUpdate()
         return;
     }
 
-    if (gMoviePaletteProc != nullptr) {
+    // CE: movie effects' fades are palette changes too.
+    if (gMoviePaletteProc != nullptr && !gMovieAudioOnly) {
         int frame;
         int dropped;
         MVE_rmFrameCounts(&frame, &dropped);

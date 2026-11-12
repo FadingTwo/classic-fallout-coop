@@ -5,6 +5,9 @@
 #   tools/regress.sh compare <out dir A> <out dir B>
 #   tools/regress.sh load <fallout-ce binary> <regress out dir> <out dir> [overrides...]
 #
+# REGRESS_VIDEODRIVER overrides SDL's video driver (default offscreen; x11 under xvfb-run where SDL lacks offscreen,
+# e.g. Ubuntu 22.04's 2.0.20).
+#
 # `run` needs FALLOUT_DATA pointing at a Fallout install (MASTER.DAT,
 # CRITTER.DAT, DATA/). The install is never written to: .DAT files are
 # symlinked and DATA/ is copied (without saves) into <out dir>.
@@ -86,11 +89,19 @@ cmd_run() {
         echo tampered >"$out/data/coop_tamper.txt"
     fi
 
+    # The music folder, as the co-op setup writes it into a real install's fallout.cfg (without it, music isn't found
+    # and the co-op tests' music check fails). Settings given after this still win.
+    local music=()
+    if [ -d "$out/data/sound/music" ] || [ -d "$out/data/SOUND/MUSIC" ]; then
+        local m; m=$(cd "$out" && ls -d data/[sS][oO][uU][nN][dD]/[mM][uU][sS][iI][cC] | head -1 | tr / '\\')
+        music=("[sound]music_path1=$m\\" "[sound]music_path2=$m\\")
+    fi
+
     local rc=0
     (
         cd "$out"
-        SDL_VIDEODRIVER=offscreen SDL_RENDER_DRIVER=software SDL_AUDIODRIVER=dummy DEBUGACTIVE=log \
-            "$timeout_bin" "${AUTOTEST_TIMEOUT:-300}" "$bin" "[autotest]script=$script" "$@" >stdout.log 2>&1
+        SDL_VIDEODRIVER=${REGRESS_VIDEODRIVER:-offscreen} SDL_RENDER_DRIVER=software SDL_AUDIODRIVER=dummy DEBUGACTIVE=log \
+            "$timeout_bin" "${AUTOTEST_TIMEOUT:-300}" "$bin" "[autotest]script=$script" "${music[@]}" "$@" >stdout.log 2>&1
     ) || rc=$?
 
     # Keep only the saves; the copied game data is large.

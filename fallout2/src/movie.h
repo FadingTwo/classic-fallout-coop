@@ -37,6 +37,9 @@ void movieSetBuildSubtitleFilePathProc(MovieBuildSubtitleFilePathProc* proc);
 void movieSetVolume(int volume);
 void _movieUpdate();
 int _moviePlaying();
+// CE: a cutscene's sound only, for a co-op client (no frames, palette or
+// subtitles).
+int movieRunAudioOnly(int win, char* filePath);
 
 } // namespace fallout
 

@@ -246,6 +246,9 @@ const char* coop_net_game_name();
 
 // Host: a sound for the client to play (GSOUND_EVENT_*, see gsound.h).
 void coop_net_send_sound(int event, const char* name, int a, int b, int c);
+// Client: music and speech from the host that started here, and that didn't.
+int coop_net_client_streams_started();
+int coop_net_client_streams_failed();
 
 // Host: status line the client shows over the frames ("" for none).
 void coop_net_send_status(const char* text);

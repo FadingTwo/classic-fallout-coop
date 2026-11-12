@@ -187,6 +187,11 @@ int gmovie_play(int game_movie, int game_movie_flags)
 
     movieRun(win, movieFilePath);
 
+    // CE: co-op clients play the cutscene's sound themselves (they get its pictures from us).
+    if (gsound_event_hook != NULL) {
+        gsound_event_hook(GSOUND_EVENT_MOVIE, movieFilePath, 0, 0, 0);
+    }
+
     int v11 = 0;
     int buttons;
     do {
@@ -209,6 +214,9 @@ int gmovie_play(int game_movie, int game_movie_flags)
     movieStop();
     moviefx_stop();
     movieUpdate();
+    if (gsound_event_hook != NULL) {
+        gsound_event_hook(GSOUND_EVENT_MOVIE_STOP, "", 0, 0, 0);
+    }
     palette_set_to(black_palette);
 
     gmovie_played_list[game_movie] = 1;

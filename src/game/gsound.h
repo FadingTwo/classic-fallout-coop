@@ -77,6 +77,10 @@ typedef enum GsoundEvent {
     // (0 for conversations' lip-synced speech).
     GSOUND_EVENT_SPEECH,
     GSOUND_EVENT_SPEECH_STOP,
+    // CE (1.22.2): a cutscene: its path (art\\cuts\\...), and when it ends or is skipped. Last, so older clients
+    // ignore them.
+    GSOUND_EVENT_MOVIE,
+    GSOUND_EVENT_MOVIE_STOP,
 } GsoundEvent;
 
 typedef void(GsoundEventHook)(int event, const char* name, int a, int b, int c);
@@ -89,6 +93,8 @@ void gsound_background_pause();
 void gsound_background_unpause();
 void gsound_speech_disable();
 void gsound_speech_enable();
+// CE: why the last music or speech didn't start ("" before any failure).
+const char* gsound_why_not();
 int gsound_speech_is_enabled();
 void gsound_speech_volume_set(int value);
 int gsound_speech_volume_get();

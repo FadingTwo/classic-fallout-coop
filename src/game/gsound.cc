@@ -33,6 +33,14 @@ namespace fallout {
 
 GsoundEventHook* gsound_event_hook = NULL;
 
+// CE: why the last music or speech didn't start (co-op clients log it: a player 2 heard no music, Nexus 2026-11-12).
+static const char* gsound_failure = "";
+
+const char* gsound_why_not()
+{
+    return gsound_failure;
+}
+
 // Names (and volumes) of loaded effects, while gsound_event_hook is set,
 // and where they come from (tile -1: nowhere in particular), so each
 // co-op player can hear them as loud as they are for them.
@@ -695,10 +703,12 @@ int gsound_background_play(const char* fileName, int a2, int a3, int a4)
     }
 
     if (!gsound_initialized) {
+        gsound_failure = "sound isn't initialised";
         return -1;
     }
 
     if (!gsound_background_enabled) {
+        gsound_failure = "music is off in fallout.cfg ([sound] music)";
         return -1;
     }
 
@@ -715,6 +725,7 @@ int gsound_background_play(const char* fileName, int a2, int a3, int a4)
         }
 
         gsound_background_tag = NULL;
+        gsound_failure = "sound could not be allocated";
         return -1;
     }
 
@@ -727,6 +738,7 @@ int gsound_background_play(const char* fileName, int a2, int a3, int a4)
         soundDelete(gsound_background_tag);
         gsound_background_tag = NULL;
 
+        gsound_failure = "file IO could not be set for compression";
         return -1;
     }
 
@@ -739,6 +751,7 @@ int gsound_background_play(const char* fileName, int a2, int a3, int a4)
         soundDelete(gsound_background_tag);
         gsound_background_tag = NULL;
 
+        gsound_failure = "the channel could not be set";
         return -1;
     }
 
@@ -757,6 +770,7 @@ int gsound_background_play(const char* fileName, int a2, int a3, int a4)
         soundDelete(gsound_background_tag);
         gsound_background_tag = NULL;
 
+        gsound_failure = "the file could not be found";
         return -1;
     }
 
@@ -770,6 +784,7 @@ int gsound_background_play(const char* fileName, int a2, int a3, int a4)
             soundDelete(gsound_background_tag);
             gsound_background_tag = NULL;
 
+            gsound_failure = "looping could not be set";
             return -1;
         }
     }
@@ -799,6 +814,7 @@ int gsound_background_play(const char* fileName, int a2, int a3, int a4)
         soundDelete(gsound_background_tag);
         gsound_background_tag = NULL;
 
+        gsound_failure = "soundLoad";
         return -1;
     }
 
@@ -824,6 +840,7 @@ int gsound_background_play(const char* fileName, int a2, int a3, int a4)
         soundDelete(gsound_background_tag);
         gsound_background_tag = NULL;
 
+        gsound_failure = "starting to play";
         return -1;
     }
 
@@ -1025,10 +1042,12 @@ int gsound_speech_play(const char* fname, int a2, int a3, int a4)
     char path[COMPAT_MAX_PATH + 1];
 
     if (!gsound_initialized) {
+        gsound_failure = "sound isn't initialised";
         return -1;
     }
 
     if (!gsound_speech_enabled) {
+        gsound_failure = "speech is off in fallout.cfg ([sound] speech)";
         return -1;
     }
 
@@ -1049,6 +1068,7 @@ int gsound_speech_play(const char* fname, int a2, int a3, int a4)
             debug_printf("failed because sound could not be allocated.\n");
         }
         gsound_speech_tag = NULL;
+        gsound_failure = "sound could not be allocated";
         return -1;
     }
 
@@ -1058,6 +1078,7 @@ int gsound_speech_play(const char* fname, int a2, int a3, int a4)
         }
         soundDelete(gsound_speech_tag);
         gsound_speech_tag = NULL;
+        gsound_failure = "file IO could not be set for compression";
         return -1;
     }
 
@@ -1067,6 +1088,7 @@ int gsound_speech_play(const char* fname, int a2, int a3, int a4)
         }
         soundDelete(gsound_speech_tag);
         gsound_speech_tag = NULL;
+        gsound_failure = "the file could not be found";
         return -1;
     }
 
@@ -1077,6 +1099,7 @@ int gsound_speech_play(const char* fname, int a2, int a3, int a4)
             }
             soundDelete(gsound_speech_tag);
             gsound_speech_tag = NULL;
+            gsound_failure = "looping could not be set";
             return -1;
         }
     }
@@ -1101,6 +1124,7 @@ int gsound_speech_play(const char* fname, int a2, int a3, int a4)
         }
         soundDelete(gsound_speech_tag);
         gsound_speech_tag = NULL;
+        gsound_failure = "soundLoad";
         return -1;
     }
 
@@ -1122,6 +1146,7 @@ int gsound_speech_play(const char* fname, int a2, int a3, int a4)
         }
         soundDelete(gsound_speech_tag);
         gsound_speech_tag = NULL;
+        gsound_failure = "starting to play";
         return -1;
     }
 
@@ -1136,32 +1161,39 @@ int gsound_speech_play(const char* fname, int a2, int a3, int a4)
 int gsound_speech_play_preloaded()
 {
     if (!gsound_initialized) {
+        gsound_failure = "sound isn't initialised";
         return -1;
     }
 
     if (!gsound_speech_enabled) {
+        gsound_failure = "speech is off in fallout.cfg ([sound] speech)";
         return -1;
     }
 
     if (gsound_speech_tag == NULL) {
+        gsound_failure = "nothing loaded";
         return -1;
     }
 
     if (soundPlaying(gsound_speech_tag)) {
+        gsound_failure = "already playing";
         return -1;
     }
 
     if (soundPaused(gsound_speech_tag)) {
+        gsound_failure = "paused";
         return -1;
     }
 
     if (soundDone(gsound_speech_tag)) {
+        gsound_failure = "already done";
         return -1;
     }
 
     if (gsound_speech_start() != 0) {
         soundDelete(gsound_speech_tag);
         gsound_speech_tag = NULL;
+        gsound_failure = "starting to play";
 
         return -1;
     }

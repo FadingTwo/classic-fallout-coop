@@ -97,10 +97,17 @@ typedef enum GsoundEvent {
     // name and the speechLoad() arguments.
     GSOUND_EVENT_SPEECH,
     GSOUND_EVENT_SPEECH_STOP,
+    // CE (1.22.2): a cutscene: its path (art\\cuts\\...), and when it ends
+    // or is skipped. Last, so older clients ignore them.
+    GSOUND_EVENT_MOVIE,
+    GSOUND_EVENT_MOVIE_STOP,
 } GsoundEvent;
 
 typedef void(GsoundEventHook)(int event, const char* name, int a, int b, int c);
 extern GsoundEventHook* gsound_event_hook;
+
+// CE: why the last music or speech didn't start ("" before any failure).
+const char* gsound_why_not();
 
 } // namespace fallout
 

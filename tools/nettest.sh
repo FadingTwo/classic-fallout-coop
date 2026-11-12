@@ -16,6 +16,8 @@
 # clients (players 3 and up, in <out dir>/client2...) with the same script
 # (EXTRA_CLIENT_BIN: their binary, default CLIENT_BIN). LAG_MS puts an
 # internet-like delay between host and clients (tools/lagproxy.py).
+# CLIENT_DISPLAY gives player 2 its own X display: under Xvfb only one window has the focus, and the game waits
+# while it hasn't.
 
 set -uo pipefail
 
@@ -73,7 +75,7 @@ for n in $(seq 2 $((${EXTRA_CLIENTS:-0} + 1))); do
     sleep "${CLIENT_STAGGER:-3}"
 done
 
-AUTOTEST_RES=${CLIENT_RES:-} AUTOTEST_TAMPER=$tamper AUTOTEST_SCRIPT=$client_script "$here/regress.sh" run "${CLIENT_BIN:-$bin}" "$out/client" \
+DISPLAY=${CLIENT_DISPLAY:-${DISPLAY:-}} AUTOTEST_RES=${CLIENT_RES:-} AUTOTEST_TAMPER=$tamper AUTOTEST_SCRIPT=$client_script "$here/regress.sh" run "${CLIENT_BIN:-$bin}" "$out/client" \
     "[coop]enabled=1" "[coop]mode=client" "[coop]host=127.0.0.1" "[coop]port=$client_port" ${CLIENT_EXTRA:-}
 client_rc=$?
 

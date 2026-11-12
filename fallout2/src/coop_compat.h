@@ -95,7 +95,9 @@ inline int gsound_speech_play(const char* fileName, int a2, int a3, int a4)
     if (speechLoad(fileName, a2, a3, a4) == -1) {
         return -1;
     }
-    return _gsound_speech_play_preloaded();
+    // speechLoad() starts it itself unless a2 is 10 (load only, as for
+    // lip-synced speech); starting it again would fail as already playing.
+    return a2 == 10 ? _gsound_speech_play_preloaded() : 0;
 }
 inline void gsound_speech_stop() { speechDelete(); }
 

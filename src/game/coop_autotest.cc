@@ -2897,6 +2897,12 @@ static std::vector<int> coop_autotest_input_for(unsigned int ms)
 // cursor, A clicks, X is the inventory key and RT ends the turn (Space).
 static int coop_autotest_gamepad(AutotestNewGameProc* newGame)
 {
+#if !SDL_VERSION_ATLEAST(2, 26, 0)
+    // Built against an older system SDL2 (Ubuntu 22.04 has 2.0.20): no virtual controllers to test with.
+    (void)newGame;
+    autotest_fail("needs SDL 2.26 or newer (virtual controllers)");
+    return -1;
+#else
     if (!autotest_new_game(newGame, "premade\\combat.gcd")) {
         return -1;
     }
@@ -2960,6 +2966,7 @@ static int coop_autotest_gamepad(AutotestNewGameProc* newGame)
     SDL_JoystickClose(joystick);
     SDL_JoystickDetachVirtual(index);
     return 0;
+#endif
 }
 
 // COOP_AUTOTEST_RELAY=host:port: the host opens a relay room and writes
@@ -3082,6 +3089,13 @@ static int coop_autotest_net_host(AutotestNewGameProc* newGame)
     // here it is set by hand).
     gsound_event_hook = coop_net_send_sound;
     gsound_speech_play("narrator\\options", 12, 13, 15);
+    // A conversation's lip-synced speech comes without arguments, and only loads unless the client starts it.
+    gsound_event_hook(GSOUND_EVENT_SPEECH, "narrator\\options", 0, 0, 0);
+    // And music: the client must start both, not only receive them (Nexus, 2026-11-12: a player 2 heard no music or
+    // speech while effects played).
+    gsound_background_play("03WRLDMP", 12, 14, 16);
+    // And a cutscene's sound (1.22.2): the client plays it while it shows our pictures.
+    gsound_event_hook(GSOUND_EVENT_MOVIE, "art\\cuts\\iplogo.mve", 0, 0, 0);
 
     start = get_time();
     while (elapsed_time(start) < 3000) {
@@ -3114,9 +3128,13 @@ static int coop_autotest_net_client(AutotestNewGameProc* newGame)
     autotest_log("connecting, checksum %016llx", (unsigned long long)coop_net_data_checksum());
     coop_net_set_client_exit_hook(coop_autotest_net_client_exit);
     int rc = coop_autotest_client_run();
-    autotest_log("client finished with %d", rc);
+    autotest_log("client finished with %d; music and speech started %d, didn't start %d", rc,
+        coop_net_client_streams_started(), coop_net_client_streams_failed());
     if (rc != 0) {
         autotest_fail("client failed");
+    }
+    if (coop_net_client_streams_failed() != 0 || coop_net_client_streams_started() < 4) {
+        autotest_fail("the host's music, speech and cutscene sound didn't play here (see debug.log: COOP NET: ... didn't start)");
     }
 
     return 0;
